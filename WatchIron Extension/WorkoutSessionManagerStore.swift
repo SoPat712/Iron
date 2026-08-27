@@ -12,6 +12,99 @@ import Combine
 import WatchKit
 import os.log
 
+/// Durable watch-side projection and at-least-once event outbox.  HealthKit
+/// owns sensor samples; this store owns the workout the user is editing.
+final class WatchWorkoutStore {
+    static let shared = WatchWorkoutStore()
+
+    private struct PersistedState: Codable {
+        var snapshot: WatchWorkoutSnapshot?
+        var outbox: [WatchWorkoutEvent]
+        var nextSequence: Int64
+    }
+
+    private let defaults = UserDefaults.standard
+    private let defaultsKey = "watchWorkoutStore.v1"
+    private let lock = NSLock()
+    private var state: PersistedState
+
+    private init() {
+        if let data = defaults.data(forKey: defaultsKey),
+           let decoded = WatchWorkoutWire.decode(PersistedState.self, from: data) {
+            state = decoded
+        } else {
+            state = PersistedState(snapshot: nil, outbox: [], nextSequence: 0)
+        }
+    }
+
+    private func persistLocked() {
+        if let data = WatchWorkoutWire.encode(state) {
+            defaults.set(data, forKey: defaultsKey)
+        }
+    }
+
+    func snapshot() -> WatchWorkoutSnapshot? {
+        lock.lock(); defer { lock.unlock() }
+        return state.snapshot
+    }
+
+    /// Newer revisions win, while a new workout UUID always replaces the old
+    /// projection. This makes stale application-context deliveries harmless.
+    @discardableResult
+    func replaceSnapshot(_ snapshot: WatchWorkoutSnapshot) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        if let current = state.snapshot,
+           current.workoutID == snapshot.workoutID,
+           (current.revision > snapshot.revision ||
+            (current.revision == snapshot.revision && current.updatedAt > snapshot.updatedAt)) {
+            return false
+        }
+        state.snapshot = snapshot
+        persistLocked()
+        return true
+    }
+
+    func nextSequence() -> Int64 {
+        lock.lock(); defer { lock.unlock() }
+        state.nextSequence += 1
+        persistLocked()
+        return state.nextSequence
+    }
+
+    func enqueue(_ event: WatchWorkoutEvent) {
+        lock.lock(); defer { lock.unlock() }
+        guard !state.outbox.contains(where: { $0.id == event.id }) else { return }
+        state.outbox.append(event)
+        persistLocked()
+    }
+
+    func pendingEvents() -> [WatchWorkoutEvent] {
+        lock.lock(); defer { lock.unlock() }
+        return state.outbox
+    }
+
+    func acknowledge(eventIDs: [UUID]) {
+        guard !eventIDs.isEmpty else { return }
+        lock.lock(); defer { lock.unlock() }
+        let ids = Set(eventIDs)
+        state.outbox.removeAll { ids.contains($0.id) }
+        persistLocked()
+    }
+
+    func clear() {
+        lock.lock(); defer { lock.unlock() }
+        state.snapshot = nil
+        state.outbox.removeAll()
+        persistLocked()
+    }
+
+    func clearSnapshot() {
+        lock.lock(); defer { lock.unlock() }
+        state.snapshot = nil
+        persistLocked()
+    }
+}
+
 class WorkoutSessionManagerStore: ObservableObject {
     static let shared = WorkoutSessionManagerStore()
     
@@ -34,15 +127,261 @@ class WorkoutSessionManagerStore: ObservableObject {
             _workoutSessionManager = newValue
         }
     }
+
+    private var _workoutSnapshot: WatchWorkoutSnapshot? = WatchWorkoutStore.shared.snapshot() {
+        didSet {
+            DispatchQueue.main.async {
+                self.objectWillChange.send()
+            }
+        }
+    }
+
+    var workoutSnapshot: WatchWorkoutSnapshot? {
+        _workoutSnapshot
+    }
+
+    private func publishSnapshot(_ snapshot: WatchWorkoutSnapshot?) {
+        _workoutSnapshot = snapshot
+    }
+
+    /// Refreshes UI that derives its state from the durable event outbox.
+    /// The outbox intentionally lives outside the published snapshot so it
+    /// survives archiving a finished workout.
+    func notifySyncStateChanged() {
+        DispatchQueue.main.async {
+            self.objectWillChange.send()
+        }
+    }
+
+    private func archiveSnapshot(workoutID: UUID) {
+        guard self.workoutSnapshot?.workoutID == workoutID else { return }
+        WatchWorkoutStore.shared.clearSnapshot()
+        publishSnapshot(nil)
+    }
+
+    private func persistSnapshot(_ snapshot: WatchWorkoutSnapshot) {
+        WatchWorkoutStore.shared.replaceSnapshot(snapshot)
+        publishSnapshot(snapshot)
+    }
+
+    private func enqueue(_ event: WatchWorkoutEvent) {
+        WatchWorkoutStore.shared.enqueue(event)
+        DispatchQueue.main.async {
+            PhoneConnectionManager.shared.flushEventOutbox()
+        }
+    }
+
+    private func makeEvent(workoutID: UUID, kind: WatchWorkoutEventKind,
+                           exerciseID: UUID? = nil, setID: UUID? = nil,
+                           weight: Double? = nil, reps: Int? = nil,
+                           rpe: Double? = nil, completed: Bool? = nil,
+                           restTimerEnd: Date? = nil,
+                           keepRestTimerRunning: Bool? = nil,
+                           startDate: Date? = nil, endDate: Date? = nil,
+                           title: String? = nil,
+                           sessionEffort: Double? = nil,
+                           snapshot: WatchWorkoutSnapshot? = nil) -> WatchWorkoutEvent {
+        WatchWorkoutEvent(workoutID: workoutID,
+                          sequence: WatchWorkoutStore.shared.nextSequence(),
+                          kind: kind, exerciseID: exerciseID, setID: setID,
+                          weight: weight, reps: reps, rpe: rpe,
+                          completed: completed, restTimerEnd: restTimerEnd,
+                          keepRestTimerRunning: keepRestTimerRunning,
+                          startDate: startDate, endDate: endDate, title: title,
+                          weightUnit: self.workoutSnapshot?.weightUnit,
+                          sessionEffort: sessionEffort,
+                          snapshot: snapshot)
+    }
 }
 
 extension WorkoutSessionManagerStore {
-    func recoverWorkoutSession(workoutSession: HKWorkoutSession) {
+    func applyWorkoutSnapshot(_ snapshot: WatchWorkoutSnapshot) {
+        WorkoutSessionManager.perform {
+            guard snapshot.schemaVersion <= WatchWorkoutWire.schemaVersion else {
+                os_log("Ignoring unsupported workout snapshot version=%d", type: .error, snapshot.schemaVersion)
+                return
+            }
+            guard WatchWorkoutStore.shared.replaceSnapshot(snapshot) else { return }
+            self.publishSnapshot(snapshot)
+
+            if let manager = self.workoutSessionManager,
+               manager.uuid == snapshot.workoutID {
+                manager.updateStartDate(snapshot.startDate)
+                manager.updateEndDate(snapshot.endDate)
+                manager.restTimerEnd = snapshot.restTimerEnd
+                manager.keepRestTimerRunning = snapshot.keepRestTimerRunning
+                manager.selectedSetText = snapshot.selectedSetText
+            }
+        }
+    }
+
+    func updateSet(workoutID: UUID, exerciseID: UUID, setID: UUID,
+                   weight: Double?, reps: Int?, rpe: Double?) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
+                  let setIndex = snapshot.exercises[exerciseIndex].sets.firstIndex(where: { $0.id == setID }) else { return }
+
+            var set = snapshot.exercises[exerciseIndex].sets[setIndex]
+            guard set.weight != weight || set.reps != reps || set.rpe != rpe else {
+                return
+            }
+            set.weight = weight
+            set.reps = reps
+            set.rpe = rpe
+            snapshot.exercises[exerciseIndex].sets[setIndex] = set
+            snapshot.selectedSetID = setID
+            snapshot.selectedSetText = set.displayText(weightUnit: snapshot.weightUnit ?? .kilogram)
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setUpdated,
+                                        exerciseID: exerciseID, setID: setID,
+                                        weight: weight, reps: reps, rpe: rpe))
+        }
+    }
+
+    func toggleSet(workoutID: UUID, exerciseID: UUID, setID: UUID) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
+                  let setIndex = snapshot.exercises[exerciseIndex].sets.firstIndex(where: { $0.id == setID }) else { return }
+
+            var set = snapshot.exercises[exerciseIndex].sets[setIndex]
+            set.completed.toggle()
+            snapshot.exercises[exerciseIndex].sets[setIndex] = set
+            snapshot.selectedSetID = setID
+            snapshot.selectedSetText = set.displayText(weightUnit: snapshot.weightUnit ?? .kilogram)
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setCompletionChanged,
+                                        exerciseID: exerciseID, setID: setID,
+                                        completed: set.completed))
+        }
+    }
+
+    func startRestTimer(workoutID: UUID, duration: TimeInterval = 60) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot, snapshot.workoutID == workoutID else { return }
+            snapshot.restTimerEnd = Date().addingTimeInterval(duration)
+            snapshot.keepRestTimerRunning = true
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            if let manager = self.workoutSessionManager, manager.uuid == workoutID {
+                manager.restTimerEnd = snapshot.restTimerEnd
+                manager.keepRestTimerRunning = true
+            }
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .restTimerUpdated,
+                                        restTimerEnd: snapshot.restTimerEnd,
+                                        keepRestTimerRunning: true))
+        }
+    }
+
+    func stopRestTimer(workoutID: UUID) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot, snapshot.workoutID == workoutID else { return }
+            snapshot.restTimerEnd = nil
+            snapshot.keepRestTimerRunning = false
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            if let manager = self.workoutSessionManager, manager.uuid == workoutID {
+                manager.restTimerEnd = nil
+                manager.keepRestTimerRunning = false
+            }
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .restTimerUpdated,
+                                        restTimerEnd: nil, keepRestTimerRunning: false))
+        }
+    }
+
+    func finishPersistedWorkout(start: Date, end: Date, title: String?, uuid: UUID,
+                                sessionEffort: Double? = nil) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid else { return }
+            snapshot.startDate = start
+            snapshot.endDate = end
+            snapshot.title = title ?? snapshot.title
+            snapshot.sessionEffort = sessionEffort.map { min(max($0, 1), 10) }
+                ?? snapshot.sessionEffort
+            snapshot.updatedAt = Date()
+            snapshot.revision += 1
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: uuid, kind: .workoutFinished,
+                                        startDate: start, endDate: end, title: title,
+                                        sessionEffort: snapshot.sessionEffort,
+                                        snapshot: snapshot))
+        }
+    }
+
+    func discardPersistedWorkout(uuid: UUID) {
+        WorkoutSessionManager.perform {
+            guard let snapshot = self.workoutSnapshot, snapshot.workoutID == uuid else { return }
+            self.enqueue(self.makeEvent(workoutID: uuid, kind: .workoutDiscarded,
+                                        startDate: snapshot.startDate,
+                                        endDate: snapshot.endDate,
+                                        title: snapshot.title))
+            WatchWorkoutStore.shared.clearSnapshot()
+            self.publishSnapshot(nil)
+        }
+    }
+
+    func recordHealthKitFailure(uuid: UUID, message: String) {
+        WorkoutSessionManager.perform {
+            guard let snapshot = self.workoutSnapshot, snapshot.workoutID == uuid else { return }
+            self.enqueue(self.makeEvent(workoutID: uuid, kind: .workoutFailed,
+                                        startDate: snapshot.startDate,
+                                        endDate: snapshot.endDate,
+                                        title: message))
+        }
+    }
+
+    func ensureWorkoutProjection(uuid: UUID, start: Date) {
+        WorkoutSessionManager.perform {
+            var snapshot = self.workoutSnapshot
+            if snapshot?.workoutID != uuid {
+                snapshot = WatchWorkoutSnapshot.placeholder(workoutID: uuid, startDate: start)
+            } else {
+                snapshot?.startDate = start
+                snapshot?.endDate = nil
+                snapshot?.updatedAt = Date()
+            }
+            if let snapshot = snapshot {
+                self.persistSnapshot(snapshot)
+            }
+        }
+    }
+
+    func recoverWorkoutSession(workoutSession: HKWorkoutSession,
+                               completion: (() -> Void)? = nil) {
         WorkoutSessionManager.perform {
             assert(self.workoutSessionManager == nil)
             // TODO: also recover custom start / end dates
             let workoutSessionManager = WorkoutSessionManager(session: workoutSession) // documentation says this must happen immediately
             self.workoutSessionManager = workoutSessionManager
+            if let uuid = workoutSessionManager.uuid {
+                if let snapshot = self.workoutSnapshot,
+                   snapshot.workoutID == uuid {
+                    workoutSessionManager.updateStartDate(snapshot.startDate)
+                    workoutSessionManager.updateEndDate(snapshot.endDate)
+                    workoutSessionManager.restTimerEnd = snapshot.restTimerEnd
+                    workoutSessionManager.keepRestTimerRunning = snapshot.keepRestTimerRunning
+                    workoutSessionManager.selectedSetText = snapshot.selectedSetText
+                } else {
+                    // HealthKit can restore a valid session after the durable
+                    // projection was lost or replaced. Always synthesize a
+                    // minimal editable projection so Finish and Discard remain
+                    // available instead of stranding the workout.
+                    let recovered = WatchWorkoutSnapshot.placeholder(
+                        workoutID: uuid,
+                        startDate: workoutSessionManager.startDate ?? Date())
+                    self.persistSnapshot(recovered)
+                }
+            }
+            completion?()
         }
     }
     
@@ -90,6 +429,20 @@ extension WorkoutSessionManagerStore {
     func startWorkoutSession(start: Date, uuid: UUID) {
         WorkoutSessionManager.perform {
             os_log("Starting workout session start=%@ uuid=%@", start as NSDate, uuid as NSUUID)
+
+            // Keep the durable projection in sync even when the HealthKit
+            // session is later interrupted or the watch is offline.
+            var projection = self.workoutSnapshot
+            if projection?.workoutID != uuid {
+                projection = WatchWorkoutSnapshot.placeholder(workoutID: uuid, startDate: start)
+            } else {
+                projection?.startDate = start
+                projection?.endDate = nil
+                projection?.updatedAt = Date()
+            }
+            if let projection = projection {
+                self.persistSnapshot(projection)
+            }
             
             // 1. make sure we have a workout session manager, create it if necessary
             
@@ -232,14 +585,34 @@ extension WorkoutSessionManagerStore {
         }
     }
     
-    func endWorkoutSession(start: Date, end: Date, title: String?, uuid: UUID) {
+    func endWorkoutSession(start: Date, end: Date, title: String?, uuid: UUID,
+                           sessionEffort: Double? = nil,
+                           notifyPhone: Bool = true) {
         WorkoutSessionManager.perform {
             os_log("Ending workout session start=%@ end=%@ title=%@ uuid=%@", start as NSDate, end as NSDate, title ?? "nil", uuid as NSUUID)
+
+            // Queue the finish before HealthKit finalization so a process
+            // termination cannot lose the explicit user action.
+            if var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                snapshot.startDate = start
+                snapshot.endDate = end
+                snapshot.title = title ?? snapshot.title
+                snapshot.sessionEffort = sessionEffort.map { min(max($0, 1), 10) }
+                    ?? snapshot.sessionEffort
+                snapshot.revision += 1
+                snapshot.updatedAt = Date()
+                self.persistSnapshot(snapshot)
+                if notifyPhone {
+                    self.enqueue(self.makeEvent(workoutID: uuid, kind: .workoutFinished,
+                                                startDate: start, endDate: end, title: title,
+                                                sessionEffort: snapshot.sessionEffort,
+                                                snapshot: snapshot))
+                }
+            }
             
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                // should not happen normally, but maybe could happen?
-                os_log("Attempt to end workout session manager while no workout session manager is set", type: .fault)
+                os_log("No HealthKit session; persisted workout finish locally", type: .info)
+                self.archiveSnapshot(workoutID: uuid)
                 return
             }
             
@@ -274,6 +647,7 @@ extension WorkoutSessionManagerStore {
                     case .success:
                         WKInterfaceDevice.current().play(.stop)
                         self.workoutSessionManager = nil
+                        self.archiveSnapshot(workoutID: uuid)
                         os_log("Successfully ended workout session manager", type: .info)
                     case .failure(let error):
                         WKInterfaceDevice.current().play(.failure)
@@ -281,6 +655,10 @@ extension WorkoutSessionManagerStore {
                         os_log("Discarding workout session manager", type: .info)
                         workoutSessionManager.discard()
                         self.workoutSessionManager = nil
+                        // The finish event was durably queued before HealthKit
+                        // finalization. Archive the editor even if HealthKit
+                        // fails so the user cannot submit the finish twice.
+                        self.archiveSnapshot(workoutID: uuid)
                     }
                 }
             }
@@ -290,9 +668,14 @@ extension WorkoutSessionManagerStore {
     func updateWorkoutSessionStart(start: Date, uuid: UUID) {
         WorkoutSessionManager.perform {
             os_log("Updating workout session start=%@ uuid=%@", start as NSDate, uuid as NSUUID)
+            if var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                snapshot.startDate = start
+                snapshot.revision += 1
+                snapshot.updatedAt = Date()
+                self.persistSnapshot(snapshot)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                os_log("Attempt to update start time on workout while no workout session manager is set", type: .fault)
+                os_log("No HealthKit session; persisted start time locally", type: .info)
                 return
             }
             
@@ -314,9 +697,14 @@ extension WorkoutSessionManagerStore {
     func updateWorkoutSessionEnd(end: Date?, uuid: UUID) {
         WorkoutSessionManager.perform {
             os_log("Updating workout session end=%@ uuid=%@", (end as NSDate?) ?? "nil", uuid as NSUUID)
+            if var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                snapshot.endDate = end
+                snapshot.revision += 1
+                snapshot.updatedAt = Date()
+                self.persistSnapshot(snapshot)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                print("warning: attempt to update end time on workout while no workout session manager is set")
+                os_log("No HealthKit session; persisted end time locally", type: .info)
                 return
             }
             
@@ -336,13 +724,21 @@ extension WorkoutSessionManagerStore {
         }
     }
     
-    func discardWorkoutSession(uuid: UUID) {
+    func discardWorkoutSession(uuid: UUID, notifyPhone: Bool = true) {
         WorkoutSessionManager.perform {
             os_log("Discarding workout session uuid=%@", uuid as NSUUID)
+            if let snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                if notifyPhone {
+                    self.enqueue(self.makeEvent(workoutID: uuid, kind: .workoutDiscarded,
+                                                startDate: snapshot.startDate,
+                                                endDate: snapshot.endDate,
+                                                title: snapshot.title))
+                }
+                WatchWorkoutStore.shared.clearSnapshot()
+                self.publishSnapshot(nil)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                // should not happen normally, but can happen
-                print("warning: attempt to discard workout while no workout session manager is set")
+                os_log("No HealthKit session; discarded persisted workout locally", type: .info)
                 return
             }
             
@@ -396,10 +792,16 @@ extension WorkoutSessionManagerStore {
     func discardWorkoutSession() {
         WorkoutSessionManager.perform {
             os_log("Discarding workout session")
+            if let snapshot = self.workoutSnapshot {
+                self.enqueue(self.makeEvent(workoutID: snapshot.workoutID, kind: .workoutDiscarded,
+                                            startDate: snapshot.startDate,
+                                            endDate: snapshot.endDate,
+                                            title: snapshot.title))
+                WatchWorkoutStore.shared.clearSnapshot()
+                self.publishSnapshot(nil)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                // should not happen normally, but can happen
-                print("warning: attempt to discard workout session while no workout session manager is set")
+                os_log("No HealthKit session; discarded persisted workout locally", type: .info)
                 return
             }
             
@@ -412,10 +814,17 @@ extension WorkoutSessionManagerStore {
     func updateWorkoutSessionRestTimer(end: Date?, keepRunning: Bool?, uuid: UUID) {
         WorkoutSessionManager.perform {
             os_log("Updating workout session rest timer end=%@ keepRunning=%@ uuid=%@", (end as NSDate?) ?? "nil", keepRunning.map { String(describing: $0) } ?? "nil", uuid as NSUUID)
+            if var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                snapshot.restTimerEnd = end
+                if let keepRunning = keepRunning {
+                    snapshot.keepRestTimerRunning = keepRunning
+                }
+                snapshot.revision += 1
+                snapshot.updatedAt = Date()
+                self.persistSnapshot(snapshot)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                // should not happen normally, but can happen
-                print("warning: attempt to update rest timer while no workout session manager is set")
+                os_log("No HealthKit session; persisted rest timer locally", type: .info)
                 return
             }
             
@@ -435,16 +844,21 @@ extension WorkoutSessionManagerStore {
             if let keepRunning = keepRunning {
                 workoutSessionManager.keepRestTimerRunning = keepRunning
             }
+
         }
     }
     
     func updateWorkoutSessionSelectedSetText(text: String?, uuid: UUID) {
         WorkoutSessionManager.perform {
             os_log("Updating workout session selected text=%@ uuid=%@", text ?? "nil", uuid as NSUUID)
+            if var snapshot = self.workoutSnapshot, snapshot.workoutID == uuid {
+                snapshot.selectedSetText = text
+                snapshot.revision += 1
+                snapshot.updatedAt = Date()
+                self.persistSnapshot(snapshot)
+            }
             guard let workoutSessionManager = self.workoutSessionManager else {
-                // invalid
-                // should not happen normally, but can happen
-                print("warning: attempt to update selected set text while no workout session manager is set")
+                os_log("No HealthKit session; persisted selected set text locally", type: .info)
                 return
             }
             

@@ -25,6 +25,12 @@ class WorkoutDataMigrationTests: XCTestCase {
     }
     
     override func tearDownWithError() throws {
+        if let coordinator = persistentContainer?.persistentStoreCoordinator {
+            for store in coordinator.persistentStores {
+                try coordinator.remove(store)
+            }
+        }
+        persistentContainer = nil
         try wipeTestFolder()
     }
     
@@ -90,6 +96,16 @@ extension WorkoutDataMigrationTests {
         // sanity check that the store files need migration
         let metadata = try! NSPersistentStoreCoordinator.metadataForPersistentStore(ofType: NSSQLiteStoreType, at: storeURL, options: nil)
         precondition(WorkoutDataStorage.model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata) == false)
+
+        // Production performs a deliberate staged migration so the legacy
+        // UUID/exercise-ID policies run before the additive current schema.
+        try! WorkoutDataStorage.migrateStoreIfNeeded(at: storeURL)
+        let migratedMetadata = try! NSPersistentStoreCoordinator.metadataForPersistentStore(
+            ofType: NSSQLiteStoreType,
+            at: storeURL,
+            options: nil
+        )
+        precondition(WorkoutDataStorage.model.isConfiguration(withName: nil, compatibleWithStoreMetadata: migratedMetadata))
         
         let description = NSPersistentStoreDescription(url: storeURL)
         description.shouldMigrateStoreAutomatically = true

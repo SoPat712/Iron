@@ -31,6 +31,22 @@
 				<string>com.kabouzeid.ironbackup</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeExtensions</key>
+			<array>
+				<string>csv</string>
+			</array>
+			<key>CFBundleTypeName</key>
+			<string>Hevy-Compatible Workout Data</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>public.comma-separated-values-text</string>
+			</array>
+		</dict>
 	</array>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
@@ -53,9 +69,11 @@
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Iron can display your bodyweight next to the sets of a previous workout.</string>
+	<string>Iron reads your body weight, height, body fat, waist, heart rate, and workout data to keep your training history and measurements in sync.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Iron can save your finished workouts to Apple Health.</string>
+	<string>Iron saves completed strength workouts and supported body measurements to Apple Health.</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSUbiquitousContainers</key>
 	<dict>
 		<key>iCloud.com.kabouzeid.Iron</key>

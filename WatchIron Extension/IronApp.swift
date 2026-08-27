@@ -30,7 +30,6 @@ class AppDelegate: NSObject, WKApplicationDelegate {
         // Perform any final initialization of your application.
         Self.logger.log("Checking whether active workout session can be recovered")
         handleActiveWorkoutRecovery() // somehow this isn't automatically called by the system?! last checked watchOS 8
-        PhoneConnectionManager.shared.activateSession()
         _ = NotificationManager.shared
     }
 
@@ -40,13 +39,16 @@ class AppDelegate: NSObject, WKApplicationDelegate {
             // Use a switch statement to check the task type
             switch task {
             case let backgroundTask as WKApplicationRefreshBackgroundTask:
-                // Be sure to complete the background task once you’re done.
+                refreshConnectivity()
                 backgroundTask.setTaskCompletedWithSnapshot(false)
             case let snapshotTask as WKSnapshotRefreshBackgroundTask:
                 // Snapshot tasks have a unique completion call, make sure to set your expiration date
                 snapshotTask.setTaskCompleted(restoredDefaultState: true, estimatedSnapshotExpiration: Date.distantFuture, userInfo: nil)
             case let connectivityTask as WKWatchConnectivityRefreshBackgroundTask:
-                // Be sure to complete the connectivity task once you’re done.
+                // Re-attach the delegate and drain Iron's durable event outbox
+                // before releasing the connectivity wake-up. This lets edits
+                // made offline progress without requiring a foreground launch.
+                refreshConnectivity()
                 connectivityTask.setTaskCompletedWithSnapshot(false)
             case let urlSessionTask as WKURLSessionRefreshBackgroundTask:
                 // Be sure to complete the URL session task once you’re done.
@@ -63,6 +65,14 @@ class AppDelegate: NSObject, WKApplicationDelegate {
             }
         }
     }
+
+    private func refreshConnectivity() {
+        let connection = PhoneConnectionManager.shared
+        if !connection.isActivated {
+            connection.activateSession()
+        }
+        connection.flushEventOutbox()
+    }
     
     func handleActiveWorkoutRecovery() {
         Self.logger.log("Recovering active workout session")
@@ -73,10 +83,13 @@ class AppDelegate: NSObject, WKApplicationDelegate {
                 } else {
                     Self.logger.info("No active workout session to recover")
                 }
+                PhoneConnectionManager.shared.activateSession()
                 return
             }
             Self.logger.info("Successfully recovered active workout session")
-            WorkoutSessionManagerStore.shared.recoverWorkoutSession(workoutSession: workoutSession)
+            WorkoutSessionManagerStore.shared.recoverWorkoutSession(workoutSession: workoutSession) {
+                PhoneConnectionManager.shared.activateSession()
+            }
         }
     }
     

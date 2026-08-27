@@ -22,7 +22,7 @@ public class WorkoutRoutine: NSManagedObject, Codable {
     public var fallbackTitle: String? {
         guard let index = workoutPlan?.workoutRoutines?.index(of: self), index != NSNotFound else { return nil }
         guard let letters = toLetters(from: index) else { return nil }
-        return "Routine \(letters)"
+        return "Workout \(letters)"
     }
     
     private func toLetters(from index: Int) -> String? {
@@ -47,7 +47,50 @@ public class WorkoutRoutine: NSManagedObject, Codable {
 
     
     public var displayTitle: String {
-        title ?? fallbackTitle ?? "Workout Routine"
+        title ?? fallbackTitle ?? "Workout"
+    }
+
+    /// Creates a user-visible plan copy while preserving exercises, targets,
+    /// rest timers, set tags, and superset relationships.
+    public func duplicate(context: NSManagedObjectContext) -> WorkoutRoutine {
+        let copy = WorkoutRoutine.create(context: context)
+        copy.title = "\(displayTitle) Copy"
+        copy.comment = comment
+        copy.workoutPlan = workoutPlan
+
+        let sourceExercises = workoutRoutineExercises?.array
+            .compactMap { $0 as? WorkoutRoutineExercise } ?? []
+        let copiedPairs = sourceExercises.map { source -> (WorkoutRoutineExercise, WorkoutRoutineExercise) in
+            let exerciseCopy = WorkoutRoutineExercise.create(context: context)
+            exerciseCopy.exerciseUuid = source.exerciseUuid
+            exerciseCopy.comment = source.comment
+            exerciseCopy.restTimerDurationValue = source.restTimerDurationValue
+            return (source, exerciseCopy)
+        }
+        let copiedExerciseIDBySourceID: [UUID: UUID] = Dictionary(uniqueKeysWithValues:
+            copiedPairs.compactMap { source, exerciseCopy in
+                guard let sourceID = source.uuid, let copyID = exerciseCopy.uuid else { return nil }
+                return (sourceID, copyID)
+            })
+
+        for (source, exerciseCopy) in copiedPairs {
+            exerciseCopy.supersetUuid = source.supersetUuid.flatMap { copiedExerciseIDBySourceID[$0] }
+            let sourceSets = source.workoutRoutineSets?.array
+                .compactMap { $0 as? WorkoutRoutineSet } ?? []
+            let copiedSets = sourceSets.map { sourceSet -> WorkoutRoutineSet in
+                let setCopy = WorkoutRoutineSet.create(context: context)
+                setCopy.maxRepetitions = sourceSet.maxRepetitions
+                setCopy.minRepetitions = sourceSet.minRepetitions
+                setCopy.tagValue = sourceSet.tagValue
+                setCopy.comment = sourceSet.comment
+                setCopy.weightValue = sourceSet.weightValue
+                setCopy.durationValue = sourceSet.durationValue
+                return setCopy
+            }
+            exerciseCopy.workoutRoutineSets = NSOrderedSet(array: copiedSets)
+        }
+        copy.workoutRoutineExercises = NSOrderedSet(array: copiedPairs.map(\.1))
+        return copy
     }
     
     public func subtitle(in exercises: [Exercise]) -> String {
@@ -56,13 +99,17 @@ public class WorkoutRoutine: NSManagedObject, Codable {
             .compactMap { $0.exercise(in: exercises)?.title }
             .joined(separator: ", ") ?? ""
         
-        return s.isEmpty ? "Empty" : s
+        return s.isEmpty ? "No exercises" : s
     }
     
     public func createWorkout(context: NSManagedObjectContext) -> Workout {
         let workout = Workout.create(context: context)
+        // Keep the identity of the saved workout that launched this session.
+        // The relationship remains useful for history and updating targets, but
+        // the active session should not lose its visible name if that relationship
+        // is refreshed, migrated, or renamed later.
+        workout.title = displayTitle
         workout.comment = self.comment
-        // NOTE: don't set title here, it should be inferred automatically by the relation ship
         
         if let workoutRoutineExercises = workoutRoutineExercises?.compactMap({ $0 as? WorkoutRoutineExercise }) {
             // copy the exercises
@@ -71,6 +118,8 @@ public class WorkoutRoutine: NSManagedObject, Codable {
                 workout.addToWorkoutExercises(workoutExercise)
                 workoutExercise.exerciseUuid = workoutRoutineExercise.exerciseUuid
                 workoutExercise.comment = workoutRoutineExercise.comment
+                workoutExercise.restTimerDurationValue = workoutRoutineExercise.restTimerDurationValue
+                workoutExercise.supersetUuid = workoutRoutineExercise.supersetUuid
                 
                 if let workoutRoutineSets = workoutRoutineExercise.workoutRoutineSets?.compactMap({ $0 as? WorkoutRoutineSet }) {
                     // copy the sets
@@ -82,6 +131,8 @@ public class WorkoutRoutine: NSManagedObject, Codable {
                         workoutSet.minTargetRepetitions = workoutRoutineSet.minRepetitions
                         workoutSet.tagValue = workoutRoutineSet.tagValue
                         workoutSet.comment = workoutRoutineSet.comment
+                        workoutSet.weightValue = workoutRoutineSet.weightValue ?? 0
+                        workoutSet.durationValue = workoutRoutineSet.durationValue
                     }
                 }
             }

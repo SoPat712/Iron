@@ -79,6 +79,16 @@ public class WorkoutSet: NSManagedObject, Codable {
             rpe = RPE.allowedValues.contains(newValue) ? newValue : 0
         }
     }
+
+    public var durationValue: TimeInterval? {
+        get { duration > 0 ? duration : nil }
+        set { duration = max(newValue ?? 0, 0) }
+    }
+
+    public var distanceValue: Double? {
+        get { distance > 0 ? distance : nil }
+        set { distance = max(newValue ?? 0, 0) }
+    }
     
     // MARK: Derived properties
     
@@ -134,6 +144,9 @@ public class WorkoutSet: NSManagedObject, Codable {
         case rpe
         case tag
         case comment
+        case duration
+        case distance
+        case completedAt
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -154,6 +167,9 @@ public class WorkoutSet: NSManagedObject, Codable {
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
         minTargetRepetitionsValue = try container.decodeIfPresent(Int16.self, forKey: .minTargetRepetitions)
         maxTargetRepetitionsValue = try container.decodeIfPresent(Int16.self, forKey: .maxTargetRepetitions)
+        durationValue = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
+        distanceValue = try container.decodeIfPresent(Double.self, forKey: .distance)
+        completedAt = try container.decodeIfPresent(Date.self, forKey: .completedAt)
         isCompleted = true
     }
     
@@ -167,6 +183,9 @@ public class WorkoutSet: NSManagedObject, Codable {
         try container.encodeIfPresent(comment, forKey: .comment)
         try container.encodeIfPresent(minTargetRepetitionsValue, forKey: .minTargetRepetitions)
         try container.encodeIfPresent(maxTargetRepetitionsValue, forKey: .maxTargetRepetitions)
+        try container.encodeIfPresent(durationValue, forKey: .duration)
+        try container.encodeIfPresent(distanceValue, forKey: .distance)
+        try container.encodeIfPresent(completedAt, forKey: .completedAt)
     }
 }
 

@@ -2,57 +2,81 @@
 //  ActivitySheet.swift
 //  Iron
 //
-//  Created by Karim Abou Zeid on 02.04.20.
-//  Copyright © 2020 Karim Abou Zeid Software. All rights reserved.
+//  Presents the system share controller through SwiftUI's sheet coordinator.
 //
 
 import SwiftUI
 
-struct ActivitySheet: View {
+extension View {
+    func ironActivitySheet(
+        activityItems: Binding<[Any]?>,
+        applicationActivities: [UIActivity]? = nil
+    ) -> some View {
+        modifier(
+            IronActivitySheetModifier(
+                activityItems: activityItems,
+                applicationActivities: applicationActivities
+            )
+        )
+    }
+}
+
+private struct IronActivitySheetModifier: ViewModifier {
     @Binding var activityItems: [Any]?
-    var applicationActivities: [UIActivity]?
-    
-    var body: some View {
-        activityItems.map { _ in
-            ActivityViewController(activityItems: $activityItems, applicationActivities: applicationActivities)
-        }
+    let applicationActivities: [UIActivity]?
+
+    private var isPresented: Binding<Bool> {
+        Binding(
+            get: { activityItems != nil },
+            set: { isPresented in
+                if !isPresented {
+                    activityItems = nil
+                }
+            }
+        )
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: isPresented, onDismiss: { activityItems = nil }) {
+                if let activityItems {
+                    ActivityViewController(
+                        activityItems: activityItems,
+                        applicationActivities: applicationActivities,
+                        onComplete: { self.activityItems = nil }
+                    )
+                    .presentationDetents([.medium, .large])
+                    .presentationDragIndicator(.visible)
+                }
+            }
     }
 }
 
 private struct ActivityViewController: UIViewControllerRepresentable {
-    @Binding var activityItems: [Any]?
+    let activityItems: [Any]
     let applicationActivities: [UIActivity]?
+    let onComplete: () -> Void
 
-    func makeUIViewController(context: Context) -> UIActivityViewControllerHost {
-        let result = UIActivityViewControllerHost()
-        result.activityItems = activityItems ?? []
-        result.applicationActivities = applicationActivities
-        result.completionWithItemsHandler = { (activityType, completed, returnedItems, error) in
-            self.activityItems = nil
+    func makeUIViewController(context: Context) -> UIActivityViewController {
+        let controller = UIActivityViewController(
+            activityItems: activityItems,
+            applicationActivities: applicationActivities
+        )
+        controller.completionWithItemsHandler = { _, _, _, _ in
+            DispatchQueue.main.async(execute: onComplete)
         }
-        return result
+
+        // The system uses this anchor only on iPad. A concrete rect prevents
+        // UIActivityViewController from raising an exception there.
+        controller.popoverPresentationController?.sourceView = controller.view
+        controller.popoverPresentationController?.sourceRect = CGRect(
+            x: controller.view.bounds.midX,
+            y: controller.view.bounds.maxY,
+            width: 1,
+            height: 1
+        )
+        return controller
     }
 
-    func updateUIViewController(_ uiViewController: UIActivityViewControllerHost, context: Context) {
-    }
-}
-
-private class UIActivityViewControllerHost: UIViewController {
-    var activityItems = [Any]()
-    var applicationActivities: [UIActivity]?
-    var completionWithItemsHandler: UIActivityViewController.CompletionWithItemsHandler? = nil
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        presentActivityViewController()
-    }
-
-    private func presentActivityViewController() {
-        let activityViewController = UIActivityViewController(activityItems: activityItems, applicationActivities: applicationActivities)
-
-        activityViewController.completionWithItemsHandler = completionWithItemsHandler
-        activityViewController.popoverPresentationController?.sourceView = self.view // so that iPads won't crash
-
-        self.present(activityViewController, animated: true, completion: nil)
-    }
+    func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }

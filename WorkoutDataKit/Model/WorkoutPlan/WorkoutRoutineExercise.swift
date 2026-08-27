@@ -55,6 +55,11 @@ public class WorkoutRoutineExercise: NSManagedObject, Codable {
         
         return "\(workoutRoutineSets.count) sets"
     }
+
+    public var restTimerDurationValue: TimeInterval? {
+        get { restTimerDuration > 0 ? restTimerDuration : nil }
+        set { restTimerDuration = max(newValue ?? 0, 0) }
+    }
     
     public func exercise(in exercises: [Exercise]) -> Exercise? {
         ExerciseStore.find(in: exercises, with: exerciseUuid)
@@ -67,6 +72,8 @@ public class WorkoutRoutineExercise: NSManagedObject, Codable {
         case exerciseName
         case comment
         case sets
+        case restTimerDuration
+        case supersetUuid
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -82,6 +89,8 @@ public class WorkoutRoutineExercise: NSManagedObject, Codable {
         uuid = try container.decodeIfPresent(UUID.self, forKey: .uuid) ?? UUID() // make sure we always have an UUID
         exerciseUuid = try container.decodeIfPresent(UUID.self, forKey: .exerciseUuid)
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
+        restTimerDurationValue = try container.decodeIfPresent(TimeInterval.self, forKey: .restTimerDuration)
+        supersetUuid = try container.decodeIfPresent(UUID.self, forKey: .supersetUuid)
         workoutRoutineSets = NSOrderedSet(array: try container.decodeIfPresent([WorkoutRoutineSet].self, forKey: .sets) ?? [])
     }
     
@@ -90,6 +99,8 @@ public class WorkoutRoutineExercise: NSManagedObject, Codable {
         try container.encode(uuid ?? UUID(), forKey: .uuid)
         try container.encodeIfPresent(exerciseUuid, forKey: .exerciseUuid)
         try container.encodeIfPresent(comment, forKey: .comment)
+        try container.encodeIfPresent(restTimerDurationValue, forKey: .restTimerDuration)
+        try container.encodeIfPresent(supersetUuid, forKey: .supersetUuid)
         try container.encodeIfPresent(workoutRoutineSets?.array.compactMap { $0 as? WorkoutRoutineSet }, forKey: .sets)
         
         if let exercisesKey = CodingUserInfoKey.exercisesKey,

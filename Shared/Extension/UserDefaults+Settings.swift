@@ -11,6 +11,7 @@ import Foundation
 extension UserDefaults {
     enum SettingsKeys: String, CaseIterable {
         case weightUnit
+        case ironAppearance
         case defaultRestTime
         case defaultRestTimeDumbbellBased
         case defaultRestTimeBarbellBased
@@ -33,6 +34,19 @@ extension UserDefaults {
                 self.weightUnit = fallback // safe the new weight unit
                 return fallback
             }
+        }
+    }
+
+    var ironAppearance: IronAppearance {
+        set {
+            self.set(newValue.rawValue, forKey: SettingsKeys.ironAppearance.rawValue)
+        }
+        get {
+            guard let rawValue = self.string(forKey: SettingsKeys.ironAppearance.rawValue),
+                  let appearance = IronAppearance(rawValue: rawValue) else {
+                return .system
+            }
+            return appearance
         }
     }
     

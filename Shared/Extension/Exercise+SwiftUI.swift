@@ -25,6 +25,8 @@ extension Exercise {
             return .green
         case "chest":
             return .red
+        case "cardio":
+            return .pink
         default:
             return .secondary
         }
@@ -44,6 +46,8 @@ extension Exercise {
             return Image(systemName: "l.circle.fill")
         case "chest":
             return Image(systemName: "c.circle.fill")
+        case "cardio":
+            return Image(systemName: "heart.circle.fill")
         default:
             return Image(systemName: "o.circle.fill")
         }

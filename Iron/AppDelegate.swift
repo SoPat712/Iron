@@ -24,6 +24,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         WatchConnectionManager.shared.activateSession()
         Shortcuts.setShortcutSuggestions()
+        ExerciseMediaStore.shared.prefetchCatalogue(from: ExerciseStore.shared.exercises)
 //        Shortcuts.setRelevantShortcuts() // This doesn't work, the watch shows the suggestion but gets an error when executed (tested with iOS 13.4)
         if #available(iOS 14.0, *) {
             WidgetKind.lastWorkout.reloadTimelines()
@@ -39,7 +40,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         }
         return true
     }
-    
+
     func applicationWillTerminate(_ application: UIApplication) {
         if SettingsStore.shared.autoBackup {
             let dispatchGroup = DispatchGroup()
@@ -93,6 +94,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
                     })
                     
                     sceneDelegate?.sceneState.selectedTab = .workout
+                    sceneDelegate?.sceneState.isCurrentWorkoutExpanded = true
                     
                     return .init(code: .success, userActivity: nil)
                 } catch {

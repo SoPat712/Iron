@@ -39,6 +39,11 @@ public class WorkoutExercise: NSManagedObject, Codable {
     public var historyFetchRequest: NSFetchRequest<WorkoutExercise> {
         WorkoutExercise.historyFetchRequest(of: exerciseUuid, until: workout?.start)
     }
+
+    public var restTimerDurationValue: TimeInterval? {
+        get { restTimerDuration > 0 ? restTimerDuration : nil }
+        set { restTimerDuration = max(newValue ?? 0, 0) }
+    }
     
     // MARK: Derived properties
     
@@ -83,6 +88,8 @@ public class WorkoutExercise: NSManagedObject, Codable {
         case exerciseName
         case comment
         case sets
+        case restTimerDuration
+        case supersetUuid
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -98,6 +105,8 @@ public class WorkoutExercise: NSManagedObject, Codable {
         uuid = try container.decodeIfPresent(UUID.self, forKey: .uuid) ?? UUID() // make sure we always have an UUID
         exerciseUuid = try container.decodeIfPresent(UUID.self, forKey: .exerciseUuid)
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
+        restTimerDurationValue = try container.decodeIfPresent(TimeInterval.self, forKey: .restTimerDuration)
+        supersetUuid = try container.decodeIfPresent(UUID.self, forKey: .supersetUuid)
         workoutSets = NSOrderedSet(array: try container.decodeIfPresent([WorkoutSet].self, forKey: .sets) ?? [])
     }
     
@@ -106,6 +115,8 @@ public class WorkoutExercise: NSManagedObject, Codable {
         try container.encode(uuid ?? UUID(), forKey: .uuid)
         try container.encodeIfPresent(exerciseUuid, forKey: .exerciseUuid)
         try container.encodeIfPresent(comment, forKey: .comment)
+        try container.encodeIfPresent(restTimerDurationValue, forKey: .restTimerDuration)
+        try container.encodeIfPresent(supersetUuid, forKey: .supersetUuid)
         try container.encodeIfPresent(workoutSets?.array.compactMap { $0 as? WorkoutSet }, forKey: .sets)
         
         if let exercisesKey = CodingUserInfoKey.exercisesKey,

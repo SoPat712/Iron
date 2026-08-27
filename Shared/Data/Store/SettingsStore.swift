@@ -10,6 +10,46 @@ import Foundation
 import SwiftUI
 import Combine
 
+enum IronAppearance: String, CaseIterable, Identifiable {
+    case system
+    case light
+    case dark
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .system: return "System"
+        case .light: return "Light"
+        case .dark: return "Dark"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .system: return "Match your iPhone appearance"
+        case .light: return "Always use Light appearance"
+        case .dark: return "Always use Dark appearance"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .system: return "iphone"
+        case .light: return "sun.max.fill"
+        case .dark: return "moon.fill"
+        }
+    }
+
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .system: return nil
+        case .light: return .light
+        case .dark: return .dark
+        }
+    }
+}
+
 final class SettingsStore: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     
@@ -26,6 +66,16 @@ final class SettingsStore: ObservableObject {
         set {
             self.objectWillChange.send()
             userDefaults.weightUnit = newValue
+        }
+    }
+
+    var appearance: IronAppearance {
+        get {
+            userDefaults.ironAppearance
+        }
+        set {
+            objectWillChange.send()
+            userDefaults.ironAppearance = newValue
         }
     }
     

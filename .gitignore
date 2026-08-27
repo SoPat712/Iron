@@ -1,5 +1,7 @@
 # Created by https://www.gitignore.io/api/xcode
 
+.DS_Store
+
 ### Xcode ###
 # Xcode
 #
@@ -7,6 +9,7 @@
 
 ## Build generated
 build/
+.build/
 DerivedData/
 
 ## Various settings

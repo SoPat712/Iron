@@ -14,7 +14,7 @@ extension WorkoutRoutineSet {
 
 
 public class WorkoutRoutineSet: NSManagedObject, Codable {
-    public static let supportedTags = [WorkoutSetTag.dropSet]
+    public static let supportedTags = [WorkoutSetTag.warmUp, WorkoutSetTag.dropSet]
     
     public class func create(context: NSManagedObjectContext) -> WorkoutRoutineSet {
         let workoutRoutineSet = WorkoutRoutineSet(context: context)
@@ -53,6 +53,16 @@ public class WorkoutRoutineSet: NSManagedObject, Codable {
             tag = newValue?.rawValue
         }
     }
+
+    public var weightValue: Double? {
+        get { weight > 0 ? weight : nil }
+        set { weight = max(newValue ?? 0, 0) }
+    }
+
+    public var durationValue: TimeInterval? {
+        get { duration > 0 ? duration : nil }
+        set { duration = max(newValue ?? 0, 0) }
+    }
     
     // MARK: - Codable
     
@@ -64,6 +74,7 @@ public class WorkoutRoutineSet: NSManagedObject, Codable {
         case rpe
         case tag
         case comment
+        case duration
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -81,6 +92,8 @@ public class WorkoutRoutineSet: NSManagedObject, Codable {
         maxRepetitionsValue = try container.decodeIfPresent(Int16.self, forKey: .maxRepetitions)
         tagValue = WorkoutSetTag(rawValue: try container.decodeIfPresent(String.self, forKey: .tag) ?? "")
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
+        weightValue = try container.decodeIfPresent(Double.self, forKey: .weight)
+        durationValue = try container.decodeIfPresent(TimeInterval.self, forKey: .duration)
     }
     
     public func encode(to encoder: Encoder) throws {
@@ -90,5 +103,7 @@ public class WorkoutRoutineSet: NSManagedObject, Codable {
         try container.encodeIfPresent(maxRepetitionsValue, forKey: .maxRepetitions)
         try container.encodeIfPresent(tagValue?.rawValue, forKey: .tag)
         try container.encodeIfPresent(comment, forKey: .comment)
+        try container.encodeIfPresent(weightValue, forKey: .weight)
+        try container.encodeIfPresent(durationValue, forKey: .duration)
     }
 }

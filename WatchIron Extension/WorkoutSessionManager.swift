@@ -427,7 +427,13 @@ extension WorkoutSessionManager: HKWorkoutSessionDelegate {
     func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         os_log("Workout session did fail with error: %@", error.localizedDescription)
         
-        // TODO: Notify phone about this, so the phone can clear the watchWorkoutUuid and also save the workout when it finishes. Or display the error on the watch and allow to discard or save.
+        // Keep the iPhone's durable workout state informed before discarding
+        // HealthKit's failed session. The local projection remains available
+        // for the user to retry or discard explicitly.
+        if let uuid = uuid {
+            WorkoutSessionManagerStore.shared.recordHealthKitFailure(
+                uuid: uuid, message: error.localizedDescription)
+        }
         WorkoutSessionManager.perform {
             self.discard()
         }

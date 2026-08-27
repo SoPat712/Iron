@@ -63,10 +63,11 @@ public class Workout: NSManagedObject, Codable {
     }
 
     public func workoutPlanAndRoutineTitle() -> String? {
-        if let workoutRoutineTitle = workoutRoutine?.displayTitle, let workoutPlanTitle = workoutRoutine?.workoutPlan?.displayTitle {
-            return workoutPlanTitle + " - " + workoutRoutineTitle
-        }
-        return nil
+        // `WorkoutPlan` is now only the backwards-compatible persistence
+        // container. The saved item users create and name is the Plan itself,
+        // so exposing both levels produced titles such as
+        // "Workouts - Workout A" throughout the active workout UI.
+        workoutRoutine?.displayTitle
     }
     
     public func generatedTitle(in exercises: [Exercise]) -> String? {
@@ -109,6 +110,11 @@ public class Workout: NSManagedObject, Codable {
         return end.timeIntervalSince(start)
     }
 
+    public var sessionEffortValue: Double? {
+        get { (1.0...10.0).contains(sessionEffort) ? sessionEffort : nil }
+        set { sessionEffort = newValue.map { min(max($0, 1), 10) } ?? 0 }
+    }
+
     public var numberOfCompletedSets: Int? {
         workoutExercises?
             .map { $0 as! WorkoutExercise }
@@ -134,6 +140,7 @@ public class Workout: NSManagedObject, Codable {
         case end
         case exercises
         case routineUuid
+        case sessionEffort
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -151,6 +158,7 @@ public class Workout: NSManagedObject, Codable {
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
         start = try container.decode(Date.self, forKey: .start)
         end = try container.decode(Date.self, forKey: .end)
+        sessionEffortValue = try container.decodeIfPresent(Double.self, forKey: .sessionEffort)
         workoutExercises = NSOrderedSet(array: try container.decodeIfPresent([WorkoutExercise].self, forKey: .exercises) ?? [])
         
         if let routineUuid = try container.decodeIfPresent(UUID.self, forKey: .routineUuid) {
@@ -175,6 +183,7 @@ public class Workout: NSManagedObject, Codable {
         try container.encode(safeEnd, forKey: .end)
         try container.encodeIfPresent(workoutExercises?.array.compactMap { $0 as? WorkoutExercise }, forKey: .exercises)
         try container.encodeIfPresent(workoutRoutine?.uuid, forKey: .routineUuid)
+        try container.encodeIfPresent(sessionEffortValue, forKey: .sessionEffort)
     }
 }
 

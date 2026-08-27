@@ -13,16 +13,29 @@ struct MuscleGroupSectionedExercisesView : View {
     var exerciseGroups: [ExerciseGroup]
     
     var body: some View {
-        List {
-            ForEach(exerciseGroups) { exerciseGroup in
-                Section(header: Text(exerciseGroup.title.capitalized)) {
+        ZStack {
+            IronScreenBackground()
+            ScrollView(showsIndicators: false) {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(exerciseGroups) { exerciseGroup in
+                        Text(exerciseGroup.title.capitalized)
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(IronTheme.primaryText)
+                            .padding(.horizontal, IronTheme.horizontalPadding)
+                            .padding(.top, 20)
+                            .padding(.bottom, 8)
+
                     ForEach(exerciseGroup.exercises) { exercise in
-                        NavigationLink(exercise.title, destination: ExerciseDetailView(exercise: exercise))
+                        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                            ExerciseLibraryRow(exercise: exercise)
+                        }
+                            .buttonStyle(.plain)
+                        }
                     }
                 }
+                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
             }
         }
-        .listStyleCompat_InsetGroupedListStyle()
     }
 }
 

@@ -9,6 +9,9 @@
 import Foundation
 
 public struct Exercise: Hashable {
+    public static let exerciseMediaProvider = "ExerciseDB V1"
+    public static let mediaAttribution = "© Gym Visual — gymvisual.com"
+
     public let uuid: UUID // we use this for actually identifying the exercise
     public let everkineticId: Int // this is the everkinetic exercise id or 10000 if it's a custom exercise
     public let title: String
@@ -21,6 +24,57 @@ public struct Exercise: Hashable {
     public let tips: [String]
     public let references: [String]
     public let pdfPaths: [String]
+    public let imageFilename: String?
+    public let animationFilename: String?
+
+    public init(uuid: UUID,
+                everkineticId: Int,
+                title: String,
+                alias: [String],
+                description: String?,
+                primaryMuscle: [String],
+                secondaryMuscle: [String],
+                equipment: [String],
+                steps: [String],
+                tips: [String],
+                references: [String],
+                pdfPaths: [String],
+                imageFilename: String? = nil,
+                animationFilename: String? = nil) {
+        self.uuid = uuid
+        self.everkineticId = everkineticId
+        self.title = title
+        self.alias = alias
+        self.description = description
+        self.primaryMuscle = primaryMuscle
+        self.secondaryMuscle = secondaryMuscle
+        self.equipment = equipment
+        self.steps = steps
+        self.tips = tips
+        self.references = references
+        self.pdfPaths = pdfPaths
+        self.imageFilename = imageFilename
+        self.animationFilename = animationFilename
+    }
+
+    public var imageURL: URL? {
+        // The free ExerciseDB V1 API exposes GIFs rather than separate stills.
+        // AsyncImage renders the first frame as a lightweight list thumbnail.
+        Self.mediaURL(filename: animationFilename ?? imageFilename)
+    }
+
+    public var animationURL: URL? {
+        Self.mediaURL(filename: animationFilename)
+    }
+
+    private static func mediaURL(filename: String?) -> URL? {
+        guard let filename = filename, !filename.isEmpty else { return nil }
+        let basename = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
+        guard let separator = basename.firstIndex(of: "-") else { return nil }
+        let exerciseID = String(basename[basename.index(after: separator)...])
+        guard !exerciseID.isEmpty else { return nil }
+        return URL(string: "https://static.exercisedb.dev/media/\(exerciseID).gif")
+    }
 }
 
 // MARK: - Muscle Names
@@ -52,42 +106,82 @@ extension Exercise {
     
     private static var commonMuscleNames: [String : String] = [
         "abdominals": "abdominals",
+        "abs": "abdominals",
+        "abductors": "abductors",
+        "adductors": "adductors",
         "biceps brachii": "biceps",
+        "biceps": "biceps",
         "deltoid": "shoulders",
+        "deltoids": "shoulders",
+        "delts": "shoulders",
         "erector spinae": "lower back",
+        "spine": "lower back",
+        "forearms": "forearms",
         "gastrocnemius": "calves",
+        "calves": "calves",
         "soleus": "calves",
         "glutaeus maximus": "glutes",
+        "glutes": "glutes",
         "ischiocrural muscles": "hamstrings",
+        "hamstrings": "hamstrings",
         "latissimus dorsi": "latissimus",
+        "lats": "latissimus",
+        "levator scapulae": "trapezius",
         "obliques": "obliques",
         "pectoralis major": "chest",
+        "pectorals": "chest",
         "quadriceps": "quadriceps",
+        "quads": "quadriceps",
+        "serratus anterior": "serratus",
         "trapezius": "trapezius",
-        "triceps brachii": "triceps"
+        "traps": "trapezius",
+        "triceps brachii": "triceps",
+        "triceps": "triceps",
+        "upper back": "upper back",
+        "cardiovascular system": "cardio"
     ]
     
     private static var muscleGroupNames: [String : String] = [
         // abs
         "abdominals": "abdominals",
+        "abs": "abdominals",
         "obliques": "abdominals",
         // arms
         "biceps brachii": "arms",
+        "biceps": "arms",
         "triceps brachii": "arms",
+        "triceps": "arms",
+        "forearms": "arms",
         // shoulders
         "deltoid": "shoulders",
+        "deltoids": "shoulders",
+        "delts": "shoulders",
         // back
         "erector spinae": "back",
+        "spine": "back",
         "latissimus dorsi": "back",
+        "lats": "back",
         "trapezius": "back",
+        "traps": "back",
+        "upper back": "back",
+        "levator scapulae": "back",
         // legs
         "gastrocnemius": "legs",
+        "calves": "legs",
         "soleus": "legs",
         "glutaeus maximus": "legs",
+        "glutes": "legs",
         "ischiocrural muscles": "legs",
+        "hamstrings": "legs",
         "quadriceps": "legs",
+        "quads": "legs",
+        "abductors": "legs",
+        "adductors": "legs",
         // chest
-        "pectoralis major": "chest"
+        "pectoralis major": "chest",
+        "pectorals": "chest",
+        "serratus anterior": "chest",
+        "cardiovascular system": "cardio"
     ]
 }
 
@@ -122,7 +216,13 @@ extension Exercise {
     }
     
     public var type: ExerciseType {
-        ExerciseType.allCases.first { $0.equipment.map { equipment.contains($0) } ?? false } ?? .other
+        if equipment.contains(where: { $0.contains("barbell") || $0 == "trap bar" || $0 == "ez bar" }) {
+            return .barbell
+        }
+        if equipment.contains(where: { $0.contains("dumbbell") }) {
+            return .dumbbell
+        }
+        return .other
     }
 }
 
@@ -156,7 +256,8 @@ extension Exercise: Codable {
         case tips
         case references
         case pdf
-//        case png
+        case image
+        case animation
     }
     
     // MARK: Decodable
@@ -174,8 +275,10 @@ extension Exercise: Codable {
         let tips = try container.decodeIfPresent([String].self, forKey: .tips) ?? []
         let references = try container.decodeIfPresent([String].self, forKey: .references) ?? []
         let pdf = try container.decodeIfPresent([String].self, forKey: .pdf) ?? []
+        let image = try container.decodeIfPresent(String.self, forKey: .image)
+        let animation = try container.decodeIfPresent(String.self, forKey: .animation)
         
-        self.init(uuid: uuid, everkineticId: id, title: title, alias: alias, description: primer, primaryMuscle: primary, secondaryMuscle: secondary, equipment: equipment, steps: steps, tips: tips, references: references, pdfPaths: pdf)
+        self.init(uuid: uuid, everkineticId: id, title: title, alias: alias, description: primer, primaryMuscle: primary, secondaryMuscle: secondary, equipment: equipment, steps: steps, tips: tips, references: references, pdfPaths: pdf, imageFilename: image, animationFilename: animation)
     }
     
     // MARK: Encodalbe
@@ -193,5 +296,7 @@ extension Exercise: Codable {
         try container.encode(tips, forKey: .tips)
         try container.encode(references, forKey: .references)
         try container.encode(pdfPaths, forKey: .pdf)
+        try container.encodeIfPresent(imageFilename, forKey: .image)
+        try container.encodeIfPresent(animationFilename, forKey: .animation)
     }
 }

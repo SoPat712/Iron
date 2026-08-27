@@ -183,28 +183,27 @@ struct WorkoutRoutineSetEditor: View {
         }) {
             HStack(spacing: 0) {
                 Image(systemName: "tag")
-                    .padding(6)
+                    .frame(width: IronTheme.controlHeight, height: IronTheme.controlHeight)
             }
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Set options")
     }
     
     private var doneButton: some View {
         Button(action: {
             self.onDone()
         }) {
-            HStack {
-                Spacer()
-                Text(showNext ? "Next" : "Ok")
-                    .fixedSize()
-                    .foregroundColor(.white)
-                    .padding(6)
-                Spacer()
-            }
+            Text(showNext ? "Next" : "Done")
+                .fixedSize()
+                .foregroundColor(IronTheme.onAccent)
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
             .background(
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .foregroundColor(.accentColor)
+                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                    .fill(IronTheme.accent)
             )
         }
+        .buttonStyle(.plain)
     }
     
     private var moreSheet: some View {
@@ -213,16 +212,18 @@ struct WorkoutRoutineSetEditor: View {
             title += " \(index + 1)"
         }
         
-        return NavigationView {
+        return NavigationStack {
             MoreView(workoutRoutineSet: workoutRoutineSet)
-                .navigationBarTitle(Text(title), displayMode: .inline)
-                .navigationBarItems(leading:
-                    Button("Close") {
+                .navigationTitle(title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close") {
                         self.showMoreSheet = false
                     }
-            )
+                    }
+                }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
     }
     
     private var keyboard: some View {
@@ -262,9 +263,9 @@ struct WorkoutRoutineSetEditor: View {
                     }) {
                         Image(systemName: self.showKeyboard == .repetitionsMin ? "arrow.right" : self.showNext ? "arrow.right" : "checkmark")
                             .padding()
-                            .foregroundColor(.white)
+                            .foregroundColor(IronTheme.onAccent)
                             .background(
-                                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
                                     .foregroundColor(Color.accentColor)
                             )
                             .frame(width: geometry.size.width / 4, height: geometry.size.height / 4)
@@ -375,7 +376,7 @@ private struct MoreView: View {
                 }
             }.background(Color.fakeClear)
         }
-        .buttonStyle(PlainButtonStyle())
+        .buttonStyle(.plain)
     }
     
     var body: some View {

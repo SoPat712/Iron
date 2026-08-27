@@ -11,6 +11,7 @@ import SwiftUI
 import WorkoutDataKit
 import CoreData
 import os.log
+import UniformTypeIdentifiers
 
 class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     
@@ -28,7 +29,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Use a UIHostingController as window root view controller
         if let windowScene = scene as? UIWindowScene {
             let window = UIWindow(windowScene: windowScene)
-            window.rootViewController = UIHostingController(rootView: ContentView().environmentObject(sceneState))
+            let rootView = ContentView()
+                .environmentObject(sceneState)
+                .environmentObject(SettingsStore.shared)
+                .environmentObject(RestTimerStore.shared)
+                .environmentObject(ExerciseStore.shared)
+                .environment(\.managedObjectContext, WorkoutDataStorage.shared.persistentContainer.viewContext)
+            window.rootViewController = UIHostingController(rootView: rootView)
             self.window = window
             window.makeKeyAndVisible()
         }
@@ -39,24 +46,79 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     func scene(_ scene: UIScene, openURLContexts URLContexts: Set<UIOpenURLContext>) {
         handleURLContexts(urlContexts: URLContexts)
     }
+
+    private enum IncomingFileError: LocalizedError {
+        case accessDenied(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .accessDenied(let name):
+                return "Iron could not access \(name). Try sharing the file again from Files."
+            }
+        }
+    }
     
     private func handleURLContexts(urlContexts: Set<UIOpenURLContext>) {
-        // NOTE: currently, if for some reason there is more than 1 url context, we only process one of them
-        
-        if let urlContext = urlContexts.first(where: { $0.url.isFileURL }) {
-            urlContext.url.downloadFile { result in
-                do {
-                    switch result {
-                    case .success():
-                        guard let backupData = try Self.urlData(url: urlContext.url, openInPlace: urlContext.options.openInPlace) else { return }
-                        DispatchQueue.main.async {
-                            NotificationCenter.default.post(name: .RestoreFromBackup, object: self, userInfo: [restoreFromBackupDataUserInfoKey : backupData])
+        let fileContexts = urlContexts
+            .filter { $0.url.isFileURL }
+            .sorted { $0.url.lastPathComponent.localizedCaseInsensitiveCompare($1.url.lastPathComponent) == .orderedAscending }
+
+        if !fileContexts.isEmpty {
+            let group = DispatchGroup()
+            let lock = NSLock()
+            var csvDocuments = [Data]()
+            var backupDocuments = [Data]()
+            var firstError: Error?
+
+            for urlContext in fileContexts {
+                group.enter()
+                urlContext.url.downloadFile { result in
+                    defer { group.leave() }
+
+                    do {
+                        try result.get()
+                        let fileData = try Self.urlData(
+                            url: urlContext.url,
+                            openInPlace: urlContext.options.openInPlace
+                        )
+                        lock.lock()
+                        if Self.isCSV(urlContext.url) {
+                            csvDocuments.append(fileData)
+                        } else {
+                            backupDocuments.append(fileData)
                         }
-                    case .failure(let error):
-                        throw error
+                        lock.unlock()
+                    } catch {
+                        lock.lock()
+                        if firstError == nil { firstError = error }
+                        lock.unlock()
                     }
-                } catch {
-                    print(error)
+                }
+            }
+
+            group.notify(queue: .main) {
+                if let firstError {
+                    NotificationCenter.default.post(
+                        name: .ImportHevyCSV,
+                        object: self,
+                        userInfo: [importHevyCSVErrorUserInfoKey: firstError]
+                    )
+                    return
+                }
+
+                if !csvDocuments.isEmpty {
+                    NotificationCenter.default.post(
+                        name: .ImportHevyCSV,
+                        object: self,
+                        userInfo: [importHevyCSVDataUserInfoKey: csvDocuments]
+                    )
+                }
+                if let backupData = backupDocuments.first {
+                    NotificationCenter.default.post(
+                        name: .RestoreFromBackup,
+                        object: self,
+                        userInfo: [restoreFromBackupDataUserInfoKey: backupData]
+                    )
                 }
             }
         } else if let urlContext = urlContexts.first(where: { $0.url.isDeepLinkURL }) {
@@ -82,15 +144,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                     os_log("Could not get count of workouts", log: .workoutData, type: .error)
                 }
                 sceneState.selectedTab = .workout
+                sceneState.isCurrentWorkoutExpanded = true
             }
         }
     }
     
-    private static func urlData(url: URL, openInPlace: Bool) throws -> Data? {
+    private static func urlData(url: URL, openInPlace: Bool) throws -> Data {
         if openInPlace {
             guard url.startAccessingSecurityScopedResource() else {
-                print("openInPlace but startAccessingSecurityScopedResource() -> false")
-                return nil
+                throw IncomingFileError.accessDenied(url.lastPathComponent)
             }
         }
         defer {
@@ -99,6 +161,13 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
         return try Data(contentsOf: url)
+    }
+
+    private static func isCSV(_ url: URL) -> Bool {
+        if url.pathExtension.caseInsensitiveCompare("csv") == .orderedSame {
+            return true
+        }
+        return (try? url.resourceValues(forKeys: [.contentTypeKey]).contentType)?.conforms(to: .commaSeparatedText) == true
     }
 
     func sceneDidDisconnect(_ scene: UIScene) {
@@ -169,22 +238,14 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 }
 
 class SceneState: ObservableObject {
-    @Published var selectedTabNumber: Int = Tab.workout.rawValue
-    
-    var selectedTab: Tab {
-        get {
-            Tab(rawValue: selectedTabNumber) ?? Tab.feed
-        }
-        set {
-            selectedTabNumber = newValue.rawValue
-        }
-    }
-    
-    enum Tab: Int {
-        case feed
-        case history
-        case workout
-        case exercises
-        case settings
+    @Published var selectedTab: Tab = .workout
+    @Published var isCurrentWorkoutExpanded = true
+
+    enum Tab: Int, Hashable {
+        case home = 0
+        case history = 1
+        case workout = 2
+        case exercises = 3
+        case settings = 4
     }
 }

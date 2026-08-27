@@ -33,62 +33,95 @@ struct TimerBannerView: View {
         return formatter
     }()
     
-    private var closeSheetButton: some View {
-        Button("Close") {
-            self.activeSheet = nil
-        }
-    }
-    
     private var editTimeSheet: some View {
-        NavigationView {
-            EditCurrentWorkoutTimeView(workout: workout)
-                .navigationBarTitle("Workout Duration", displayMode: .inline)
-                .navigationBarItems(leading: closeSheetButton)
+        IronUtilitySheet(
+            title: "Workout duration",
+            subtitle: "Adjust the session clock",
+            systemImage: "stopwatch",
+            onClose: { activeSheet = nil }
+        ) {
+            EditCurrentWorkoutTimeView(workout: workout) {
+                activeSheet = nil
+            }
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .presentationDetents([.fraction(0.82), .large])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+        .presentationBackground(IronTheme.modalSurface)
     }
     
     private var restTimerSheet: some View {
-        NavigationView {
-            RestTimerView().environmentObject(self.restTimerStore)
-                .navigationBarTitle("Rest Timer", displayMode: .inline)
-                .navigationBarItems(leading: closeSheetButton)
+        IronUtilitySheet(
+            title: "Rest timer",
+            subtitle: "Dial in your recovery",
+            systemImage: "timer",
+            onClose: { activeSheet = nil }
+        ) {
+            RestTimerView()
+                .environmentObject(restTimerStore)
         }
-        .navigationViewStyle(StackNavigationViewStyle())
+        .presentationDetents([.height(430)])
+        .presentationDragIndicator(.visible)
+        .presentationContentInteraction(.scrolls)
+        .presentationBackground(IronTheme.modalSurface)
     }
     
     var body: some View {
-        HStack {
+        HStack(spacing: 8) {
             Button(action: {
                 self.activeSheet = .editTime
             }) {
-                HStack {
-                    Image(systemName: "clock")
-                    Text(workoutTimerDurationFormatter.string(from: workout.safeDuration) ?? "")
-                        .font(Font.body.monospacedDigit())
+                HStack(spacing: 8) {
+                    Image(systemName: "stopwatch")
+                        .foregroundColor(IronTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Workout")
+                            .font(.caption2.weight(.medium))
+                            .foregroundColor(IronTheme.secondaryText)
+                        Text(workoutTimerDurationFormatter.string(from: workout.safeDuration) ?? "00:00")
+                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                            .foregroundColor(IronTheme.primaryText)
+                    }
+                    Spacer(minLength: 0)
                 }
-                .padding()
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .background(Capsule().fill(IronTheme.surface))
             }
-
-            Spacer()
+            .buttonStyle(.plain)
 
             Button(action: {
                 self.activeSheet = .restTimer
             }) {
                 let remainingTime = restTimerStore.restTimerRemainingTime
-                HStack {
+                HStack(spacing: 8) {
                     Image(systemName: "timer")
-                    if let remainingTime = remainingTime {
-                        Text(restTimerDurationFormatter.string(from: abs(remainingTime.rounded(.up))) ?? "")
-                            .font(Font.body.monospacedDigit())
+                        .foregroundColor((remainingTime ?? 0) < 0 ? IronTheme.danger : IronTheme.accent)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Rest")
+                            .font(.caption2.weight(.medium))
+                            .foregroundColor(IronTheme.secondaryText)
+                        if let remainingTime = remainingTime {
+                            Text(restTimerDurationFormatter.string(from: abs(remainingTime.rounded(.up))) ?? "00:00")
+                                .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                                .foregroundColor(remainingTime < 0 ? IronTheme.danger : IronTheme.primaryText)
+                        } else {
+                            Text("Start timer")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(IronTheme.primaryText)
+                        }
                     }
+                    Spacer(minLength: 0)
                 }
-                .foregroundColor(remainingTime ?? 0 < 0 ? .red : nil)
-                .padding()
+                .padding(.horizontal, 14)
+                .frame(minHeight: 52)
+                .background(Capsule().fill(IronTheme.surface))
             }
+            .buttonStyle(.plain)
         }
-        .background(Color(.systemFill).opacity(0.5))
-//        .background(VisualEffectView(effect: UIBlurEffect(style: .systemMaterial)))
+        .padding(.horizontal, IronTheme.horizontalPadding)
+        .padding(.vertical, 10)
+        .background(IronTheme.background.overlay(IronHairline(), alignment: .bottom))
         .sheet(item: $activeSheet) { sheet in
             if sheet == .editTime {
                 self.editTimeSheet

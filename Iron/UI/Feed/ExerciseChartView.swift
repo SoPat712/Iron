@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-import Charts
+import DGCharts
 import WorkoutDataKit
 
 struct ExerciseChartView : View {
@@ -20,7 +20,7 @@ struct ExerciseChartView : View {
     var measurementType: WorkoutExerciseChartData.MeasurementType
 
     private var workoutExercises: [WorkoutExercise] {
-        let timeFrame = WorkoutExerciseChartData.TimeFrame.threeMonths
+        let timeFrame = WorkoutExerciseChartData.TimeFrame.month
         return (try? managedObjectContext.fetch(WorkoutExercise.historyFetchRequest(of: exercise.uuid, from: timeFrame.from, until: timeFrame.until))) ?? []
     }
     

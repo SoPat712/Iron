@@ -1,223 +1,319 @@
 //
 //  RestTimerView.swift
-//  Sunrise Fit
+//  Iron
 //
-//  Created by Karim Abou Zeid on 14.08.19.
-//  Copyright © 2019 Karim Abou Zeid Software. All rights reserved.
+//  A compact radial rest timer designed for Iron's bottom utility sheet.
 //
 
 import SwiftUI
 
 struct RestTimerView: View {
-    @EnvironmentObject var restTimerStore: RestTimerStore
-    
-    @ObservedObject private var refresher = Refresher()
-    
-    @State private var showCustomTimerSelector = false
+    @EnvironmentObject private var restTimerStore: RestTimerStore
 
-    // i.e. 8.1 and 8.9 should be displayed as 9
+    @ObservedObject private var refresher = Refresher()
+    @State private var selectedDuration: TimeInterval = 90
+
+    private let minimumDuration: TimeInterval = 30
+    private let maximumDuration: TimeInterval = 600
+    private let durationStep: TimeInterval = 15
+
     private var roundedRemainingTime: TimeInterval? {
         restTimerStore.restTimerRemainingTime?.rounded(.up)
     }
-    
-    private var remainingTimeInPercent: CGFloat {
-        guard let duration = restTimerStore.restTimerDuration else { return 0 }
-        guard let remainingTime = roundedRemainingTime else { return 0 }
-        assert(duration > 0)
-        return CGFloat(remainingTime / duration)
+
+    private var isOvertime: Bool {
+        (roundedRemainingTime ?? 0) < 0
     }
-    
-    private var progressCircle: some View {
-        ZStack {
-            Circle()
-                .stroke(Color(UIColor.systemFill), lineWidth: 8)
-            Circle()
-                .trim(from: 0, to: remainingTimeInPercent)
-                .stroke(Color.accentColor, lineWidth: 8)
-                .animation(.default)
+
+    private var remainingProgress: CGFloat {
+        guard let duration = restTimerStore.restTimerDuration,
+              let remaining = roundedRemainingTime,
+              duration > 0 else { return 0 }
+        return CGFloat(min(max(remaining / duration, 0), 1))
+    }
+
+    private var quickDurations: [TimeInterval] {
+        [60, 90, 120, 180]
+    }
+
+    var body: some View {
+        Group {
+            if roundedRemainingTime != nil {
+                runningTimer
+            } else {
+                timerPicker
+            }
         }
-        .rotationEffect(.degrees(-90))
-//        .shadow(radius: 4)
+        .padding(.horizontal, IronTheme.horizontalPadding)
+        .padding(.top, 10)
+        .padding(.bottom, 22)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .background(IronTheme.modalSurface)
+        .onAppear {
+            guard let recent = restTimerStore.recentRestTimes.first else { return }
+            selectedDuration = clamped(recent)
+        }
+        .sensoryFeedback(.selection, trigger: Int(selectedDuration))
     }
-    
-    private var timerProgress: some View {
-        ZStack {
-            progressCircle
-                .frame(width: 240, height: 240)
-            VStack {
-                if let remainingTime = roundedRemainingTime {
-                    Text(restTimerDurationFormatter.string(from: abs(remainingTime)) ?? "")
-                        .font(Font.system(size: 48, weight: .light).monospacedDigit())
-                        .foregroundColor(remainingTime < 0 ? .red : nil)
+
+    private var timerPicker: some View {
+        VStack(spacing: 14) {
+            ZStack {
+                radialDial(
+                    duration: selectedDuration,
+                    progress: pickerProgress,
+                    subtitle: "DRAG TO SET",
+                    isInteractive: true
+                )
+
+                HStack {
+                    durationStepButton(systemImage: "minus", label: "Subtract 15 seconds") {
+                        selectedDuration = clamped(selectedDuration - durationStep)
+                    }
+                    .disabled(selectedDuration <= minimumDuration)
+
+                    Spacer()
+
+                    durationStepButton(systemImage: "plus", label: "Add 15 seconds") {
+                        selectedDuration = clamped(selectedDuration + durationStep)
+                    }
+                    .disabled(selectedDuration >= maximumDuration)
+                }
+                .padding(.horizontal, 2)
+            }
+
+            HStack(spacing: 8) {
+                ForEach(quickDurations, id: \.self) { duration in
+                    Button(action: { selectedDuration = clamped(duration) }) {
+                        Text(timeTitle(duration))
+                            .monospacedDigit()
+                    }
+                    .buttonStyle(IronChoicePillButtonStyle(isSelected: selectedDuration == duration))
+                }
+            }
+
+            Button(action: { startTimer(duration: selectedDuration) }) {
+                Label("Start rest", systemImage: "play.fill")
+            }
+            .buttonStyle(IronPrimaryButtonStyle())
+        }
+    }
+
+    private var runningTimer: some View {
+        VStack(spacing: 16) {
+            Label(
+                isOvertime ? "Rest over time" : "Rest in progress",
+                systemImage: isOvertime ? "exclamationmark.clock.fill" : "bolt.fill"
+            )
+                .font(.caption.weight(.bold))
+                .foregroundColor(isOvertime ? IronTheme.danger : IronTheme.accent)
+                .padding(.horizontal, 12)
+                .frame(height: 30)
+                .background(
+                    Capsule(style: .continuous)
+                        .fill(isOvertime ? IronTheme.danger.opacity(0.12) : IronTheme.accentSoft)
+                )
+
+            radialDial(
+                duration: abs(roundedRemainingTime ?? 0),
+                progress: remainingProgress,
+                subtitle: isOvertime ? "OVER BY" : "REMAINING",
+                titlePrefix: isOvertime ? "+" : "",
+                isInteractive: false
+            )
+            .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+                refresher.refresh()
+            }
+
+            HStack(spacing: 10) {
+                timerControl(title: "−15 sec", systemImage: "minus") {
+                    adjustRunningTimer(by: -15)
+                }
+                timerControl(title: "+15 sec", systemImage: "plus") {
+                    adjustRunningTimer(by: 15)
+                }
+                timerControl(title: "Skip", systemImage: "forward.end.fill", isDestructive: true) {
+                    stopTimer()
+                }
+            }
+        }
+    }
+
+    private var pickerProgress: CGFloat {
+        CGFloat((selectedDuration - minimumDuration) / (maximumDuration - minimumDuration))
+    }
+
+    private func radialDial(
+        duration: TimeInterval,
+        progress: CGFloat,
+        subtitle: String,
+        titlePrefix: String = "",
+        isInteractive: Bool
+    ) -> some View {
+        GeometryReader { geometry in
+            let side = min(geometry.size.width, geometry.size.height)
+            let radius = (side - 28) / 2
+            let normalizedProgress = min(max(progress, 0), 1)
+            let angle = Angle.degrees(Double(normalizedProgress) * 360)
+
+            ZStack {
+                Circle()
+                    .fill(IronTheme.surface)
+
+                ForEach(0..<40, id: \.self) { tick in
+                    Capsule(style: .continuous)
+                        .fill(tick.isMultiple(of: 5) ? IronTheme.secondaryText : IronTheme.outline)
+                        .frame(width: 2, height: tick.isMultiple(of: 5) ? 9 : 5)
+                        .offset(y: -(side / 2 - 16))
+                        .rotationEffect(.degrees(Double(tick) * 9))
                 }
 
-                Text(restTimerDurationFormatter.string(from: restTimerStore.restTimerDuration ?? 0) ?? "")
-                    .font(Font.subheadline.monospacedDigit())
-                    .foregroundColor(.secondary)
-            }
-        }
-        .padding()
-    }
-    
-    private var runningTimerButtons: some View {
-        HStack {
-            CircleButton(action: {
-                guard let duration = self.restTimerStore.restTimerDuration else { return }
-                let newDuration = duration - 10
-                if newDuration > 0 {
-                    self.restTimerStore.restTimerDuration = newDuration
-                } else {
-                    self.restTimerStore.restTimerDuration = nil
+                Circle()
+                    .stroke(IronTheme.raisedSurface, lineWidth: 12)
+                    .padding(14)
+
+                Circle()
+                    .trim(from: 0, to: normalizedProgress)
+                    .stroke(
+                        IronTheme.accent,
+                        style: StrokeStyle(lineWidth: 12, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(-90))
+                    .padding(14)
+                    .animation(.snappy(duration: 0.18), value: normalizedProgress)
+
+                Circle()
+                    .fill(IronTheme.accent)
+                    .frame(width: 24, height: 24)
+                    .overlay(Circle().stroke(IronTheme.onAccent.opacity(0.85), lineWidth: 3))
+                    .shadow(color: IronTheme.accent.opacity(0.32), radius: 8)
+                    .position(
+                        x: side / 2 + CGFloat(sin(angle.radians)) * radius,
+                        y: side / 2 - CGFloat(cos(angle.radians)) * radius
+                    )
+
+                VStack(spacing: 3) {
+                    Text("\(titlePrefix)\(timeTitle(duration))")
+                        .font(.system(size: 46, weight: .bold).monospacedDigit())
+                        .foregroundColor(
+                            (roundedRemainingTime ?? 0) < 0 ? IronTheme.danger : IronTheme.primaryText
+                        )
+                    Text(subtitle)
+                        .font(.system(size: 10, weight: .bold))
+                        .tracking(1.2)
+                        .foregroundColor(IronTheme.secondaryText)
                 }
-            }) {
-                Text("-10s")
             }
-
-            CircleButton(action: {
-                guard let duration = self.restTimerStore.restTimerDuration else { return }
-                self.restTimerStore.restTimerDuration = duration + 10
-            }) {
-                Text("+10s")
+            .frame(width: side, height: side)
+            .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+            .contentShape(Circle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { value in
+                        guard isInteractive else { return }
+                        selectedDuration = dialDuration(at: value.location, in: geometry.size)
+                    }
+            )
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Rest duration")
+            .accessibilityValue("\(titlePrefix)\(timeTitle(duration))")
+            .accessibilityHint(
+                isInteractive
+                    ? "Use the increase and decrease actions, or the adjacent buttons."
+                    : (isOvertime ? "Amount past the rest target." : "Current remaining rest time.")
+            )
+            .accessibilityAction(named: "Increase 15 seconds") {
+                guard isInteractive else { return }
+                selectedDuration = clamped(selectedDuration + durationStep)
             }
-
-            CircleButton(color: Color.red.opacity(0.9), action: {
-                self.restTimerStore.restTimerStart = nil
-                self.restTimerStore.restTimerDuration = nil
-            }) {
-                Text("Cancel").fontWeight(.semibold).foregroundColor(.white)
+            .accessibilityAction(named: "Decrease 15 seconds") {
+                guard isInteractive else { return }
+                selectedDuration = clamped(selectedDuration - durationStep)
             }
         }
+        .frame(height: 222)
     }
-    
-    private var runningTimerView: some View {
-        VStack {
-            timerProgress
-                .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in self.refresher.refresh() }
-            runningTimerButtons
-                .padding()
+
+    private func durationStepButton(
+        systemImage: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.system(size: 17, weight: .bold))
+                .foregroundColor(IronTheme.accent)
+                .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
+                .background(Circle().fill(IronTheme.accentSoft))
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
-    
+
+    private func timerControl(
+        title: String,
+        systemImage: String,
+        isDestructive: Bool = false,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 5) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .bold))
+                Text(title)
+                    .font(.caption.weight(.semibold))
+            }
+        }
+        .buttonStyle(
+            IronUtilityPillButtonStyle(
+                tint: isDestructive ? IronTheme.danger : IronTheme.primaryText,
+                fill: isDestructive ? IronTheme.danger.opacity(0.12) : IronTheme.raisedSurface
+            )
+        )
+    }
+
+    private func dialDuration(at location: CGPoint, in size: CGSize) -> TimeInterval {
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        var angle = atan2(location.y - center.y, location.x - center.x) + (.pi / 2)
+        if angle < 0 { angle += 2 * .pi }
+        let progress = angle / (2 * .pi)
+        let rawDuration = minimumDuration + progress * (maximumDuration - minimumDuration)
+        return clamped((rawDuration / durationStep).rounded() * durationStep)
+    }
+
+    private func clamped(_ duration: TimeInterval) -> TimeInterval {
+        min(max(duration, minimumDuration), maximumDuration)
+    }
+
+    private func timeTitle(_ duration: TimeInterval) -> String {
+        restTimerDurationFormatter.string(from: duration) ?? "0:00"
+    }
+
     private func startTimer(duration: TimeInterval) {
         restTimerStore.restTimerStart = Date()
         restTimerStore.restTimerDuration = duration
-        
         restTimerStore.recentRestTimes.removeAll { $0 == duration }
         restTimerStore.recentRestTimes.insert(duration, at: 0)
-    }
-    
-    private func defaultTimerButton(duration: TimeInterval) -> some View {
-        CircleButton(action: {
-            self.startTimer(duration: duration)
-        }) {
-            Text(restTimerDurationFormatter.string(from: duration)!)
-        }
-    }
-    
-    private static let defaultRestTimes: [TimeInterval] = [60, 90, 120, 150, 180]
-    
-    private var restTimes: [TimeInterval] {
-        let recentRestTimes = restTimerStore.recentRestTimes
-        if recentRestTimes.count >= Self.defaultRestTimes.count { return recentRestTimes }
-        return Array((recentRestTimes + Self.defaultRestTimes.filter { !recentRestTimes.contains($0) }).prefix(Self.defaultRestTimes.count))
-    }
-    
-    private var defaultTimerButtons: some View {
-        let restTimes = self.restTimes
-        return VStack {
-            HStack {
-                defaultTimerButton(duration: restTimes[0])
-                defaultTimerButton(duration: restTimes[1])
-            }
-            HStack {
-                defaultTimerButton(duration: restTimes[2])
-                defaultTimerButton(duration: restTimes[3])
-            }
-            HStack {
-                defaultTimerButton(duration: restTimes[4])
-                CircleButton(action: {
-                    self.showCustomTimerSelector = true
-                }) {
-                    Text("Other")
-                }
-            }
-        }
-    }
-    
-    private var customTimerSelector: some View {
-        VStack {
-            List(restTimerCustomTimes, id: \.self) { time in
-                Button(restTimerDurationFormatter.string(from: time)!) {
-                    self.startTimer(duration: time)
-                    self.showCustomTimerSelector = false
-                }
-            }
-            Button("Back") {
-                self.showCustomTimerSelector = false
-            }
-        }
+        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
     }
 
-    private var stoppedTimerView: some View {
-        Group {
-            if showCustomTimerSelector {
-                customTimerSelector
-            } else {
-                defaultTimerButtons
-            }
-        }
+    private func adjustRunningTimer(by interval: TimeInterval) {
+        restTimerStore.adjust(by: interval)
+        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
     }
-    
-    var body: some View {
-        Group {
-            if restTimerStore.restTimerRemainingTime != nil {
-                runningTimerView.animation(.default)
-            } else {
-                stoppedTimerView.animation(.default)
-            }
-        }
-    }
-}
 
-private struct CircleButton<Label>: View where Label: View {
-    private let buttonSize: CGFloat = 80
-    
-    private let color: Color?
-    private let action: () -> Void
-    private let label: Label
-    
-    init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
-        self.init(color: nil, action: action, label: label)
-    }
-    
-    init(color: Color?, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
-        self.color = color
-        self.action = action
-        self.label = label()
-    }
-    
-    var body: some View {
-        Button(action: action) {
-            label
-                .frame(width: buttonSize, height: buttonSize)
-                .background(Circle().foregroundColor(color ?? Color(UIColor.systemFill)))
-        }
-        .padding(4)
+    private func stopTimer() {
+        restTimerStore.restTimerStart = nil
+        restTimerStore.restTimerDuration = nil
+        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
     }
 }
 
 #if DEBUG
 struct RestTimerView_Previews: PreviewProvider {
     static var previews: some View {
-//        if restTimerStore.restTimerRemainingTime == nil {
-//            restTimerStore.restTimerStart = Date()
-//            restTimerStore.restTimerDuration = 90
-//        }
-        return RestTimerView()
+        RestTimerView()
             .environmentObject(RestTimerStore.shared)
-//            .previewDevice(PreviewDevice(rawValue: "iPad Pro (11-inch)"))
-//            .previewDevice(PreviewDevice(rawValue: "iPhone Xs Max"))
-//            .previewDevice(PreviewDevice(rawValue: "iPhone SE"))
     }
 }
 #endif

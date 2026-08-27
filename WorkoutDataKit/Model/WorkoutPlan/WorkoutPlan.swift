@@ -20,44 +20,50 @@ public class WorkoutPlan: NSManagedObject, Codable {
     }
     
     public var displayTitle: String {
-        title ?? "Workout Plan"
+        title ?? "Workouts"
     }
     
     public func duplicate(context: NSManagedObjectContext) -> WorkoutPlan {
         let workoutPlanCopy = WorkoutPlan.create(context: context)
         workoutPlanCopy.title = self.title
-        workoutPlanCopy.workoutRoutines = NSOrderedSet(array:
-            self.workoutRoutines?
-                .compactMap { $0 as? WorkoutRoutine }
-                .map { workoutRoutine in
-                    let workoutRoutineCopy = WorkoutRoutine.create(context: context)
-                    workoutRoutineCopy.title = workoutRoutine.title
-                    workoutRoutineCopy.comment = workoutRoutine.comment
-                    workoutRoutineCopy.workoutRoutineExercises = NSOrderedSet(array:
-                        workoutRoutine.workoutRoutineExercises?
-                            .compactMap { $0 as? WorkoutRoutineExercise }
-                            .map { workoutRoutineExercise in
-                                let workoutRoutineExerciseCopy = WorkoutRoutineExercise.create(context: context)
-                                workoutRoutineExerciseCopy.exerciseUuid = workoutRoutineExercise.exerciseUuid
-                                workoutRoutineExerciseCopy.comment = workoutRoutineExercise.comment
-                                workoutRoutineExerciseCopy.workoutRoutineSets = NSOrderedSet(array:
-                                    workoutRoutineExercise.workoutRoutineSets?
-                                        .compactMap { $0 as? WorkoutRoutineSet }
-                                        .map { workoutRoutineSet in
-                                            let workoutRoutineSetCopy  = WorkoutRoutineSet.create(context: context)
-                                            workoutRoutineSetCopy.maxRepetitions = workoutRoutineSet.maxRepetitions
-                                            workoutRoutineSetCopy.minRepetitions = workoutRoutineSet.minRepetitions
-                                            workoutRoutineSetCopy.tagValue = workoutRoutineSet.tagValue
-                                            workoutRoutineSetCopy.comment = workoutRoutineSet.comment
-                                            return workoutRoutineSetCopy
-                                        }
-                                ?? [])
-                                return workoutRoutineExerciseCopy
-                            }
-                    ?? [])
-                    return workoutRoutineCopy
+        let sourceRoutines = self.workoutRoutines?.array.compactMap { $0 as? WorkoutRoutine } ?? []
+        let copiedRoutines = sourceRoutines.map { workoutRoutine -> WorkoutRoutine in
+            let workoutRoutineCopy = WorkoutRoutine.create(context: context)
+            workoutRoutineCopy.title = workoutRoutine.title
+            workoutRoutineCopy.comment = workoutRoutine.comment
+            let sourceExercises = workoutRoutine.workoutRoutineExercises?.array
+                .compactMap { $0 as? WorkoutRoutineExercise } ?? []
+            let copiedPairs = sourceExercises.map { source -> (WorkoutRoutineExercise, WorkoutRoutineExercise) in
+                let copy = WorkoutRoutineExercise.create(context: context)
+                copy.exerciseUuid = source.exerciseUuid
+                copy.comment = source.comment
+                copy.restTimerDurationValue = source.restTimerDurationValue
+                return (source, copy)
+            }
+            let copiedExerciseIDBySourceID: [UUID: UUID] = Dictionary(uniqueKeysWithValues:
+                copiedPairs.compactMap { source, copy in
+                    guard let sourceID = source.uuid, let copyID = copy.uuid else { return nil }
+                    return (sourceID, copyID)
+                })
+            for (source, copy) in copiedPairs {
+                copy.supersetUuid = source.supersetUuid.flatMap { copiedExerciseIDBySourceID[$0] }
+                let sourceSets = source.workoutRoutineSets?.array.compactMap { $0 as? WorkoutRoutineSet } ?? []
+                let copiedSets = sourceSets.map { sourceSet -> WorkoutRoutineSet in
+                    let copiedSet = WorkoutRoutineSet.create(context: context)
+                    copiedSet.maxRepetitions = sourceSet.maxRepetitions
+                    copiedSet.minRepetitions = sourceSet.minRepetitions
+                    copiedSet.tagValue = sourceSet.tagValue
+                    copiedSet.comment = sourceSet.comment
+                    copiedSet.weightValue = sourceSet.weightValue
+                    copiedSet.durationValue = sourceSet.durationValue
+                    return copiedSet
                 }
-        ?? [])
+                copy.workoutRoutineSets = NSOrderedSet(array: copiedSets)
+            }
+            workoutRoutineCopy.workoutRoutineExercises = NSOrderedSet(array: copiedPairs.map(\.1))
+            return workoutRoutineCopy
+        }
+        workoutPlanCopy.workoutRoutines = NSOrderedSet(array: copiedRoutines)
         return workoutPlanCopy
     }
     

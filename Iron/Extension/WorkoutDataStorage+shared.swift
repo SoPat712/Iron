@@ -17,6 +17,7 @@ extension WorkoutDataStorage {
     private static var cancellables = Set<AnyCancellable>()
     
     private static var workoutsChangedSubject = PassthroughSubject<Void, Never>()
+    private static var watchWorkoutChangedSubject = PassthroughSubject<Void, Never>()
     
     private static var startChangedSubject = PassthroughSubject<(Date, UUID), Never>()
     private static var endChangedSubject = PassthroughSubject<(Date?, UUID), Never>()
@@ -60,6 +61,12 @@ extension WorkoutDataStorage {
             .drop { _ in IronBackup.restoringBackupData }
             .sink { changes in
                 // NOTE: cannot use background queue here because of the MOC
+                if WatchConnectionManager.shared.currentWatchWorkoutUuid != nil,
+                   changes.inserted.union(changes.updated).union(changes.deleted).contains(where: {
+                       $0 is Workout || $0 is WorkoutExercise || $0 is WorkoutSet
+                   }) {
+                    watchWorkoutChangedSubject.send()
+                }
                 for changedObject in changes.updated {
                     if let workout = changedObject as? Workout, !workout.isFault, let uuid = workout.uuid {
                         // TODO: update stored health workout if not current workout
@@ -76,6 +83,11 @@ extension WorkoutDataStorage {
                     }
                 }
             }
+            .store(in: &cancellables)
+
+        watchWorkoutChangedSubject
+            .debounce(for: .milliseconds(250), scheduler: DispatchQueue.main)
+            .sink { WatchConnectionManager.shared.syncCurrentWorkoutSnapshot() }
             .store(in: &cancellables)
                 
         startChangedSubject

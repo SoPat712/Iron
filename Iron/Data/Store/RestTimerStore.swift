@@ -28,6 +28,7 @@ final class RestTimerStore: ObservableObject {
     let objectWillChange = ObservableObjectPublisher()
     
     private var userDefaults: UserDefaults
+    private var isApplyingWatchUpdate = false
     
     private init(userDefaults: UserDefaults) {
         self.userDefaults = userDefaults
@@ -81,6 +82,7 @@ final class RestTimerStore: ObservableObject {
     }
     
     private func updateWatch() {
+        guard !isApplyingWatchUpdate else { return }
         if let uuid = WatchConnectionManager.shared.currentWatchWorkoutUuid {
             WatchConnectionManager.shared.updateWatchWorkoutRestTimer(end: restTimerEnd, keepRunning: SettingsStore.shared.keepRestTimerRunning, uuid: uuid)
         }
@@ -102,6 +104,32 @@ extension RestTimerStore {
 }
 
 extension RestTimerStore {
+    func adjust(by interval: TimeInterval) {
+        guard let start = restTimerStart, let end = restTimerEnd else { return }
+        let adjustedEnd = end.addingTimeInterval(interval)
+        guard adjustedEnd > Date() else {
+            cancel()
+            return
+        }
+        restTimerDuration = max(adjustedEnd.timeIntervalSince(start), 1)
+    }
+
+    /// Applies a timer created on Apple Watch without echoing the same change
+    /// back across WatchConnectivity.
+    func applyWatchUpdate(end: Date?) {
+        isApplyingWatchUpdate = true
+        defer { isApplyingWatchUpdate = false }
+        guard let end = end else {
+            restTimerStart = nil
+            restTimerDuration = nil
+            return
+        }
+        let now = Date()
+        let duration = max(end.timeIntervalSince(now), 1)
+        restTimerStart = end.addingTimeInterval(-duration)
+        restTimerDuration = duration
+    }
+
     func cancel() {
         restTimerStart = nil
         restTimerDuration = nil

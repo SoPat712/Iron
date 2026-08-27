@@ -31,6 +31,22 @@ public class WorkoutDataStorage {
             assert(storeDescription.shouldAddStoreAsynchronously == false) // this is the default value
             persistentContainer.persistentStoreDescriptions = [storeDescription]
         }
+
+        if let description = persistentContainer.persistentStoreDescriptions.first,
+           description.type == NSSQLiteStoreType,
+           let storeURL = description.url {
+            do {
+                try Self.migrateStoreIfNeeded(at: storeURL)
+            } catch {
+                os_log(
+                    "Staged store migration failed; Core Data will attempt its configured fallback: %{public}@",
+                    log: .migration,
+                    type: .error,
+                    error.localizedDescription
+                )
+            }
+        }
+
         os_log("Loading persistent store", log: .workoutDataStorage, type: .default)
         loadPersistentStores(tryToRecoverFromFailedMigration: true) { storeDescription in
             os_log("Successfully loaded persistent store: %@", log: .workoutDataStorage, type: .info, storeDescription)
@@ -64,6 +80,167 @@ public class WorkoutDataStorage {
                 completion(storeDescription)
             }
         })
+    }
+}
+
+extension WorkoutDataStorage {
+    private struct VersionedModel {
+        let version: Int
+        let model: NSManagedObjectModel
+    }
+
+    enum StagedMigrationError: LocalizedError {
+        case modelBundleMissing
+        case modelMissing(String)
+        case sourceModelUnknown
+        case mappingMissing(Int, Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .modelBundleMissing:
+                return "The bundled WorkoutData model could not be found."
+            case .modelMissing(let name):
+                return "The bundled WorkoutData model version \(name) could not be loaded."
+            case .sourceModelUnknown:
+                return "The workout database uses an unsupported model version."
+            case .mappingMissing(let source, let destination):
+                return "No safe mapping exists from WorkoutData v\(source) to v\(destination)."
+            }
+        }
+    }
+
+    /// Migrates old stores in two deliberate stages. Versions 1–3 first use the
+    /// bundled custom mappings to v4 (which generate UUIDs and translate legacy
+    /// exercise identifiers), then v4 moves to the additive v5 schema with an
+    /// inferred lightweight mapping.
+    static func migrateStoreIfNeeded(at storeURL: URL) throws {
+        guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
+
+        let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            ofType: NSSQLiteStoreType,
+            at: storeURL,
+            options: nil
+        )
+        guard !model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata) else { return }
+
+        let versions = try bundledModels()
+        guard let source = versions.first(where: {
+            $0.model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata)
+        }) else {
+            throw StagedMigrationError.sourceModelUnknown
+        }
+        guard let version4 = versions.first(where: { $0.version == 4 }),
+              let version5 = versions.first(where: { $0.version == 5 }) else {
+            throw StagedMigrationError.modelBundleMissing
+        }
+
+        let fileManager = FileManager.default
+        let migrationDirectory = storeURL.deletingLastPathComponent()
+            .appendingPathComponent(".iron-migration-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: migrationDirectory, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: migrationDirectory) }
+
+        var workingURL = storeURL
+        var workingModel = source.model
+
+        if source.version < 4 {
+            guard let mapping = NSMappingModel(
+                from: [Bundle(for: WorkoutDataStorage.self)],
+                forSourceModel: source.model,
+                destinationModel: version4.model
+            ) else {
+                throw StagedMigrationError.mappingMissing(source.version, 4)
+            }
+
+            let destinationURL = migrationDirectory.appendingPathComponent("WorkoutData-v4.sqlite")
+            try migrateStore(
+                from: workingURL,
+                sourceModel: workingModel,
+                to: destinationURL,
+                destinationModel: version4.model,
+                mapping: mapping
+            )
+            workingURL = destinationURL
+            workingModel = version4.model
+        }
+
+        if source.version < 5 {
+            let mapping: NSMappingModel
+            do {
+                mapping = try NSMappingModel.inferredMappingModel(
+                    forSourceModel: workingModel,
+                    destinationModel: version5.model
+                )
+            } catch {
+                throw StagedMigrationError.mappingMissing(4, 5)
+            }
+
+            let destinationURL = migrationDirectory.appendingPathComponent("WorkoutData-v5.sqlite")
+            try migrateStore(
+                from: workingURL,
+                sourceModel: workingModel,
+                to: destinationURL,
+                destinationModel: version5.model,
+                mapping: mapping
+            )
+            workingURL = destinationURL
+        }
+
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: version5.model)
+        try coordinator.replacePersistentStore(
+            at: storeURL,
+            destinationOptions: nil,
+            withPersistentStoreFrom: workingURL,
+            sourceOptions: nil,
+            ofType: NSSQLiteStoreType
+        )
+        os_log(
+            "Migrated WorkoutData store from v%d to v5",
+            log: .migration,
+            type: .info,
+            source.version
+        )
+    }
+
+    private static func migrateStore(
+        from sourceURL: URL,
+        sourceModel: NSManagedObjectModel,
+        to destinationURL: URL,
+        destinationModel: NSManagedObjectModel,
+        mapping: NSMappingModel
+    ) throws {
+        let manager = NSMigrationManager(sourceModel: sourceModel, destinationModel: destinationModel)
+        try manager.migrateStore(
+            from: sourceURL,
+            sourceType: NSSQLiteStoreType,
+            options: nil,
+            with: mapping,
+            toDestinationURL: destinationURL,
+            destinationType: NSSQLiteStoreType,
+            destinationOptions: nil
+        )
+    }
+
+    private static func bundledModels() throws -> [VersionedModel] {
+        let bundle = Bundle(for: WorkoutDataStorage.self)
+        guard let modelDirectory = bundle.url(forResource: "WorkoutData", withExtension: "momd") else {
+            throw StagedMigrationError.modelBundleMissing
+        }
+
+        let files: [(Int, String)] = [
+            (1, "WorkoutData.mom"),
+            (2, "WorkoutData v2.mom"),
+            (3, "WorkoutData v3.mom"),
+            (4, "WorkoutData v4.mom"),
+            (5, "WorkoutData v5.mom")
+        ]
+        return try files.map { version, fileName in
+            let url = modelDirectory.appendingPathComponent(fileName)
+            guard let versionModel = NSManagedObjectModel(contentsOf: url) else {
+                throw StagedMigrationError.modelMissing(fileName)
+            }
+            return VersionedModel(version: version, model: versionModel)
+        }
     }
 }
 

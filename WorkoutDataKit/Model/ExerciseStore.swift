@@ -163,52 +163,167 @@ extension ExerciseStore {
 
 // MARK: - Custom Exercises
 extension ExerciseStore {
-    public func createCustomExercise(title: String, description: String?, primaryMuscle: [String], secondaryMuscle: [String], type: Exercise.ExerciseType) {
+    public enum CustomExerciseMutationError: LocalizedError {
+        case invalidTitle
+        case duplicateTitle(String)
+        case storageUnavailable
+        case exerciseNotFound
+        case couldNotRead(Error)
+        case couldNotWrite(Error)
+
+        public var errorDescription: String? {
+            switch self {
+            case .invalidTitle:
+                return "Enter a name for the exercise."
+            case .duplicateTitle(let title):
+                return "An exercise named \(title) already exists."
+            case .storageUnavailable:
+                return "Iron could not access custom-exercise storage."
+            case .exerciseNotFound:
+                return "This custom exercise no longer exists."
+            case .couldNotRead(let error):
+                return "Iron could not read your custom exercises: \(error.localizedDescription)"
+            case .couldNotWrite(let error):
+                return "Iron could not save the custom exercise: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    @discardableResult
+    public func createCustomExercise(
+        title: String,
+        description: String?,
+        primaryMuscle: [String],
+        secondaryMuscle: [String],
+        type: Exercise.ExerciseType,
+        steps: [String] = [],
+        tips: [String] = []
+    ) throws -> Exercise {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        guard !exercises.contains(where: { $0.title == title }) else { return }
+        guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
+        guard !exercises.contains(where: {
+            $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare(title) == .orderedSame
+        }) else {
+            throw CustomExerciseMutationError.duplicateTitle(title)
+        }
         
         var description = description?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let d = description, d.isEmpty {
             description = nil
         }
         
-        guard let url = customExercisesURL else { return }
-        var customExercises = (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
-        
-        customExercises.append(Exercise(uuid: UUID(), everkineticId: Exercise.customEverkineticId, title: title, alias: [], description: description, primaryMuscle: primaryMuscle, secondaryMuscle: secondaryMuscle, equipment: type.equipment.map { [$0] } ?? [], steps: [], tips: [], references: [], pdfPaths: []))
-        do { try JSONEncoder().encode(customExercises).write(to: url, options: .atomic) } catch { return }
-        
-        self.customExercises = (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
+        var customExercises = try loadCustomExercisesForMutation()
+        let createdExercise = Exercise(
+            uuid: UUID(),
+            everkineticId: Exercise.customEverkineticId,
+            title: title,
+            alias: [],
+            description: description,
+            primaryMuscle: primaryMuscle,
+            secondaryMuscle: secondaryMuscle,
+            equipment: type.equipment.map { [$0] } ?? [],
+            steps: sanitizedInstructionItems(steps),
+            tips: sanitizedInstructionItems(tips),
+            references: [],
+            pdfPaths: []
+        )
+        customExercises.append(createdExercise)
+        try persistCustomExercises(customExercises)
+        return createdExercise
     }
-    
-    public func updateCustomExercise(with uuid: UUID, title: String, description: String?, primaryMuscle: [String], secondaryMuscle: [String], type: Exercise.ExerciseType) {
+
+    @discardableResult
+    public func updateCustomExercise(
+        with uuid: UUID,
+        title: String,
+        description: String?,
+        primaryMuscle: [String],
+        secondaryMuscle: [String],
+        type: Exercise.ExerciseType,
+        steps: [String] = [],
+        tips: [String] = []
+    ) throws -> Exercise {
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !title.isEmpty else { return }
-        guard !exercises.contains(where: { $0.title == title && $0.uuid != uuid }) else { return }
+        guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
+        guard !exercises.contains(where: {
+            $0.uuid != uuid &&
+                $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                .localizedCaseInsensitiveCompare(title) == .orderedSame
+        }) else {
+            throw CustomExerciseMutationError.duplicateTitle(title)
+        }
         
         var description = description?.trimmingCharacters(in: .whitespacesAndNewlines)
         if let d = description, d.isEmpty {
             description = nil
         }
         
-        guard let url = customExercisesURL else { return }
-        var customExercises = (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
-        
-        guard customExercises.contains(where: { $0.uuid == uuid }) else { return } // make sure the exercise exists
-        customExercises.removeAll { $0.uuid == uuid } // remove the old exercise
-        customExercises.append(Exercise(uuid: uuid, everkineticId: Exercise.customEverkineticId, title: title, alias: [], description: description, primaryMuscle: primaryMuscle, secondaryMuscle: secondaryMuscle, equipment: type.equipment.map { [$0] } ?? [], steps: [], tips: [], references: [], pdfPaths: []))
-        do { try JSONEncoder().encode(customExercises).write(to: url, options: .atomic) } catch { return }
-        
-        self.customExercises = ((try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? [])
+        var customExercises = try loadCustomExercisesForMutation()
+        guard let index = customExercises.firstIndex(where: { $0.uuid == uuid }) else {
+            throw CustomExerciseMutationError.exerciseNotFound
+        }
+        let existingExercise = customExercises[index]
+        let updatedExercise = Exercise(
+            uuid: uuid,
+            everkineticId: existingExercise.everkineticId,
+            title: title,
+            alias: existingExercise.alias,
+            description: description,
+            primaryMuscle: primaryMuscle,
+            secondaryMuscle: secondaryMuscle,
+            equipment: type.equipment.map { [$0] } ?? [],
+            steps: sanitizedInstructionItems(steps),
+            tips: sanitizedInstructionItems(tips),
+            references: existingExercise.references,
+            pdfPaths: existingExercise.pdfPaths,
+            imageFilename: existingExercise.imageFilename,
+            animationFilename: existingExercise.animationFilename
+        )
+        customExercises[index] = updatedExercise
+        try persistCustomExercises(customExercises)
+        return updatedExercise
+    }
+
+    private func loadCustomExercisesForMutation() throws -> [Exercise] {
+        guard let url = customExercisesURL else {
+            throw CustomExerciseMutationError.storageUnavailable
+        }
+        guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+        do {
+            return try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))
+        } catch {
+            throw CustomExerciseMutationError.couldNotRead(error)
+        }
+    }
+
+    private func persistCustomExercises(_ exercises: [Exercise]) throws {
+        guard let url = customExercisesURL else {
+            throw CustomExerciseMutationError.storageUnavailable
+        }
+        do {
+            try JSONEncoder().encode(exercises).write(to: url, options: .atomic)
+            customExercises = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))
+        } catch {
+            throw CustomExerciseMutationError.couldNotWrite(error)
+        }
+    }
+
+    private func sanitizedInstructionItems(_ items: [String]) -> [String] {
+        items
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
     
-    public func deleteCustomExercise(with uuid: UUID) {
-        guard let url = customExercisesURL else { return }
-        guard var customExercises = try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url)) else { return }
-        customExercises.removeAll { $0.uuid == uuid }
-        do { try JSONEncoder().encode(customExercises).write(to: url, options: .atomic) } catch { return }
-        self.customExercises = (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
+    @discardableResult
+    public func deleteCustomExercise(with uuid: UUID) throws -> Exercise {
+        var customExercises = try loadCustomExercisesForMutation()
+        guard let index = customExercises.firstIndex(where: { $0.uuid == uuid }) else {
+            throw CustomExerciseMutationError.exerciseNotFound
+        }
+        let deletedExercise = customExercises.remove(at: index)
+        try persistCustomExercises(customExercises)
+        return deletedExercise
     }
 }
 

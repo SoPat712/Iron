@@ -12,6 +12,7 @@ import os.log
 
 class BackupFileStore: ObservableObject {
     static let shared = BackupFileStore()
+    private static let maximumDownloadPollAttempts = 15
     
     private init() {}
     
@@ -23,15 +24,47 @@ class BackupFileStore: ObservableObject {
         
         var id: URL { url }
     }
+
+    enum LoadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case unavailable(String)
+    }
     
     @Published var backups = [BackupFile]()
+    @Published private(set) var loadState: LoadState = .idle
     
     func fetchBackups() {
+        fetchBackups(downloadPollAttempt: 0)
+    }
+
+    private func fetchBackups(downloadPollAttempt: Int) {
         os_log("Fetching backup file list", log: .backup, type: .default)
+        DispatchQueue.main.async {
+            self.loadState = .loading
+        }
+
         UbiquityContainer.backupsUrl { result in
-            guard let url = try? result.get() else { return }
+            let url: URL
+            do {
+                url = try result.get()
+            } catch {
+                self.finishLoading(with: .unavailable(Self.availabilityMessage(for: error)), backups: [])
+                return
+            }
             
-            guard let deviceDirectoryUrls = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: [.isDirectoryKey, .nameKey]) else { return }
+            let deviceDirectoryUrls: [URL]
+            do {
+                deviceDirectoryUrls = try FileManager.default.contentsOfDirectory(
+                    at: url,
+                    includingPropertiesForKeys: [.isDirectoryKey, .nameKey]
+                )
+            } catch {
+                self.finishLoading(with: .unavailable(Self.availabilityMessage(for: error)), backups: [])
+                return
+            }
+
             var startedDownloads = false
             let backups: [[BackupFile]] = deviceDirectoryUrls.compactMap { deviceDirectoryUrl in
                 guard let resourceValues = try? deviceDirectoryUrl.resourceValues(forKeys: [.isDirectoryKey, .nameKey]) else { return nil }
@@ -59,35 +92,70 @@ class BackupFileStore: ObservableObject {
                 }
             }
 
-            DispatchQueue.main.sync { // to be safe don't use async here so everything stays in order
-                self.backups = backups
-                    .flatMap { $0 }
-                    .sorted { $0.creationDate > $1.creationDate }
-            }
-            
-            // as long as there are still files being downloaded, recursively call fetchBackups() until every file is downloaded
+            let sortedBackups = backups
+                .flatMap { $0 }
+                .sorted { $0.creationDate > $1.creationDate }
             if startedDownloads {
-                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .seconds(1)) {
-                    self.fetchBackups()
+                guard downloadPollAttempt < Self.maximumDownloadPollAttempts else {
+                    self.finishLoading(
+                        with: .unavailable(
+                            "Some iCloud backups are taking longer than expected to download. Check your connection, then try again."
+                        ),
+                        backups: sortedBackups
+                    )
+                    return
                 }
+
+                self.finishLoading(with: .loading, backups: sortedBackups)
+                DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + .seconds(1)) {
+                    self.fetchBackups(downloadPollAttempt: downloadPollAttempt + 1)
+                }
+            } else {
+                self.finishLoading(with: .loaded, backups: sortedBackups)
             }
         }
+    }
+
+    private func finishLoading(with state: LoadState, backups: [BackupFile]) {
+        DispatchQueue.main.async {
+            self.backups = backups
+            self.loadState = state
+        }
+    }
+
+    private static func availabilityMessage(for error: Error) -> String {
+        if error is UbiquityContainer.UbiquityContainerError {
+            return "iCloud Drive is not available to Iron. Check that you are signed in to iCloud and that iCloud Drive is enabled, then try again."
+        }
+
+        os_log(
+            "Could not read iCloud backups: %@",
+            log: .backup,
+            type: .error,
+            error.localizedDescription
+        )
+        return "Iron could not read its iCloud backup folder. Check your connection and iCloud Drive, then try again."
     }
 }
 
 // MARK: - Create / Delete Backup
 extension BackupFileStore {
-    func delete(at index: Int) {
+    func delete(at index: Int) throws {
         guard index < backups.count else { return }
-        do { try FileManager.default.removeItem(at: backups[index].url) } catch { return }
+        try FileManager.default.removeItem(at: backups[index].url)
         backups.remove(at: index)
     }
     
-    func create(data: @escaping () throws -> Data, onError: @escaping (Error) -> Void) {
+    func create(
+        data: @escaping () throws -> Data,
+        onSuccess: @escaping (URL) -> Void = { _ in },
+        onError: @escaping (Error) -> Void
+    ) {
         Self.create(data: data) { result in
             switch result {
-            case .success(_):
+            case .success(let url):
                 self.fetchBackups()
+                onSuccess(url)
             case .failure(let error):
                 onError(error)
             }

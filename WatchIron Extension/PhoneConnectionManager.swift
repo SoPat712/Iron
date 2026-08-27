@@ -35,6 +35,9 @@ class PhoneConnectionManager: NSObject, ObservableObject {
     
     private let scheduleDiscardUnstartedWorkoutSessionSubject = PassthroughSubject<Void, Never>()
     private var cancellable: AnyCancellable?
+    private var pendingUserInfo: [[String: Any]] = []
+    private var eventSendInFlight = Set<UUID>()
+    private var eventTransferSent = Set<UUID>()
 
     override init() {
         cancellable = scheduleDiscardUnstartedWorkoutSessionSubject
@@ -48,6 +51,22 @@ class PhoneConnectionManager: NSObject, ObservableObject {
                 WorkoutSessionManagerStore.shared.discardUnstartedWorkoutSession()
             }
     }
+
+    private func queueUntilActivated(_ userInfo: [String: Any]) {
+        // Keep only a bounded number of legacy commands. Durable workout edits
+        // use the outbox below and are never held in this transient queue.
+        if pendingUserInfo.count >= 32 {
+            pendingUserInfo.removeFirst()
+        }
+        pendingUserInfo.append(userInfo)
+    }
+
+    private func flushPendingUserInfo() {
+        guard isActivated else { return }
+        let pending = pendingUserInfo
+        pendingUserInfo.removeAll()
+        pending.forEach { sendUserInfo(userInfo: $0) }
+    }
 }
 
 // MARK: - Receiving
@@ -57,9 +76,11 @@ extension PhoneConnectionManager: WCSessionDelegate {
         
         DispatchQueue.main.async {
             self.objectWillChange.send()
+            self.flushPendingUserInfo()
+            self.flushEventOutbox()
         }
     }
-    
+
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
         print(#function + " \(applicationContext)")
         
@@ -89,6 +110,7 @@ extension PhoneConnectionManager: WCSessionDelegate {
         
         DispatchQueue.main.async {
             self.objectWillChange.send()
+            self.flushEventOutbox()
         }
     }
 }
@@ -96,7 +118,19 @@ extension PhoneConnectionManager: WCSessionDelegate {
 // MARK: - Message Handling
 extension PhoneConnectionManager {
     private func receive(message: [String : Any]) {
-        if let startMessage = message[PayloadKey.startWorkoutSession] as? [String : Any] {
+        if let snapshotData = message[PayloadKey.workoutSnapshot] as? Data,
+           let snapshot = WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: snapshotData) {
+            WorkoutSessionManagerStore.shared.applyWorkoutSnapshot(snapshot)
+        } else if let ackData = message[PayloadKey.workoutEventAck] as? Data,
+                  let ack = WatchWorkoutWire.decode(WatchWorkoutEventAck.self, from: ackData) {
+            WatchWorkoutStore.shared.acknowledge(eventIDs: ack.eventIDs)
+            ack.eventIDs.forEach {
+                eventSendInFlight.remove($0)
+                eventTransferSent.remove($0)
+            }
+            WorkoutSessionManagerStore.shared.notifySyncStateChanged()
+            flushEventOutbox()
+        } else if let startMessage = message[PayloadKey.startWorkoutSession] as? [String : Any] {
             handleStartWorkoutSessionMessage(message: startMessage)
         } else if let endMessage = message[PayloadKey.endWorkoutSession] as? [String : Any] {
             handleEndWorkoutSessionMessage(message: endMessage)
@@ -152,7 +186,9 @@ extension PhoneConnectionManager {
             return
         }
         
-        WorkoutSessionManagerStore.shared.endWorkoutSession(start: start, end: end, title: title, uuid: uuid)
+        WorkoutSessionManagerStore.shared.endWorkoutSession(start: start, end: end,
+                                                            title: title, uuid: uuid,
+                                                            notifyPhone: false)
     }
     
     private func handleUpdateWorkoutSessionStartMessage(message: [String : Any]) {
@@ -215,7 +251,8 @@ extension PhoneConnectionManager {
             return
         }
         
-        WorkoutSessionManagerStore.shared.discardWorkoutSession(uuid: uuid)
+        WorkoutSessionManagerStore.shared.discardWorkoutSession(uuid: uuid,
+                                                                notifyPhone: false)
     }
     
     private func handleIgnoredPreparedWorkoutSession() {
@@ -243,12 +280,10 @@ extension PhoneConnectionManager {
     /// wrapper to send either via message or transfer, depending on what's available
     private func sendUserInfo(userInfo: [String : Any]) {
         guard isActivated else {
-            /// when the watch app is cold started via the phone, the session might not be activated yet, so try again after a short delay until the session is activated.
-            /// this is a kind of unclean workaround but it works very well
-            /// Note: smaller timeouts don't work so well. maybe rate limiting or something?
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
-                self.sendUserInfo(userInfo: userInfo)
-            }
+            // Activation is asynchronous. Keep the command bounded in memory
+            // and flush it from activationDidComplete instead of recursively
+            // scheduling an unbounded retry chain.
+            queueUntilActivated(userInfo)
             return
         }
         if isReachable {
@@ -266,5 +301,33 @@ extension PhoneConnectionManager {
     func sendPreparedWorkoutSession() {
         os_log("Sending prepared message")
         sendUserInfo(userInfo: [PayloadKey.preparedWorkoutSession : true])
+    }
+
+    /// Sends every local edit through transferUserInfo for durability and also
+    /// sends an immediate message when reachable. The phone acknowledges by
+    /// event ID; duplicate deliveries are therefore safe for the phone adapter.
+    func flushEventOutbox() {
+        guard isActivated else { return }
+        for event in WatchWorkoutStore.shared.pendingEvents() {
+            guard !eventSendInFlight.contains(event.id),
+                  let data = WatchWorkoutWire.encode(event) else { continue }
+
+            let payload: [String: Any] = [PayloadKey.workoutEvent: data]
+            if !eventTransferSent.contains(event.id) {
+                session.transferUserInfo(payload)
+                eventTransferSent.insert(event.id)
+            }
+            guard isReachable else { continue }
+
+            eventSendInFlight.insert(event.id)
+            session.sendMessage(payload, replyHandler: { [weak self] reply in
+            self?.receive(message: reply)
+            }, errorHandler: { [weak self] _ in
+                // transferUserInfo above remains queued; allow a later
+                // reachability/activation transition to try the fast path.
+                self?.eventSendInFlight.remove(event.id)
+                self?.eventTransferSent.remove(event.id)
+            })
+        }
     }
 }

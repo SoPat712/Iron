@@ -100,4 +100,169 @@ class ExportImportWorkoutDataTests: XCTestCase {
         
         XCTAssertNoThrow(try persistenContainer.viewContext.save())
     }
+
+    func testHevyCSVWorkoutImportExportAndDuplicateProtection() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let exerciseTitle = exercise.title.replacingOccurrences(of: "\"", with: "\"\"")
+        let header = "\"title\",\"start_time\",\"end_time\",\"description\",\"exercise_title\",\"superset_id\",\"exercise_notes\",\"set_index\",\"set_type\",\"weight_lbs\",\"reps\",\"distance_miles\",\"duration_seconds\",\"rpe\""
+        let rowOne = "\"Push, Pull\",\"17 Aug 2026, 08:16\",\"17 Aug 2026, 08:35\",\"Good \"\"session\"\"\",\"\(exerciseTitle)\",,\"First line\\nSecond line\",0,\"warmup\",135,5,,,"
+        let rowTwo = "\"Push, Pull\",\"17 Aug 2026, 08:16\",\"17 Aug 2026, 08:35\",\"Good \"\"session\"\"\",\"\(exerciseTitle)\",,\"First line\\nSecond line\",1,\"normal\",225,8,,,7.5"
+        let data = try XCTUnwrap((header + "\r\n" + rowOne + "\n" + rowTwo + "\r\n").data(using: .utf8))
+
+        let parsed = try HevyCSV.parse(data: data)
+        XCTAssertEqual(parsed.records.count, 2)
+        XCTAssertEqual(parsed.records.first?.title, "Push, Pull")
+
+        let result = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared
+        )
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.importedSets, 2)
+
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(request).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        let sets = try XCTUnwrap(workoutExercise.workoutSets?.array as? [WorkoutSet])
+        XCTAssertEqual(sets.count, 2)
+        XCTAssertEqual(sets[0].tagValue, .warmUp)
+        XCTAssertEqual(sets[1].rpeValue, 7.5)
+        XCTAssertEqual(sets[1].weightValue, Measurement(value: 225, unit: UnitMass.pounds).converted(to: .kilograms).value, accuracy: 0.0001)
+        XCTAssertEqual(workoutExercise.comment, "First line\nSecond line")
+
+        let duplicateResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared
+        )
+        XCTAssertEqual(duplicateResult.importedWorkouts, 0)
+        XCTAssertEqual(duplicateResult.skippedDuplicateWorkouts, 1)
+
+        let exported = try HevyCSV.exportData(workouts: [workout], exercises: ExerciseStore.shared.exercises, weightUnit: .imperial)
+        let reparsed = try HevyCSV.parse(data: exported)
+        XCTAssertEqual(reparsed.records.count, 2)
+        XCTAssertEqual(reparsed.records[1].repetitions, 8)
+        XCTAssertEqual(reparsed.records[1].rpe, 7.5)
+    }
+
+    func testHevyCSVBatchPreflightsEveryFileBeforeWriting() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let exerciseTitle = exercise.title.replacingOccurrences(of: "\"", with: "\"\"")
+        let header = "\"title\",\"start_time\",\"end_time\",\"description\",\"exercise_title\",\"superset_id\",\"exercise_notes\",\"set_index\",\"set_type\",\"weight_kg\",\"reps\",\"distance_km\",\"duration_seconds\",\"rpe\""
+        let row = "\"Push\",\"17 Aug 2026, 08:16\",\"17 Aug 2026, 08:35\",,\"\(exerciseTitle)\",,,0,normal,100,8,,,8"
+        let validWorkout = try XCTUnwrap((header + "\n" + row + "\n").data(using: .utf8))
+        let malformedSecondFile = try XCTUnwrap("not,a,hevy,export\n".data(using: .utf8))
+
+        XCTAssertThrowsError(
+            try HevyCSV.importData(
+                [validWorkout, malformedSecondFile],
+                into: persistenContainer.viewContext,
+                exerciseStore: .shared
+            )
+        )
+
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        XCTAssertTrue(try persistenContainer.viewContext.fetch(request).isEmpty)
+    }
+
+    func testHevyCSVBatchCombinesWorkoutAndMeasurementFiles() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let exerciseTitle = exercise.title.replacingOccurrences(of: "\"", with: "\"\"")
+        let workoutHeader = "\"title\",\"start_time\",\"end_time\",\"description\",\"exercise_title\",\"superset_id\",\"exercise_notes\",\"set_index\",\"set_type\",\"weight_kg\",\"reps\",\"distance_km\",\"duration_seconds\",\"rpe\""
+        let workoutRow = "\"Push\",\"17 Aug 2026, 08:16\",\"17 Aug 2026, 08:35\",,\"\(exerciseTitle)\",,,0,normal,100,8,,,8"
+        let workoutData = try XCTUnwrap((workoutHeader + "\n" + workoutRow + "\n").data(using: .utf8))
+
+        let measurementHeader = "\"date\",\"weight_lbs\",\"waist_in\""
+        let measurementRow = "\"21 Mar 2022, 00:00\",182,32"
+        let measurementData = try XCTUnwrap((measurementHeader + "\n" + measurementRow + "\n").data(using: .utf8))
+
+        let suiteName = "HevyCSVBatchTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let measurementStore = BodyMetricsStore(userDefaults: defaults)
+
+        let result = try HevyCSV.importData(
+            [workoutData, measurementData],
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: measurementStore
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.importedSets, 1)
+        XCTAssertEqual(result.importedMeasurements, 1)
+        XCTAssertEqual(measurementStore.entries.count, 1)
+    }
+
+    func testHevyMeasurementCSVImportExportAndDuplicateProtection() throws {
+        let suiteName = "HevyMeasurementCSVTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+
+        let header = "\"date\",\"weight_lbs\",\"fat_percent\",\"height_in\",\"neck_in\",\"shoulder_in\",\"chest_in\",\"left_bicep_in\",\"right_bicep_in\",\"left_forearm_in\",\"right_forearm_in\",\"abdomen_in\",\"waist_in\",\"hips_in\",\"left_thigh_in\",\"right_thigh_in\",\"left_calf_in\",\"right_calf_in\""
+        let first = "\"21 Mar 2022, 00:00\",182,18,70,15,,40,,,,,34,32,,,,,"
+        let second = "\"31 Mar 2022, 00:00\",180.6,,,,,,,,,,,,,,,,"
+        let data = try XCTUnwrap((header + "\r\n" + first + "\n" + second + "\r\n").data(using: .utf8))
+
+        let result = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+        XCTAssertEqual(result.importedMeasurements, 2)
+        XCTAssertEqual(store.entries.count, 2)
+        let oldest = try XCTUnwrap(store.entries.last)
+        XCTAssertEqual(oldest[.bodyWeight]!, Measurement(value: 182, unit: UnitMass.pounds).converted(to: .kilograms).value, accuracy: 0.0001)
+        XCTAssertEqual(oldest[.height]!, Measurement(value: 70, unit: UnitLength.inches).converted(to: .centimeters).value, accuracy: 0.0001)
+        XCTAssertEqual(oldest[.waist]!, Measurement(value: 32, unit: UnitLength.inches).converted(to: .centimeters).value, accuracy: 0.0001)
+        XCTAssertEqual(oldest[.bodyFat], 18)
+
+        let duplicateResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+        XCTAssertEqual(duplicateResult.skippedDuplicateMeasurements, 2)
+        XCTAssertEqual(store.entries.count, 2)
+
+        let exported = try HevyCSV.exportMeasurementData(entries: store.entries, weightUnit: .imperial)
+        let secondDefaultsName = "HevyMeasurementCSVTests.\(UUID().uuidString)"
+        let secondDefaults = try XCTUnwrap(UserDefaults(suiteName: secondDefaultsName))
+        defer { secondDefaults.removePersistentDomain(forName: secondDefaultsName) }
+        let secondStore = BodyMetricsStore(userDefaults: secondDefaults)
+        let roundTripResult = try HevyCSV.importData(
+            exported,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: secondStore
+        )
+        XCTAssertEqual(roundTripResult.importedMeasurements, 2)
+        XCTAssertEqual(secondStore.entries.count, 2)
+        let roundTrippedOldest = try XCTUnwrap(secondStore.entries.last)
+        XCTAssertEqual(roundTrippedOldest[.height]!, oldest[.height]!, accuracy: 0.0001)
+    }
+
+    func testHevyHeightOnlyMeasurementCSVIsRecognized() throws {
+        let suiteName = "HevyHeightOnlyCSVTests.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let data = try XCTUnwrap(
+            "\"date\",\"height_cm\"\n\"24 Aug 2026, 09:30\",182.5\n".data(using: .utf8)
+        )
+
+        let result = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+
+        XCTAssertEqual(result.importedMeasurements, 1)
+        XCTAssertEqual(store.entries.first?[.height], 182.5)
+    }
 }

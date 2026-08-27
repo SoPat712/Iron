@@ -12,6 +12,8 @@ import WorkoutDataKit
 import os.log
 
 enum IronBackup {
+    static let bodyMeasurementsStorageKey = "iron.bodyMeasurements.v1"
+
     private struct IronBackup: Codable {
         /*
          Version History
@@ -20,12 +22,16 @@ enum IronBackup {
          Version 1: initial
          Version 2: workout UUIDs
          Version 3: workout plans, all entities have mandatory UUIDs
+         Version 4: body measurements
          */
-        var version: Int = 3 // var not let so it can be overwritten by decodable
+        var version: Int = 4 // var not let so it can be overwritten by decodable
         let date: Date
         let customExercises: [Exercise]
         let workoutPlans: [WorkoutPlan]
         let workouts: [Workout]
+        /// Opaque JSON from the app-group measurement store. Keeping this as
+        /// data lets the shared backup model remain independent of HealthKit.
+        let bodyMeasurementsData: Data?
         
         // MARK: - Codable
         
@@ -35,13 +41,21 @@ enum IronBackup {
             case customExercises
             case workoutPlans
             case workouts
+            case bodyMeasurementsData
         }
         
-        init(date: Date, customExercises: [Exercise], workoutPlans: [WorkoutPlan], workouts: [Workout]) {
+        init(
+            date: Date,
+            customExercises: [Exercise],
+            workoutPlans: [WorkoutPlan],
+            workouts: [Workout],
+            bodyMeasurementsData: Data?
+        ) {
             self.date = date
             self.customExercises = customExercises
             self.workoutPlans = workoutPlans
             self.workouts = workouts
+            self.bodyMeasurementsData = bodyMeasurementsData
         }
         
         init(from decoder: Decoder) throws {
@@ -52,6 +66,7 @@ enum IronBackup {
             workoutPlans = try container.decodeIfPresent([WorkoutPlan].self, forKey: .workoutPlans) ?? []
             // workout plans must be decoded before workouts
             workouts = try container.decode([Workout].self, forKey: .workouts)
+            bodyMeasurementsData = try container.decodeIfPresent(Data.self, forKey: .bodyMeasurementsData)
             /**
              Note: the UUIDs in the backup are not checked for uniqueness because it would take too much time (10s)
              */
@@ -67,7 +82,11 @@ enum IronBackup {
 //        }
     }
     
-    static func createBackupData(managedObjectContext: NSManagedObjectContext, exerciseStore: ExerciseStore) throws -> Data
+    static func createBackupData(
+        managedObjectContext: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        userDefaults: UserDefaults = .appGroup
+    ) throws -> Data
     {
         let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
         workoutRequest.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
@@ -78,7 +97,13 @@ enum IronBackup {
         workoutPlanRequest.sortDescriptors = [NSSortDescriptor(keyPath: \WorkoutPlan.title, ascending: false)]
         let workoutPlans = try managedObjectContext.fetch(workoutPlanRequest)
         
-        let backup = IronBackup(date: Date(), customExercises: exerciseStore.customExercises, workoutPlans: workoutPlans, workouts: workouts)
+        let backup = IronBackup(
+            date: Date(),
+            customExercises: exerciseStore.customExercises,
+            workoutPlans: workoutPlans,
+            workouts: workouts,
+            bodyMeasurementsData: userDefaults.data(forKey: bodyMeasurementsStorageKey)
+        )
         
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -90,7 +115,12 @@ enum IronBackup {
     }
     
     static var restoringBackupData = false
-    static func restoreBackupData(data: Data, managedObjectContext: NSManagedObjectContext, exerciseStore: ExerciseStore) throws {
+    static func restoreBackupData(
+        data: Data,
+        managedObjectContext: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        userDefaults: UserDefaults = .appGroup
+    ) throws {
         // save the current state before we touch anything
         let previousCustomExercises = exerciseStore.customExercises
         
@@ -144,6 +174,19 @@ enum IronBackup {
         
         // if everything went well, save the changes
         try context.save()
+        // A child-context save only pushes restored objects into the parent.
+        // Persist the parent before reporting success so a termination right
+        // after the confirmation cannot lose the restored archive.
+        try managedObjectContext.performAndWait {
+            if managedObjectContext.hasChanges {
+                try managedObjectContext.save()
+            }
+        }
+        // Older backups intentionally preserve the user's current body data.
+        // Version 4+ backups replace it with the data captured in the archive.
+        if let bodyMeasurementsData = workoutDataBackup.bodyMeasurementsData {
+            userDefaults.set(bodyMeasurementsData, forKey: bodyMeasurementsStorageKey)
+        }
         success = true
         os_log("Successfully restored backup data", log: .backup, type: .info)
     }

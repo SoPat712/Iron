@@ -12,6 +12,22 @@ import WorkoutDataKit
 struct AnimatedImageView : UIViewRepresentable {
     var uiImages: [UIImage]
     var duration: TimeInterval
+    var contentKey: String = ""
+
+    final class Coordinator {
+        var animationKey: String?
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    private var animationKey: String {
+        let dimensions = uiImages.map {
+            "\(Int($0.size.width.rounded()))x\(Int($0.size.height.rounded()))"
+        }.joined(separator: ",")
+        return "\(contentKey)|\(uiImages.count)|\(duration)|\(dimensions)"
+    }
     
     func makeUIView(context: UIViewRepresentableContext<AnimatedImageView>) -> UIView {
         let imageView = UIImageView()
@@ -19,6 +35,7 @@ struct AnimatedImageView : UIViewRepresentable {
         
         imageView.contentMode = .scaleAspectFit
         setImages(imageView: imageView)
+        context.coordinator.animationKey = animationKey
 
         let view = UIView()
         view.addSubview(imageView)
@@ -32,11 +49,21 @@ struct AnimatedImageView : UIViewRepresentable {
     }
     
     func updateUIView(_ uiView: UIView, context: UIViewRepresentableContext<AnimatedImageView>) {
-        let imageView = uiView.subviews.first as? UIImageView
-        setImages(imageView: imageView!)
+        guard context.coordinator.animationKey != animationKey,
+              let imageView = uiView.subviews.first as? UIImageView else { return }
+        context.coordinator.animationKey = animationKey
+        setImages(imageView: imageView)
     }
     
     func setImages(imageView: UIImageView) {
+        imageView.stopAnimating()
+        imageView.image = uiImages.first
+
+        guard uiImages.count > 1 else {
+            imageView.animationImages = nil
+            return
+        }
+
         imageView.animationImages = uiImages
         imageView.animationDuration = duration
         imageView.startAnimating()

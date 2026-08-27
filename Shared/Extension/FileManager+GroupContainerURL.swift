@@ -12,10 +12,26 @@ extension FileManager {
     static var appGroupIdentifier = "group.com.kabouzeid.Iron"
     
     var appGroupContainerURL: URL {
-        guard let containerURL = containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) else {
-            fatalError("shared container could not be created")
+        if let containerURL = containerURL(forSecurityApplicationGroupIdentifier: Self.appGroupIdentifier) {
+            return containerURL
         }
-        return containerURL
+
+        #if DEBUG
+        // Personal Team and simulator builds cannot always carry App Group entitlements.
+        // Keep development data inside the app sandbox while production builds continue to
+        // require the configured shared container for widgets and extensions.
+        let fallbackURL = urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Development App Group", isDirectory: true)
+            .appendingPathComponent(Self.appGroupIdentifier, isDirectory: true)
+        do {
+            try createDirectory(at: fallbackURL, withIntermediateDirectories: true)
+            return fallbackURL
+        } catch {
+            fatalError("development shared container could not be created: \(error)")
+        }
+        #else
+        fatalError("shared container could not be created")
+        #endif
     }
     
     var appGroupContainerApplicationSupportURL: URL {

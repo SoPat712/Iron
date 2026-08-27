@@ -28,14 +28,17 @@ extension UIImage {
 //    }
 
     func tinted(with color: UIColor) -> UIImage? {
-        UIGraphicsBeginImageContextWithOptions(size, false, scale)
+        guard size.width.isFinite,
+              size.height.isFinite,
+              size.width > 0,
+              size.height > 0 else { return nil }
 
-        color.set()
-        withRenderingMode(.alwaysTemplate).draw(in: CGRect(origin: .zero, size: size))
-        let image = UIGraphicsGetImageFromCurrentImageContext()
-
-        UIGraphicsEndImageContext()
-
-        return image
+        let format = UIGraphicsImageRendererFormat()
+        format.opaque = false
+        format.scale = max(scale, 1)
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            color.setFill()
+            withRenderingMode(.alwaysTemplate).draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 }

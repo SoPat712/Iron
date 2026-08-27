@@ -289,6 +289,36 @@ class WorkoutDataTests: XCTestCase {
             XCTAssertTrue(workout.hasCompletedSets!)
         }
     }
+
+    func testWorkoutStartedFromPlanUsesPlanNameWithoutPersistenceContainerTitle() {
+        let context = persistenContainer.viewContext
+        let persistedContainer = WorkoutPlan.create(context: context)
+        persistedContainer.title = "Workout Plan"
+
+        let plan = WorkoutRoutine.create(context: context)
+        plan.title = "Pull"
+        persistedContainer.addToWorkoutRoutines(plan)
+
+        let workout = plan.createWorkout(context: context)
+
+        XCTAssertEqual(workout.title, "Pull")
+        XCTAssertEqual(workout.displayTitle(in: []), "Pull")
+
+        plan.title = "Renamed later"
+        XCTAssertEqual(workout.displayTitle(in: []), "Pull")
+    }
+
+    func testWorkoutStartedFromUnnamedPlanSnapshotsFallbackName() {
+        let context = persistenContainer.viewContext
+        let persistedContainer = WorkoutPlan.create(context: context)
+        let plan = WorkoutRoutine.create(context: context)
+        persistedContainer.addToWorkoutRoutines(plan)
+
+        let workout = plan.createWorkout(context: context)
+
+        XCTAssertEqual(workout.title, "Workout A")
+        XCTAssertEqual(workout.displayTitle(in: []), "Workout A")
+    }
     
     func testSendObjectsWillChange() {
         let workout = Workout.create(context: persistenContainer.viewContext)
@@ -350,6 +380,26 @@ class WorkoutDataTests: XCTestCase {
         workout.title = "Test"
         wait(for: expectations, timeout: 1)
     }
+
+    func testWatchWorkoutSetDisplayTextUsesOnlyRelevantUnits() {
+        let weighted = WatchWorkoutSet(order: 1, weight: 65, reps: 8)
+        XCTAssertEqual(weighted.displayText(weightUnit: .kilogram), "65 kg × 8")
+
+        let fractional = WatchWorkoutSet(order: 2, weight: 37.5, reps: 9)
+        XCTAssertEqual(fractional.displayText(weightUnit: .pound), "37.5 lb × 9")
+
+        let bodyweight = WatchWorkoutSet(order: 3, weight: 0, reps: 5)
+        XCTAssertEqual(bodyweight.displayText(weightUnit: .pound), "5 reps")
+
+        let previousBodyweight = WatchWorkoutSet(
+            order: 4,
+            weight: 0,
+            reps: 8,
+            previousWeight: 0,
+            previousReps: 6
+        )
+        XCTAssertEqual(previousBodyweight.previousDisplayText(weightUnit: .pound), "6 reps")
+    }
     
     private func changeExpectations(reason: String = "", objects: [(NSManagedObject, Bool)], store: inout Set<AnyCancellable>) -> [XCTestExpectation] {
         objects.map {
@@ -358,5 +408,96 @@ class WorkoutDataTests: XCTestCase {
             $0.0.objectWillChange.sink { _ in expectation.fulfill() }.store(in: &store)
             return expectation
         }
+    }
+}
+
+@available(iOS 16.1, *)
+final class WorkoutLiveActivityStateTests: XCTestCase {
+    private let completedSet = WorkoutActivityAttributes.SetSnapshot(
+        exerciseName: "Deadlift (Barbell)",
+        setNumber: 1,
+        setCount: 4,
+        result: "135 lb × 5 reps"
+    )
+    private let nextSet = WorkoutActivityAttributes.SetSnapshot(
+        exerciseName: "Deadlift (Barbell)",
+        setNumber: 2,
+        setCount: 4,
+        result: "135 lb × 5 reps"
+    )
+
+    func testCompletionAdvancesToRestThenNextSet() {
+        let now = Date(timeIntervalSinceReferenceDate: 10_000)
+        let state = WorkoutActivityAttributes.ContentState(
+            phase: .setCompleted,
+            displaySet: completedSet,
+            nextSet: nextSet,
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(70),
+            completedSets: 1,
+            totalSets: 4
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(9.9)), .setCompleted)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(9.9)), completedSet)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .resting)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(10)), nextSet)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(69.9)), .resting)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(70)), .currentSet)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(70)), nextSet)
+    }
+
+    func testFinalSetFinishesAfterConfirmationWithoutAnUnusedRestPhase() {
+        let now = Date(timeIntervalSinceReferenceDate: 20_000)
+        let state = WorkoutActivityAttributes.ContentState(
+            phase: .setCompleted,
+            displaySet: completedSet,
+            nextSet: nil,
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(30),
+            completedSets: 4,
+            totalSets: 4
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .finished)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(30)), .finished)
+    }
+
+    func testPublishedRestPhaseStillAdvancesIfTheAppSuspends() {
+        let now = Date(timeIntervalSinceReferenceDate: 30_000)
+        let state = WorkoutActivityAttributes.ContentState(
+            phase: .resting,
+            displaySet: completedSet,
+            nextSet: nextSet,
+            confirmationUntil: nil,
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(20),
+            completedSets: 1,
+            totalSets: 4
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(19.9)), .resting)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(20)), .currentSet)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(20)), nextSet)
+    }
+
+    func testRestProgressClampsAtBothBoundaries() {
+        let now = Date(timeIntervalSinceReferenceDate: 40_000)
+        let state = WorkoutActivityAttributes.ContentState(
+            phase: .resting,
+            displaySet: completedSet,
+            nextSet: nextSet,
+            confirmationUntil: nil,
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(60),
+            completedSets: 1,
+            totalSets: 4
+        )
+
+        XCTAssertEqual(state.restProgress(at: now.addingTimeInterval(-1)), 0)
+        XCTAssertEqual(state.restProgress(at: now.addingTimeInterval(30)), 0.5)
+        XCTAssertEqual(state.restProgress(at: now.addingTimeInterval(61)), 1)
     }
 }
