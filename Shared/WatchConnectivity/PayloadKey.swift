@@ -97,9 +97,13 @@ struct WatchWorkoutSet: Codable, Identifiable, Equatable {
     var previousReps: Int?
     var completed: Bool
 
+    /// `warmUp`, `dropSet`, `failure`, or `nil` for a working set.
+    var tag: String?
+
     init(id: UUID = UUID(), order: Int, weight: Double? = nil, reps: Int? = nil,
          rpe: Double? = nil, previousWeight: Double? = nil,
-         previousReps: Int? = nil, completed: Bool = false) {
+         previousReps: Int? = nil, completed: Bool = false,
+         tag: String? = nil) {
         self.id = id
         self.order = order
         self.weight = weight
@@ -108,6 +112,7 @@ struct WatchWorkoutSet: Codable, Identifiable, Equatable {
         self.previousWeight = previousWeight
         self.previousReps = previousReps
         self.completed = completed
+        self.tag = tag
     }
 
     var displayText: String {
@@ -179,6 +184,13 @@ enum WatchWorkoutWeightUnit: String, Codable {
     }
 }
 
+struct WatchExercisePick: Codable, Identifiable, Equatable {
+    let id: UUID
+    var name: String
+    var muscle: String?
+    var imageURL: String?
+}
+
 struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
     let id: UUID
     var order: Int
@@ -188,19 +200,32 @@ struct WatchWorkoutExercise: Codable, Identifiable, Equatable {
     /// Keeping the configured recovery duration with the exercise lets the
     /// watch start its timer even while the phone is unreachable.
     var restTimerDuration: TimeInterval?
+    var muscleGroup: String?
+    var exerciseUuid: UUID?
+    var imageURL: String?
+    /// JPEG still of the bundled diagram when there is no Gym Visual GIF.
+    var imageData: Data?
 
     init(
         id: UUID = UUID(),
         order: Int,
         name: String,
         sets: [WatchWorkoutSet],
-        restTimerDuration: TimeInterval? = nil
+        restTimerDuration: TimeInterval? = nil,
+        muscleGroup: String? = nil,
+        exerciseUuid: UUID? = nil,
+        imageURL: String? = nil,
+        imageData: Data? = nil
     ) {
         self.id = id
         self.order = order
         self.name = name
         self.sets = sets
         self.restTimerDuration = restTimerDuration
+        self.muscleGroup = muscleGroup
+        self.exerciseUuid = exerciseUuid
+        self.imageURL = imageURL
+        self.imageData = imageData
     }
 }
 
@@ -220,6 +245,8 @@ struct WatchWorkoutSnapshot: Codable, Equatable {
     /// Overall workout effort (1...10). Optional to keep persisted v1
     /// snapshots and snapshots from older phone/watch builds decodable.
     var sessionEffort: Double?
+    /// Compact catalog so the watch can add or replace exercises offline.
+    var library: [WatchExercisePick]?
     var revision: Int64
     var updatedAt: Date
 
@@ -229,6 +256,7 @@ struct WatchWorkoutSnapshot: Codable, Equatable {
          restTimerEnd: Date? = nil, keepRestTimerRunning: Bool = false,
          weightUnit: WatchWorkoutWeightUnit? = .kilogram,
          sessionEffort: Double? = nil,
+         library: [WatchExercisePick]? = nil,
          revision: Int64 = 0, updatedAt: Date = Date()) {
         self.schemaVersion = WatchWorkoutWire.schemaVersion
         self.workoutID = workoutID
@@ -242,6 +270,7 @@ struct WatchWorkoutSnapshot: Codable, Equatable {
         self.keepRestTimerRunning = keepRestTimerRunning
         self.weightUnit = weightUnit
         self.sessionEffort = sessionEffort
+        self.library = library
         self.revision = revision
         self.updatedAt = updatedAt
     }
@@ -271,6 +300,12 @@ enum WatchWorkoutEventKind: String, Codable {
     case workoutFinished
     case workoutDiscarded
     case workoutFailed
+    case setAdded
+    case setDeleted
+    case setTagChanged
+    case exerciseAdded
+    case exerciseReplaced
+    case exerciseDeleted
 }
 
 struct WatchWorkoutEvent: Codable, Identifiable, Equatable {
@@ -299,6 +334,9 @@ struct WatchWorkoutEvent: Codable, Identifiable, Equatable {
     /// Finish events include the watch's complete durable projection so a final
     /// set edit cannot be lost if WatchConnectivity delivers packets out of order.
     var snapshot: WatchWorkoutSnapshot?
+    var tag: String?
+    var catalogExerciseUuid: UUID?
+    var afterExerciseID: UUID?
 
     init(workoutID: UUID, sequence: Int64, kind: WatchWorkoutEventKind,
          exerciseID: UUID? = nil, setID: UUID? = nil, weight: Double? = nil,
@@ -308,6 +346,9 @@ struct WatchWorkoutEvent: Codable, Identifiable, Equatable {
          weightUnit: WatchWorkoutWeightUnit? = nil,
          sessionEffort: Double? = nil,
          snapshot: WatchWorkoutSnapshot? = nil,
+         tag: String? = nil,
+         catalogExerciseUuid: UUID? = nil,
+         afterExerciseID: UUID? = nil,
          id: UUID = UUID(), createdAt: Date = Date()) {
         self.schemaVersion = WatchWorkoutWire.schemaVersion
         self.id = id
@@ -329,6 +370,9 @@ struct WatchWorkoutEvent: Codable, Identifiable, Equatable {
         self.weightUnit = weightUnit
         self.sessionEffort = sessionEffort
         self.snapshot = snapshot
+        self.tag = tag
+        self.catalogExerciseUuid = catalogExerciseUuid
+        self.afterExerciseID = afterExerciseID
     }
 }
 

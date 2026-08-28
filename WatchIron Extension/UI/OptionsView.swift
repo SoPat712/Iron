@@ -41,6 +41,7 @@ struct OptionsView: View {
             .scenePadding()
         }
         .background(WatchUITheme.background)
+        .navigationTitle("End Workout")
         .onAppear(perform: loadSavedSessionEffort)
     }
 

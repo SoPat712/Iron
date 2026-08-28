@@ -12,6 +12,7 @@ import CoreData
 import Combine
 import HealthKit
 import WorkoutDataKit
+import UIKit
 import os.log
 
 /// The following behaviour was tested on watchOS 6.2 and iOS 13.4:
@@ -347,7 +348,90 @@ extension WatchConnectionManager {
                 currentWatchWorkoutUuid = nil
             }
             os_log("Watch reported a failed workout session", log: .watch, type: .error)
+
+        case .setAdded:
+            guard workout.isCurrentWorkout,
+                  let workoutExercise = workoutExercise(with: event.exerciseID, in: workout) else { return }
+            if let setID = event.setID, workoutSet(with: setID, in: workout) != nil {
+                return
+            }
+            let set = WorkoutSet.create(context: context)
+            if let setID = event.setID {
+                set.uuid = setID
+            }
+            set.workoutExercise = workoutExercise
+            apply(weight: event.weight, reps: event.reps, rpe: event.rpe,
+                  unit: event.weightUnit, to: set)
+            set.isCompleted = false
+            selectedWatchSetUuid = set.uuid
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+
+        case .setDeleted:
+            guard workout.isCurrentWorkout,
+                  let set = workoutSet(with: event.setID, in: workout),
+                  let workoutExercise = set.workoutExercise,
+                  (workoutExercise.workoutSets?.count ?? 0) > 1 else { return }
+            if selectedWatchSetUuid == set.uuid {
+                selectedWatchSetUuid = (workoutExercise.workoutSets?.array as? [WorkoutSet])?
+                    .first { $0.uuid != set.uuid }?.uuid
+            }
+            context.delete(set)
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+
+        case .setTagChanged:
+            guard workout.isCurrentWorkout,
+                  let set = workoutSet(with: event.setID, in: workout) else { return }
+            set.tagValue = event.tag.flatMap { WorkoutSetTag(rawValue: $0) }
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+
+        case .exerciseAdded:
+            addExercise(from: event, to: workout, in: context)
+
+        case .exerciseReplaced:
+            guard workout.isCurrentWorkout,
+                  let workoutExercise = workoutExercise(with: event.exerciseID, in: workout),
+                  let catalogID = event.catalogExerciseUuid,
+                  ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return }
+            workoutExercise.exerciseUuid = catalogID
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+
+        case .exerciseDeleted:
+            guard workout.isCurrentWorkout,
+                  let workoutExercise = workoutExercise(with: event.exerciseID, in: workout),
+                  orderedExercises(in: workout).count > 1 else { return }
+            context.delete(workoutExercise)
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
         }
+    }
+
+    private func addExercise(from event: WatchWorkoutEvent,
+                             to workout: Workout,
+                             in context: NSManagedObjectContext) {
+        guard workout.isCurrentWorkout,
+              let catalogID = event.catalogExerciseUuid,
+              ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return }
+        if let exerciseID = event.exerciseID, workoutExercise(with: exerciseID, in: workout) != nil {
+            return
+        }
+
+        let workoutExercise = WorkoutExercise.create(context: context)
+        if let exerciseID = event.exerciseID {
+            workoutExercise.uuid = exerciseID
+        }
+        workoutExercise.exerciseUuid = catalogID
+        insert(workoutExercise, in: workout, after: event.afterExerciseID)
+        workoutExercise.restTimerDurationValue = defaultRestTimerDuration(for: workoutExercise)
+
+        let set = WorkoutSet.create(context: context)
+        if let setID = event.setID {
+            set.uuid = setID
+        }
+        set.workoutExercise = workoutExercise
+        apply(weight: event.weight, reps: event.reps ?? 5, rpe: event.rpe,
+              unit: event.weightUnit, to: set)
+        set.isCompleted = false
+        selectedWatchSetUuid = set.uuid
+        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
     }
 
     private func defaultRestTimerDuration(
@@ -384,6 +468,7 @@ extension WatchConnectionManager {
                       unit: snapshot.weightUnit, to: set)
                 set.isCompleted = watchSet.completed
                 set.completedAt = watchSet.completed ? (set.completedAt ?? snapshot.updatedAt) : nil
+                set.tagValue = watchSet.tag.flatMap { WorkoutSetTag(rawValue: $0) }
             }
         }
     }
@@ -395,10 +480,32 @@ extension WatchConnectionManager {
         set.rpeValue = rpe
     }
 
+    private func orderedExercises(in workout: Workout) -> [WorkoutExercise] {
+        workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+    }
+
+    private func workoutExercise(with id: UUID?, in workout: Workout) -> WorkoutExercise? {
+        guard let id else { return nil }
+        return orderedExercises(in: workout).first { $0.uuid == id }
+    }
+
+    private func insert(_ workoutExercise: WorkoutExercise,
+                        in workout: Workout,
+                        after afterID: UUID?) {
+        workout.addToWorkoutExercises(workoutExercise)
+        guard let afterID,
+              var ordered = workout.workoutExercises?.array as? [WorkoutExercise],
+              let afterIndex = ordered.firstIndex(where: { $0.uuid == afterID }),
+              let currentIndex = ordered.firstIndex(where: { $0.objectID == workoutExercise.objectID }) else { return }
+        let exercise = ordered.remove(at: currentIndex)
+        let adjustedAfter = currentIndex <= afterIndex ? afterIndex - 1 : afterIndex
+        ordered.insert(exercise, at: min(adjustedAfter + 1, ordered.count))
+        workout.workoutExercises = NSOrderedSet(array: ordered)
+    }
+
     private func workoutSet(with id: UUID?, in workout: Workout) -> WorkoutSet? {
         guard let id = id else { return nil }
-        return workout.workoutExercises?.array
-            .compactMap { $0 as? WorkoutExercise }
+        return orderedExercises(in: workout)
             .flatMap { $0.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? [] }
             .first { $0.uuid == id }
     }
@@ -418,6 +525,9 @@ extension WatchConnectionManager {
             return "\(event.workoutID.uuidString):timer"
         case .workoutFinished, .workoutDiscarded, .workoutFailed:
             return "\(event.workoutID.uuidString):lifecycle"
+        case .setAdded, .setDeleted, .setTagChanged,
+             .exerciseAdded, .exerciseReplaced, .exerciseDeleted:
+            return "\(event.workoutID.uuidString):\(event.id.uuidString):\(event.kind.rawValue)"
         }
     }
 
@@ -514,14 +624,22 @@ extension WatchConnectionManager {
                     rpe: set.rpeValue,
                     previousWeight: displayWeight(previousSet?.weight),
                     previousReps: previousSet?.repetitions?.intValue,
-                    completed: set.isCompleted)
+                    completed: set.isCompleted,
+                    tag: set.tagValue?.rawValue)
             }
-            let title = workoutExercise.exercise(in: ExerciseStore.shared.exercises)?.title ?? "Exercise"
+            let catalog = workoutExercise.exercise(in: ExerciseStore.shared.exercises)
+            let title = catalog?.title ?? "Exercise"
             let restTimerDuration = workoutExercise.restTimerDurationValue
                 ?? defaultRestTimerDuration(for: workoutExercise)
             return WatchWorkoutExercise(id: exerciseID, order: exerciseIndex + 1,
                                         name: title, sets: watchSets,
-                                        restTimerDuration: restTimerDuration)
+                                        restTimerDuration: restTimerDuration,
+                                        muscleGroup: catalog?.muscleGroup,
+                                        exerciseUuid: workoutExercise.exerciseUuid,
+                                        imageURL: catalog?.imageURL?.absoluteString,
+                                        imageData: catalog?.imageURL == nil
+                                            ? catalog.flatMap(WatchExerciseThumbnailEncoder.jpeg(for:))
+                                            : nil)
         }
 
         let allSets = watchExercises.flatMap(\.sets)
@@ -545,8 +663,51 @@ extension WatchConnectionManager {
             keepRestTimerRunning: SettingsStore.shared.keepRestTimerRunning,
             weightUnit: wireWeightUnit,
             sessionEffort: workout.sessionEffortValue,
+            library: makeLibrary(for: workoutExercises),
             revision: lastSnapshotRevision,
             updatedAt: now)
+    }
+
+    private func makeLibrary(for workoutExercises: [WorkoutExercise]) -> [WatchExercisePick] {
+        var picks: [WatchExercisePick] = []
+        var seen = Set<UUID>()
+
+        func append(_ exercise: Exercise) {
+            guard seen.insert(exercise.uuid).inserted else { return }
+            picks.append(WatchExercisePick(id: exercise.uuid, name: exercise.title, muscle: exercise.muscleGroup, imageURL: exercise.imageURL?.absoluteString))
+        }
+
+        for workoutExercise in workoutExercises {
+            if let exercise = workoutExercise.exercise(in: ExerciseStore.shared.exercises) {
+                append(exercise)
+            }
+        }
+        for exercise in ExerciseStore.shared.shownExercises.sorted(by: { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }) {
+            if picks.count >= 120 { break }
+            append(exercise)
+        }
+        return picks
+    }
+
+    private enum WatchExerciseThumbnailEncoder {
+        static func jpeg(for exercise: Exercise) -> Data? {
+            guard let path = exercise.pdfPaths.first else { return nil }
+            let url = ExerciseStore.defaultBuiltInExercisesResourceURL.appendingPathComponent(path)
+            guard let document = CGPDFDocument(url as CFURL), let page = document.page(at: 1) else { return nil }
+            let pageRect = page.getBoxRect(.mediaBox)
+            let edge: CGFloat = 120
+            let scale = min(edge / pageRect.width, edge / pageRect.height)
+            let renderSize = CGSize(width: pageRect.width * scale, height: pageRect.height * scale)
+            let renderer = UIGraphicsImageRenderer(size: renderSize)
+            let image = renderer.image { context in
+                UIColor.white.setFill()
+                context.fill(CGRect(origin: .zero, size: renderSize))
+                context.cgContext.translateBy(x: 0, y: renderSize.height)
+                context.cgContext.scaleBy(x: scale, y: -scale)
+                context.cgContext.drawPDFPage(page)
+            }
+            return image.jpegData(compressionQuality: 0.72)
+        }
     }
 
     private func sendWorkoutSnapshot(_ snapshot: WatchWorkoutSnapshot) {

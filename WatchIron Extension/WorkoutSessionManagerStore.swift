@@ -180,7 +180,10 @@ class WorkoutSessionManagerStore: ObservableObject {
                            startDate: Date? = nil, endDate: Date? = nil,
                            title: String? = nil,
                            sessionEffort: Double? = nil,
-                           snapshot: WatchWorkoutSnapshot? = nil) -> WatchWorkoutEvent {
+                           snapshot: WatchWorkoutSnapshot? = nil,
+                           tag: String? = nil,
+                           catalogExerciseUuid: UUID? = nil,
+                           afterExerciseID: UUID? = nil) -> WatchWorkoutEvent {
         WatchWorkoutEvent(workoutID: workoutID,
                           sequence: WatchWorkoutStore.shared.nextSequence(),
                           kind: kind, exerciseID: exerciseID, setID: setID,
@@ -190,7 +193,10 @@ class WorkoutSessionManagerStore: ObservableObject {
                           startDate: startDate, endDate: endDate, title: title,
                           weightUnit: self.workoutSnapshot?.weightUnit,
                           sessionEffort: sessionEffort,
-                          snapshot: snapshot)
+                          snapshot: snapshot,
+                          tag: tag,
+                          catalogExerciseUuid: catalogExerciseUuid,
+                          afterExerciseID: afterExerciseID)
     }
 }
 
@@ -260,6 +266,143 @@ extension WorkoutSessionManagerStore {
             self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setCompletionChanged,
                                         exerciseID: exerciseID, setID: setID,
                                         completed: set.completed))
+        }
+    }
+
+    func addSet(workoutID: UUID, exerciseID: UUID) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }) else { return }
+            let source = snapshot.exercises[exerciseIndex].sets.last
+            var set = WatchWorkoutSet(
+                order: snapshot.exercises[exerciseIndex].sets.count + 1,
+                weight: source?.weight,
+                reps: source?.reps ?? 5,
+                rpe: source?.rpe,
+                previousWeight: source?.previousWeight ?? source?.weight,
+                previousReps: source?.previousReps ?? source?.reps,
+                completed: false,
+                tag: nil
+            )
+            snapshot.exercises[exerciseIndex].sets.append(set)
+            snapshot.selectedSetID = set.id
+            snapshot.selectedSetText = set.displayText(weightUnit: snapshot.weightUnit ?? .kilogram)
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setAdded,
+                                        exerciseID: exerciseID, setID: set.id,
+                                        weight: set.weight, reps: set.reps, rpe: set.rpe))
+        }
+    }
+
+    func deleteSet(workoutID: UUID, exerciseID: UUID, setID: UUID) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
+                  snapshot.exercises[exerciseIndex].sets.count > 1,
+                  let setIndex = snapshot.exercises[exerciseIndex].sets.firstIndex(where: { $0.id == setID }) else { return }
+            snapshot.exercises[exerciseIndex].sets.remove(at: setIndex)
+            for index in snapshot.exercises[exerciseIndex].sets.indices {
+                snapshot.exercises[exerciseIndex].sets[index].order = index + 1
+            }
+            let remaining = snapshot.exercises[exerciseIndex].sets
+            snapshot.selectedSetID = remaining[min(setIndex, remaining.count - 1)].id
+            snapshot.selectedSetText = remaining.first { $0.id == snapshot.selectedSetID }
+                .map { $0.displayText(weightUnit: snapshot.weightUnit ?? .kilogram) }
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setDeleted,
+                                        exerciseID: exerciseID, setID: setID))
+        }
+    }
+
+    func updateSetTag(workoutID: UUID, exerciseID: UUID, setID: UUID, tag: String?) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }),
+                  let setIndex = snapshot.exercises[exerciseIndex].sets.firstIndex(where: { $0.id == setID }) else { return }
+            snapshot.exercises[exerciseIndex].sets[setIndex].tag = tag
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .setTagChanged,
+                                        exerciseID: exerciseID, setID: setID, tag: tag))
+        }
+    }
+
+    func addExercise(workoutID: UUID, afterExerciseID: UUID, catalogExerciseUuid: UUID, name: String, muscleGroup: String?, imageURL: String?) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == afterExerciseID }) else { return }
+            let set = WatchWorkoutSet(order: 1, reps: 5)
+            let exercise = WatchWorkoutExercise(
+                order: exerciseIndex + 2,
+                name: name,
+                sets: [set],
+                restTimerDuration: snapshot.exercises[exerciseIndex].restTimerDuration,
+                muscleGroup: muscleGroup,
+                exerciseUuid: catalogExerciseUuid,
+                imageURL: imageURL
+            )
+            snapshot.exercises.insert(exercise, at: exerciseIndex + 1)
+            for index in snapshot.exercises.indices {
+                snapshot.exercises[index].order = index + 1
+            }
+            snapshot.selectedSetID = set.id
+            snapshot.selectedSetText = set.displayText(weightUnit: snapshot.weightUnit ?? .kilogram)
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .exerciseAdded,
+                                        exerciseID: exercise.id, setID: set.id,
+                                        catalogExerciseUuid: catalogExerciseUuid,
+                                        afterExerciseID: afterExerciseID))
+        }
+    }
+
+    func replaceExercise(workoutID: UUID, exerciseID: UUID, catalogExerciseUuid: UUID, name: String, muscleGroup: String?, imageURL: String?) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }) else { return }
+            snapshot.exercises[exerciseIndex].exerciseUuid = catalogExerciseUuid
+            snapshot.exercises[exerciseIndex].name = name
+            snapshot.exercises[exerciseIndex].muscleGroup = muscleGroup
+            snapshot.exercises[exerciseIndex].imageURL = imageURL
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .exerciseReplaced,
+                                        exerciseID: exerciseID,
+                                        catalogExerciseUuid: catalogExerciseUuid))
+        }
+    }
+
+    func deleteExercise(workoutID: UUID, exerciseID: UUID) {
+        WorkoutSessionManager.perform {
+            guard var snapshot = self.workoutSnapshot,
+                  snapshot.workoutID == workoutID,
+                  snapshot.exercises.count > 1,
+                  let exerciseIndex = snapshot.exercises.firstIndex(where: { $0.id == exerciseID }) else { return }
+            snapshot.exercises.remove(at: exerciseIndex)
+            for index in snapshot.exercises.indices {
+                snapshot.exercises[index].order = index + 1
+            }
+            let fallback = snapshot.exercises[min(exerciseIndex, snapshot.exercises.count - 1)]
+            snapshot.selectedSetID = fallback.sets.first?.id
+            snapshot.selectedSetText = fallback.sets.first
+                .map { $0.displayText(weightUnit: snapshot.weightUnit ?? .kilogram) }
+            snapshot.revision += 1
+            snapshot.updatedAt = Date()
+            self.persistSnapshot(snapshot)
+            self.enqueue(self.makeEvent(workoutID: workoutID, kind: .exerciseDeleted,
+                                        exerciseID: exerciseID))
         }
     }
 

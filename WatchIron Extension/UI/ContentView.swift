@@ -75,8 +75,6 @@ private struct _ContentView: View {
     @EnvironmentObject var workoutSessionManagerStore: WorkoutSessionManagerStore
     @ObservedObject private var phoneConnectionManager = PhoneConnectionManager.shared
 
-    @State private var selectedTab = "workout"
-
     @ViewBuilder
     var body: some View {
         Group {
@@ -94,9 +92,6 @@ private struct _ContentView: View {
                                 pendingEventCount: WatchWorkoutStore.shared.pendingEvents().count,
                                 phoneIsReachable: phoneConnectionManager.isReachable,
                                 connectionIsActivated: phoneConnectionManager.isActivated)
-                    .onAppear {
-                        selectedTab = "workout"
-                    }
             }
         }
         .background(WatchUITheme.background)
@@ -105,14 +100,10 @@ private struct _ContentView: View {
     }
 
     private func workoutTabs<Workout: View>(@ViewBuilder workout: () -> Workout) -> some View {
-        TabView(selection: $selectedTab) {
-            OptionsView()
-                .tag("options")
-
+        NavigationView {
             workout()
-                .tag("workout")
         }
-        .tabViewStyle(PageTabViewStyle(indexDisplayMode: .automatic))
+        .navigationViewStyle(StackNavigationViewStyle())
     }
 
     private var errorMessage: String? {
@@ -164,7 +155,7 @@ private struct IdleWorkoutView: View {
         if pendingEventCount > 0 {
             return "Saved on this watch. Iron will deliver every queued change when your iPhone reconnects."
         }
-        return "Start a workout on your iPhone. Your watch will show the current set as soon as it is active."
+        return "Start a workout on your iPhone. Your watch will show every exercise, then one set at a time."
     }
 
     var body: some View {
@@ -205,11 +196,11 @@ private struct IdleWorkoutView: View {
 
                 WatchCard {
                     VStack(alignment: .leading, spacing: 7) {
-                        Text("FOCUSED SET LOG")
+                        Text("EXERCISE LIST")
                             .font(.system(.caption2, design: .rounded).weight(.bold))
                             .foregroundColor(WatchUITheme.actionBlue)
 
-                        Text("Edit weight, reps, and RPE one set at a time, then mark it complete.")
+                        Text("Open a movement to log the current set, swipe sets with the arrows, then scroll for add, replace, and delete.")
                             .font(.system(.caption, design: .rounded))
                             .foregroundColor(WatchUITheme.secondaryText)
                             .fixedSize(horizontal: false, vertical: true)
