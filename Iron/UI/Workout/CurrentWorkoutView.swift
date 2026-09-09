@@ -437,12 +437,20 @@ struct CurrentWorkoutView: View {
                     unit: settingsStore.weightUnit,
                     initialTarget: max(displayWeight(for: set), settingsStore.weightUnit.barbellWeight),
                     onApply: { value in
-                        set.weightValue = WeightUnit.convert(
+                        let metricWeight = WeightUnit.convert(
                             weight: value,
                             from: settingsStore.weightUnit,
                             to: .metric
                         )
+                        if let workoutExercise = set.workoutExercise {
+                            workoutSets(for: workoutExercise).forEach { workoutSet in
+                                workoutSet.weightValue = metricWeight
+                            }
+                        } else {
+                            set.weightValue = metricWeight
+                        }
                         save()
+                        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
                         activeSheet = nil
                     }
                 )
