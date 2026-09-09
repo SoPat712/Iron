@@ -2177,6 +2177,21 @@ enum InlineWorkoutSetLayout {
     static let completionWidth: CGFloat = 40
 }
 
+private struct CompletedSetGlassChrome: ViewModifier {
+    let isCompleted: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isCompleted {
+            content
+                .background(IronTheme.successContainer, in: Capsule(style: .continuous))
+                .ironLiquidGlassPill(tint: IronTheme.success.opacity(0.10))
+        } else {
+            content
+        }
+    }
+}
+
 struct InlineWorkoutSetRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -2458,16 +2473,12 @@ struct InlineWorkoutSetRow: View {
             .accessibilityRemoveTraits(.isSelected)
             .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
             }
-            // The same row geometry is used in both states. The temporary
-            // padding lets the fill reach the exercise-card edges; the matching
-            // negative inset keeps every column in exactly the same position.
-            .padding(.horizontal, 14)
+            // Completion changes only the chrome. The table columns keep the
+            // same geometry, while the green treatment remains inset from the
+            // exercise card and rounds into a true glass capsule.
             .padding(.vertical, 5)
-            .background(
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(set.isCompleted ? IronTheme.successContainer : .clear)
-            )
-            .padding(.horizontal, -14)
+            .frame(maxWidth: .infinity)
+            .modifier(CompletedSetGlassChrome(isCompleted: set.isCompleted))
             .padding(.vertical, 2)
             .offset(x: swipeOffset)
         }
