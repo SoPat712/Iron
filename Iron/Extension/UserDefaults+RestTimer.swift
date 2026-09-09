@@ -12,6 +12,7 @@ extension UserDefaults {
     enum RestTimerKeys: String {
         case restTimerStart
         case restTimerDuration
+        case restTimerPausedRemaining
         case recentRestTimes
     }
     
@@ -34,6 +35,24 @@ extension UserDefaults {
             guard let duration = self.object(forKey: RestTimerKeys.restTimerDuration.rawValue) as? TimeInterval else { return nil }
             guard duration > 0 else { return nil } // sanity check
             return duration
+        }
+    }
+
+    /// A paused timer keeps its remaining seconds without pretending that an
+    /// end date is still advancing. This survives app relaunches and lets the
+    /// logger, Live Activity, and Watch all render a truthful paused state.
+    var restTimerPausedRemaining: TimeInterval? {
+        set {
+            if let value = newValue {
+                self.set(value, forKey: RestTimerKeys.restTimerPausedRemaining.rawValue)
+            } else {
+                self.removeObject(forKey: RestTimerKeys.restTimerPausedRemaining.rawValue)
+            }
+        }
+        get {
+            guard let value = object(forKey: RestTimerKeys.restTimerPausedRemaining.rawValue) as? TimeInterval,
+                  value > 0 else { return nil }
+            return value
         }
     }
     

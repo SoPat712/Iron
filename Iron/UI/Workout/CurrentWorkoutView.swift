@@ -11,6 +11,7 @@ import AVKit
 import PhotosUI
 import UniformTypeIdentifiers
 import UIKit
+import CoreData
 import MuscleMap
 import WorkoutDataKit
 
@@ -20,6 +21,12 @@ private struct CurrentWorkoutScrollOffsetPreferenceKey: PreferenceKey {
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = nextValue()
     }
+}
+
+private struct PersonalRecordBanner: Identifiable, Equatable {
+    let id = UUID()
+    let exerciseTitle: String
+    let detail: String
 }
 
 struct CurrentWorkoutView: View {
@@ -57,6 +64,9 @@ struct CurrentWorkoutView: View {
     @State private var exercisePendingRemoval: WorkoutExercise?
     @State private var exercisePendingReplacement: WorkoutExercise?
     @State private var supersetExercise: WorkoutExercise?
+    @State private var personalRecordBanner: PersonalRecordBanner?
+    @State private var scrollTarget: NSManagedObjectID?
+    @State private var runningSetTimers: [NSManagedObjectID: Date] = [:]
 
     init(workout: Workout, onMinimize: @escaping () -> Void = {}) {
         self.workout = workout
@@ -66,6 +76,7 @@ struct CurrentWorkoutView: View {
     private enum SheetType: Identifiable {
         case workoutTime
         case restTimer
+        case workoutOptions
         case plates(WorkoutSet)
         case warmups(WorkoutSet)
 
@@ -73,6 +84,7 @@ struct CurrentWorkoutView: View {
             switch self {
             case .workoutTime: return "workout-time"
             case .restTimer: return "rest-timer"
+            case .workoutOptions: return "workout-options"
             case .plates(let set): return "plates-\(set.objectID.uriRepresentation().absoluteString)"
             case .warmups(let set): return "warmups-\(set.objectID.uriRepresentation().absoluteString)"
             }
@@ -99,8 +111,15 @@ struct CurrentWorkoutView: View {
         usesAccessibilityHeaderLayout ? 68 : 56
     }
 
+    private let muscleMapHeight: CGFloat = 54
+    private let workoutSummaryVerticalPadding: CGFloat = 12
+
+    /// Derived from the muscle map rather than hardcoded: the header is clipped,
+    /// so a summary shorter than its tallest child visibly cuts the body figures.
     private var workoutSummaryHeight: CGFloat {
-        usesAccessibilityHeaderLayout ? 84 : 72
+        usesAccessibilityHeaderLayout
+            ? 84
+            : muscleMapHeight + workoutSummaryVerticalPadding * 2
     }
 
     private var sessionHeaderExpandedHeight: CGFloat {
@@ -132,14 +151,18 @@ struct CurrentWorkoutView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                IronScreenBackground()
+                Color(.systemGroupedBackground)
+                    .ignoresSafeArea()
 
                 VStack(spacing: 0) {
                     workoutTopBar
                     ZStack(alignment: .top) {
                         VStack(spacing: 0) {
-                            sessionHeader
+                            if !isSessionHeaderCollapsed {
+                                sessionHeader
+                            }
 
+                            ScrollViewReader { scrollProxy in
                             ScrollView {
                                 LazyVStack(spacing: 0) {
                                     GeometryReader { proxy in
@@ -160,24 +183,21 @@ struct CurrentWorkoutView: View {
                                         }
                                     }
 
-                                    Button(action: { showingExerciseSelector = true }) {
-                                        Label("Add Exercises", systemImage: "plus")
+                                    if !workoutExercises.isEmpty {
+                                        Button {
+                                            showingExerciseSelector = true
+                                        } label: {
+                                            Label("Add Exercises", systemImage: "plus")
+                                                .frame(maxWidth: .infinity)
+                                        }
+                                        .ironProminentGlassButtonStyle()
+                                        .buttonBorderShape(.capsule)
+                                        .controlSize(.large)
+                                        .padding(.horizontal, IronTheme.horizontalPadding)
+                                        .padding(.top, 18)
                                     }
-                                    .buttonStyle(IronSecondaryButtonStyle())
-                                    .padding(.horizontal, IronTheme.horizontalPadding)
-                                    .padding(.top, 22)
 
-                                    Button(role: .destructive, action: { showingDiscardConfirmation = true }) {
-                                        Text("Discard workout")
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundColor(IronTheme.danger)
-                                            .frame(maxWidth: .infinity)
-                                            .padding(.vertical, 14)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .padding(.horizontal, IronTheme.horizontalPadding)
-                                    .padding(.top, 10)
-                                    .padding(.bottom, 28)
+                                    workoutBottomActions
                                 }
                             }
                             .coordinateSpace(name: "current-workout-scroll")
@@ -191,6 +211,14 @@ struct CurrentWorkoutView: View {
                                     setSessionHeaderCollapsed(false)
                                 }
                             }
+                            .onChange(of: scrollTarget) { _, target in
+                                guard let target else { return }
+                                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                                    scrollProxy.scrollTo(target, anchor: .top)
+                                }
+                                scrollTarget = nil
+                            }
+                            }
                         }
 
                         if isSessionHeaderCollapsed {
@@ -199,6 +227,14 @@ struct CurrentWorkoutView: View {
                                 .padding(.top, 8)
                                 .transition(.move(edge: .top).combined(with: .opacity))
                                 .zIndex(2)
+                        }
+
+                        if let banner = personalRecordBanner {
+                            personalRecordBannerView(banner)
+                                .padding(.horizontal, IronTheme.horizontalPadding)
+                                .padding(.top, isSessionHeaderCollapsed ? 62 : 8)
+                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .zIndex(3)
                         }
                     }
                 }
@@ -212,7 +248,6 @@ struct CurrentWorkoutView: View {
                     context: managedObjectContext,
                     exercises: exerciseStore.shownExercises
                 ),
-                usesModalSurface: true,
                 title: exercisePendingReplacement == nil ? "Add Exercise" : "Replace Exercise",
                 actionTitle: exercisePendingReplacement == nil ? "Add" : "Replace",
                 maximumSelectionCount: exercisePendingReplacement == nil ? nil : 1,
@@ -223,15 +258,11 @@ struct CurrentWorkoutView: View {
                 onAdd: applyExerciseSelection
             )
             .presentationDetents([.large])
-            .presentationDragIndicator(.visible)
-            .presentationBackground(IronTheme.modalSurface)
-        }
+            .presentationDragIndicator(.visible)        }
         .sheet(isPresented: $showingFinishEditor) {
             finishWorkoutSheet
                 .presentationDetents([.large])
-                .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
-                .interactiveDismissDisabled(isLoadingFinishMedia || isFinishingWorkout)
+                .presentationDragIndicator(.visible)                .interactiveDismissDisabled(isLoadingFinishMedia || isFinishingWorkout)
         }
         .sheet(item: $activeSheet) { sheet in
             sheetView(sheet)
@@ -258,11 +289,9 @@ struct CurrentWorkoutView: View {
                 }
             )
         }
-        .confirmationDialog(
-            "Discard this workout?",
-            isPresented: $showingDiscardConfirmation,
-            titleVisibility: .visible
-        ) {
+        // An alert, not a confirmation dialog: this is irreversible, so it should
+        // dim the log behind it and demand an explicit choice.
+        .alert("Discard this workout?", isPresented: $showingDiscardConfirmation) {
             Button("Discard Workout", role: .destructive) {
                 showingDiscardConfirmation = false
                 cancelWorkout()
@@ -273,13 +302,12 @@ struct CurrentWorkoutView: View {
         } message: {
             Text("The workout, its notes, and every logged set will be permanently deleted.")
         }
-        .confirmationDialog(
+        .alert(
             "Remove \(exercisePendingRemovalTitle)?",
             isPresented: Binding(
                 get: { exercisePendingRemoval != nil },
                 set: { if !$0 { exercisePendingRemoval = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("Remove Exercise", role: .destructive) {
                 guard let workoutExercise = exercisePendingRemoval else { return }
@@ -337,7 +365,18 @@ struct CurrentWorkoutView: View {
                 showingFinishEditor = true
             }
             #endif
+            applyIdleTimerPreference()
         }
+        .onDisappear {
+            UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onChange(of: settingsStore.keepScreenAwakeDuringWorkout) { _, _ in
+            applyIdleTimerPreference()
+        }
+    }
+
+    private func applyIdleTimerPreference() {
+        UIApplication.shared.isIdleTimerDisabled = settingsStore.keepScreenAwakeDuringWorkout
     }
 
     @ViewBuilder
@@ -345,10 +384,10 @@ struct CurrentWorkoutView: View {
         switch sheet {
         case .workoutTime:
             utilitySheet(
-                title: "Workout duration",
-                subtitle: "Adjust the session clock without leaving your set log",
+                title: "Workout Duration",
+                subtitle: "",
                 systemImage: "stopwatch",
-                detents: [.fraction(0.82), .large]
+                detents: [.large]
             ) {
                 EditCurrentWorkoutTimeView(workout: workout) {
                     save()
@@ -357,22 +396,42 @@ struct CurrentWorkoutView: View {
             }
 
         case .restTimer:
-            utilitySheet(
-                title: "Rest timer",
-                subtitle: "Dial in your recovery",
-                systemImage: "timer",
-                detents: [.height(430)]
-            ) {
+            NavigationStack {
                 RestTimerView()
                     .environmentObject(restTimerStore)
+                    .navigationTitle("Rest Timer")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { activeSheet = nil }
+                        }
+                    }
             }
+            // The timer is deliberately a half-height utility sheet. Its dial
+            // and four controls are sized to fit without a second pull-up.
+            .presentationDetents([.medium])
+            .presentationDragIndicator(.visible)
+
+        case .workoutOptions:
+            NavigationStack {
+                GeneralSettingsView()
+                    .navigationTitle("Workout Options")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Done") { activeSheet = nil }
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
 
         case .plates(let set):
             utilitySheet(
-                title: "Plate calculator",
-                subtitle: "Load each side of the bar",
-                systemImage: "circle.grid.cross",
-                detents: [.fraction(0.78)]
+                title: "Plate Calculator",
+                subtitle: "",
+                systemImage: "plusminus",
+                detents: [.large]
             ) {
                 PlateCalculatorView(
                     unit: settingsStore.weightUnit,
@@ -391,10 +450,10 @@ struct CurrentWorkoutView: View {
 
         case .warmups(let set):
             utilitySheet(
-                title: "Warm-up calculator",
-                subtitle: "Build up to your working weight",
+                title: "Warm-Up Calculator",
+                subtitle: "",
                 systemImage: "flame",
-                detents: [.height(620)]
+                detents: [.large]
             ) {
                 WarmupCalculatorView(
                     unit: settingsStore.weightUnit,
@@ -421,63 +480,150 @@ struct CurrentWorkoutView: View {
         )
         .presentationDetents(detents)
         .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-        .presentationBackground(IronTheme.modalSurface)
-    }
+        .presentationContentInteraction(.scrolls)    }
 
+    /// The logger is presented as a sheet, so it owns its own bar. Glass over the
+    /// scrolling set list is the one place a floating layer belongs here; an
+    /// opaque fill made this read as a third stacked panel above the header.
     private var workoutTopBar: some View {
         HStack(spacing: 10) {
             Button(action: onMinimize) {
                 Image(systemName: "chevron.down")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 32, height: 32)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(IronIconButtonStyle())
-            .accessibilityLabel("Minimize workout")
+            .buttonStyle(.plain)
+            .accessibilityLabel("Minimize Workout")
 
             Text(usesAccessibilityHeaderLayout ? "Workout" : "Log Workout")
                 .font(.headline)
-                .foregroundColor(IronTheme.primaryText)
                 .lineLimit(1)
                 .minimumScaleFactor(0.78)
 
             Spacer(minLength: 4)
 
-            Button(action: { activeSheet = .restTimer }) {
-                Image(systemName: "timer")
-            }
-            .buttonStyle(IronIconButtonStyle())
-            .accessibilityLabel("Rest timer")
+            restTimerTopBarButton
 
             Button("Finish") { showingFinishEditor = true }
-                .buttonStyle(IronCompactPillButtonStyle(prominent: true))
+                .ironProminentGlassButtonStyle()
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
                 .fixedSize(horizontal: true, vertical: false)
                 .layoutPriority(2)
                 .disabled(workoutExercises.isEmpty)
-                .opacity(workoutExercises.isEmpty ? 0.45 : 1)
         }
         .padding(.horizontal, IronTheme.horizontalPadding)
         .frame(height: workoutTopBarHeight)
-        .background(IronTheme.topBar.ignoresSafeArea(edges: .top))
-        .overlay(IronHairline(opacity: 0.30), alignment: .bottom)
+        .background(.bar)
+    }
+
+    /// Timer control beside Finish: a compact timer glyph at rest, and the
+    /// live countdown once a rest is running.
+    private var restTimerTopBarButton: some View {
+        Button { activeSheet = .restTimer } label: {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                if let remaining = restTimerStore.restTimerRemainingTime {
+                    Text(restTimerCountdownText(remaining))
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(Color.accentColor)
+                        .contentTransition(.numericText())
+                        .padding(.horizontal, 4)
+                        .accessibilityValue(remaining <= 0 ? "Finished" : restTimerTimeText(remaining))
+                } else {
+                    Image(systemName: "timer")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.tint)
+                        .frame(width: 32, height: 32)
+                }
+            }
+        }
+        // Keep the timer discoverable beside Finish. A capsule outline gives
+        // it the same affordance as the other toolbar controls without adding
+        // another filled panel to the workout header.
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .tint(restTimerStore.isPaused ? .orange : .accentColor)
+        .overlay {
+            Capsule(style: .continuous)
+                .stroke(
+                    (restTimerStore.isPaused ? Color.orange : Color.accentColor).opacity(0.42),
+                    lineWidth: 0.8
+                )
+        }
+        .accessibilityLabel("Rest timer")
+    }
+
+    private func personalRecordBannerView(_ banner: PersonalRecordBanner) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "medal.fill")
+                .foregroundStyle(.yellow)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Personal Record")
+                    .font(.footnote.weight(.semibold))
+                Text("\(banner.exerciseTitle) · \(banner.detail)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, minHeight: 50, alignment: .leading)
+        .ironLiquidGlassPill(tint: .clear)
+        .shadow(color: Color.black.opacity(0.16), radius: 16, x: 0, y: 7)
+        .accessibilityElement(children: .combine)
+        .task(id: banner.id) {
+            try? await Task.sleep(nanoseconds: 2_600_000_000)
+            withAnimation(IronMotion.snappy) { personalRecordBanner = nil }
+        }
+    }
+
+    /// Options and discard share one row of matching glass buttons so the end of
+    /// the log does not trail off into a lone red text link.
+    private var workoutBottomActions: some View {
+        HStack(spacing: 10) {
+            Button {
+                activeSheet = .workoutOptions
+            } label: {
+                Label("Options", systemImage: "slider.horizontal.3")
+                    .frame(maxWidth: .infinity)
+            }
+            .ironGlassButtonStyle()
+
+            Button(role: .destructive) {
+                showingDiscardConfirmation = true
+            } label: {
+                Label("Discard", systemImage: "trash")
+                    .frame(maxWidth: .infinity)
+            }
+            .ironGlassButtonStyle()
+            .tint(.red)
+        }
+        .buttonBorderShape(.capsule)
+        .controlSize(.large)
+        .padding(.horizontal, IronTheme.horizontalPadding)
+        .padding(.top, 10)
+        .padding(.bottom, 28)
     }
 
     private var sessionHeader: some View {
         VStack(spacing: 0) {
             watchSyncBanner
 
-            IronHairline(opacity: 0.55)
+            Divider()
             workoutSummary
                 .frame(height: workoutSummaryHeight)
         }
-        // The full-size header moves through a clipped reveal window. The metric labels
-        // themselves never scale or compress; the compact glass pill is a separate layout.
+        // A plain conditional swap with the compact pill. An offset-and-clip reveal
+        // let individual children linger outside the clip during the transition.
         .frame(height: sessionHeaderExpandedHeight)
-        .offset(y: isSessionHeaderCollapsed ? -sessionHeaderExpandedHeight : 0)
-        .frame(height: isSessionHeaderCollapsed ? 0 : sessionHeaderExpandedHeight, alignment: .top)
-        .background(IronTheme.background)
-        .overlay(IronHairline(), alignment: .bottom)
-        .clipped()
-        .allowsHitTesting(!isSessionHeaderCollapsed)
-        .accessibilityHidden(isSessionHeaderCollapsed)
+        .background(Color(.systemGroupedBackground))
+        .overlay(Divider(), alignment: .bottom)
     }
 
     private var watchSyncColor: Color {
@@ -509,12 +655,8 @@ struct CurrentWorkoutView: View {
     private func setSessionHeaderCollapsed(_ collapsed: Bool) {
         guard collapsed != isSessionHeaderCollapsed else { return }
 
-        if reduceMotion {
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
             isSessionHeaderCollapsed = collapsed
-        } else {
-            withAnimation(.interactiveSpring(response: 0.32, dampingFraction: 0.90)) {
-                isSessionHeaderCollapsed = collapsed
-            }
         }
     }
 
@@ -527,23 +669,23 @@ struct CurrentWorkoutView: View {
                 .frame(width: 9, height: 9)
             Text(watchSyncTitle)
                 .font(.subheadline)
-                .foregroundColor(IronTheme.primaryText)
                 .lineLimit(usesAccessibilityHeaderLayout ? 2 : 1)
                 .minimumScaleFactor(0.75)
             Spacer()
             Image(systemName: watchSyncSystemImage)
-                .font(.caption.weight(.bold))
-                .foregroundColor(color)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(color)
 
-            Button(action: { setSessionHeaderCollapsed(!isSessionHeaderCollapsed) }) {
+            Button {
+                setSessionHeaderCollapsed(!isSessionHeaderCollapsed)
+            } label: {
                 Image(systemName: "chevron.up")
-                    .font(.caption.weight(.bold))
-                    .foregroundColor(IronTheme.secondaryText)
+                    .font(.caption.weight(.semibold))
                     .rotationEffect(.degrees(isSessionHeaderCollapsed ? 180 : 0))
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                    .background(Circle().fill(IronTheme.raisedSurface))
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
             .accessibilityLabel(isSessionHeaderCollapsed ? "Expand workout summary" : "Collapse workout summary")
         }
         .padding(.leading, IronTheme.horizontalPadding)
@@ -574,7 +716,7 @@ struct CurrentWorkoutView: View {
                 }
             }
             .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.vertical, 12)
+            .padding(.vertical, workoutSummaryVerticalPadding)
         }
     }
 
@@ -583,25 +725,25 @@ struct CurrentWorkoutView: View {
             Button(action: { setSessionHeaderCollapsed(false) }) {
                 HStack(spacing: 8) {
                     Circle()
-                        .fill(IronTheme.accent)
+                        .fill(.tint)
                         .frame(width: 7, height: 7)
 
                     Text(workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
                     Text("•")
-                        .foregroundColor(IronTheme.tertiaryText)
+                        .foregroundStyle(.tertiary)
                     Text(workoutVolumeTitle)
                     Text("•")
-                        .foregroundColor(IronTheme.tertiaryText)
+                        .foregroundStyle(.tertiary)
                     Text("\(workout.numberOfCompletedSets ?? 0) sets")
 
                     Spacer(minLength: 4)
 
                     Image(systemName: "chevron.down")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(IronTheme.accent)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.tint)
                 }
                 .font(.caption.weight(.semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
+                .contentTransition(.numericText())
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 46)
                 .contentShape(Capsule(style: .continuous))
@@ -629,11 +771,11 @@ struct CurrentWorkoutView: View {
                 Text(label)
                 if let systemImage {
                     Image(systemName: systemImage)
-                        .font(.system(size: 8, weight: .bold))
+                        .font(.system(size: 8, weight: .semibold))
                 }
             }
             .font(.caption)
-            .foregroundColor(systemImage == nil ? IronTheme.secondaryText : IronTheme.accent)
+            .foregroundStyle(systemImage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
             .lineLimit(1)
             .minimumScaleFactor(0.65)
             Text(value)
@@ -641,6 +783,7 @@ struct CurrentWorkoutView: View {
                 .foregroundColor(tint)
                 .lineLimit(1)
                 .minimumScaleFactor(0.65)
+                .contentTransition(.numericText())
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -671,7 +814,7 @@ struct CurrentWorkoutView: View {
             liveMuscleBody(side: .front, muscles: muscles)
             liveMuscleBody(side: .back, muscles: muscles)
         }
-        .frame(height: 54)
+        .frame(height: muscleMapHeight)
         .allowsHitTesting(false)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(
@@ -686,14 +829,14 @@ struct CurrentWorkoutView: View {
         muscles: (primary: [Muscle], secondary: [Muscle])
     ) -> some View {
         let style = BodyViewStyle(
-            defaultFillColor: IronTheme.secondaryText.opacity(0.14),
-            strokeColor: IronTheme.secondaryText.opacity(0.16),
+            defaultFillColor: Color(.tertiaryLabel).opacity(0.35),
+            strokeColor: Color(.separator),
             strokeWidth: 0.5,
             selectionColor: IronTheme.accent,
             selectionStrokeColor: IronTheme.accent,
             selectionStrokeWidth: 1,
-            headColor: IronTheme.secondaryText.opacity(0.20),
-            hairColor: IronTheme.secondaryText.opacity(0.10)
+            headColor: Color(.tertiaryLabel).opacity(0.45),
+            hairColor: Color(.quaternaryLabel)
         )
         return BodyView(gender: .male, side: side, style: style)
             .highlight(muscles.secondary, color: IronTheme.accent, opacity: 0.42)
@@ -738,7 +881,7 @@ struct CurrentWorkoutView: View {
         if workout.title != nil || workout.comment != nil {
             VStack(spacing: 0) {
                 if workout.title != nil {
-                    TextField("Workout title", text: workoutTitle)
+                    TextField(suggestedWorkoutTitle, text: workoutTitle)
                         .font(.headline.weight(.semibold))
                         .padding(.vertical, 11)
                 }
@@ -751,26 +894,21 @@ struct CurrentWorkoutView: View {
             }
             .padding(.horizontal, IronTheme.horizontalPadding)
             .padding(.vertical, 10)
-            .overlay(IronHairline(opacity: 0.45), alignment: .bottom)
+            .overlay(Divider(), alignment: .bottom)
         }
     }
 
     private var emptyWorkoutState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "figure.strengthtraining.traditional")
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text("Start with an exercise")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Add exercises, then log weight, reps and effort directly on this screen.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
+        ContentUnavailableView {
+            Label("Start with an Exercise", systemImage: "figure.strengthtraining.traditional")
+        } description: {
+            Text("Add exercises, then log weight, reps, and effort directly on this screen.")
+        } actions: {
+            Button("Add Exercises") { showingExerciseSelector = true }
+                .ironProminentGlassButtonStyle()
+                .buttonBorderShape(.capsule)
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 30)
-        .padding(.vertical, 42)
+        .padding(.top, 24)
     }
 
     private func workoutExerciseSection(_ workoutExercise: WorkoutExercise, index: Int) -> some View {
@@ -790,9 +928,9 @@ struct CurrentWorkoutView: View {
                     ExerciseDiagramThumbnail(exercise: exercise, size: 50)
                 } else {
                     Circle()
-                        .fill(IronTheme.surface)
+                        .fill(Color(.tertiarySystemFill))
                         .frame(width: 50, height: 50)
-                        .overlay(Image(systemName: "dumbbell.fill").foregroundColor(IronTheme.accent))
+                        .overlay(Image(systemName: "dumbbell.fill").foregroundStyle(.secondary))
                 }
 
                 if let exercise = exercise {
@@ -800,14 +938,14 @@ struct CurrentWorkoutView: View {
                         VStack(alignment: .leading, spacing: 3) {
                             Text(exercise.title)
                                 .font(.body.weight(.semibold))
-                                .foregroundColor(IronTheme.accent)
+                                .foregroundStyle(.tint)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .lineLimit(2)
 
                             if workoutExercise.supersetUuid != nil {
                                 Label("Superset", systemImage: "link")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(IronTheme.secondaryText)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
                             }
                         }
                         .draggable(workoutExercise.objectID.uriRepresentation().absoluteString)
@@ -816,30 +954,27 @@ struct CurrentWorkoutView: View {
                     .accessibilityHint("Double tap to open. Touch and hold, then drag to reorder.")
                 } else {
                     Text("Unknown Exercise")
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(IronTheme.primaryText)
+                        .font(.body.weight(.semibold))
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                IronPopupMenu(
-                    title: "Exercise actions",
-                    actions: exercisePopupActions(
+                Menu {
+                    exerciseMenuItems(
                         for: workoutExercise,
                         sets: sets,
                         isBarbell: isBarbell && !usesDuration
-                    ),
-                    arrowEdge: index == 0 ? .top : .bottom
-                ) {
-                    Image(systemName: "ellipsis")
-                        .font(.title3.weight(.bold))
-                        .foregroundColor(IronTheme.primaryText)
+                    )
+                } label: {
+                    Label("Exercise Actions", systemImage: "ellipsis")
+                        .labelStyle(.iconOnly)
                         .frame(width: 42, height: 42)
+                        .contentShape(Rectangle())
                 }
             }
 
             TextField("Add notes here…", text: exerciseCommentBinding(for: workoutExercise))
                 .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
+                .foregroundStyle(.secondary)
                 .padding(.top, 9)
 
             restTimerMenu(for: workoutExercise)
@@ -868,29 +1003,40 @@ struct CurrentWorkoutView: View {
                     allowsSwipeToDelete: true
                 )
                 .environmentObject(settingsStore)
-                .background {
-                    if set.isCompleted {
-                        // The completion wash belongs to the table row, not its controls.
-                        // Extending the paint through the section inset keeps every column
-                        // perfectly stationary while the color reaches both screen edges.
-                        Rectangle()
-                            .fill(IronTheme.successContainer)
-                            .padding(.horizontal, -IronTheme.horizontalPadding)
-                    }
-                }
+                .transition(
+                    .asymmetric(
+                        insertion: .move(edge: .bottom).combined(with: .opacity),
+                        removal: .opacity.combined(with: .move(edge: .trailing))
+                    )
+                )
             }
+            .animation(
+                IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
+                value: sets.count
+            )
 
-            Button(action: { addSet(to: workoutExercise) }) {
+            Button {
+                addSet(to: workoutExercise)
+            } label: {
                 Label("Add Set", systemImage: "plus")
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(IronSecondaryButtonStyle())
-            .padding(.top, 10)
+            .ironGlassButtonStyle()
+            .buttonBorderShape(.capsule)
+            .controlSize(.regular)
+            .padding(.top, 12)
         }
+        .padding(14)
+        // One continuous grouped container per exercise. The previous layout
+        // stacked five full-bleed rules per block, which is what made the
+        // logger read as a flat spreadsheet instead of an Apple surface.
+        .background(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .fill(Color(.secondarySystemGroupedBackground))
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.top, 18)
-        .padding(.bottom, 22)
-        .background(IronTheme.background)
-        .overlay(IronHairline(), alignment: .bottom)
+        .padding(.top, 14)
         .dropDestination(for: String.self) { payloads, _ in
             guard let payload = payloads.first,
                   let source = workoutExercises.firstIndex(where: {
@@ -902,63 +1048,70 @@ struct CurrentWorkoutView: View {
         }
     }
 
-    private func exercisePopupActions(
+    @ViewBuilder
+    private func exerciseMenuItems(
         for workoutExercise: WorkoutExercise,
         sets: [WorkoutSet],
         isBarbell: Bool
-    ) -> [IronPopupAction] {
-        var actions: [IronPopupAction] = [
-            IronPopupAction(title: "Replace", systemImage: "arrow.triangle.2.circlepath") {
-                exercisePendingReplacement = workoutExercise
-                showingExerciseSelector = true
-            },
-            IronPopupAction(title: "Superset", systemImage: "link") {
-                supersetExercise = workoutExercise
-            }
-        ]
-
-        if isBarbell, let workingSet = sets.first(where: { $0.tagValue != .warmUp }) ?? sets.first {
-            actions.append(IronPopupAction(title: "Plate Calculator", systemImage: "circle.grid.cross") {
-                activeSheet = .plates(workingSet)
-            })
-            actions.append(IronPopupAction(title: "Warm-up Calculator", systemImage: "flame") {
-                activeSheet = .warmups(workingSet)
-            })
+    ) -> some View {
+        Button("Replace", systemImage: "arrow.triangle.2.circlepath") {
+            exercisePendingReplacement = workoutExercise
+            showingExerciseSelector = true
         }
-        actions.append(IronPopupAction(
-            title: "Remove Exercise",
-            systemImage: "trash",
-            role: .destructive
-        ) {
-            exercisePendingRemoval = workoutExercise
-        })
 
-        return actions
+        Button("Superset", systemImage: "link") {
+            supersetExercise = workoutExercise
+        }
+
+        if isBarbell,
+           settingsStore.showPlateCalculator || settingsStore.showWarmUpCalculator,
+           let workingSet = sets.first(where: { $0.tagValue != .warmUp }) ?? sets.first {
+            Section("Calculators") {
+                if settingsStore.showPlateCalculator {
+                    Button("Plate Calculator", systemImage: "plusminus") {
+                        activeSheet = .plates(workingSet)
+                    }
+                }
+                if settingsStore.showWarmUpCalculator {
+                    Button("Warm-up Calculator", systemImage: "flame") {
+                        activeSheet = .warmups(workingSet)
+                    }
+                }
+            }
+        }
+
+        Section {
+            Button("Remove Exercise", systemImage: "trash", role: .destructive) {
+                exercisePendingRemoval = workoutExercise
+            }
+        }
     }
 
     private func setTableHeader(usesDuration: Bool) -> some View {
         HStack(spacing: InlineWorkoutSetLayout.spacing) {
-            Text("SET").frame(width: InlineWorkoutSetLayout.setWidth)
-            Text("PREVIOUS").frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
+            Text("Set").frame(width: InlineWorkoutSetLayout.setWidth)
+            Text("Previous").frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
             if usesDuration {
-                Text("DURATION")
+                Text("Duration")
                     .frame(maxWidth: .infinity)
             } else {
                 HStack(spacing: 3) {
                     Image(systemName: "dumbbell")
                         .accessibilityHidden(true)
-                    Text(settingsStore.weightUnit.unit.symbol.uppercased())
+                    Text(settingsStore.weightUnit.unit.symbol)
                 }
                 .frame(maxWidth: .infinity)
-                Text("REPS").frame(width: InlineWorkoutSetLayout.repetitionsWidth)
+                Text("Reps").frame(width: InlineWorkoutSetLayout.repetitionsWidth)
             }
-            Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
+            if settingsStore.logRPE {
+                Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
+            }
             Image(systemName: "checkmark")
                 .frame(width: InlineWorkoutSetLayout.completionWidth)
                 .accessibilityHidden(true)
         }
-        .font(.system(size: 10, weight: .medium))
-        .foregroundColor(IronTheme.secondaryText)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
         .padding(.bottom, 6)
     }
 
@@ -976,71 +1129,114 @@ struct CurrentWorkoutView: View {
             .max() ?? .distantPast
     }
 
+    private enum ActiveRestTimerMetrics {
+        static let containerHeight: CGFloat = 46
+        static let controlHeight: CGFloat = 32
+        static let iconControlWidth: CGFloat = 36
+        static let textControlWidth: CGFloat = 50
+        static let countdownWidth: CGFloat = 74
+        static let contentSpacing: CGFloat = 4
+        static let minimumControlGap: CGFloat = 4
+        static let horizontalPadding: CGFloat = 10
+    }
+
     private var activeRestTimerStrip: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             if let remaining = restTimerStore.restTimerRemainingTime {
-                let timeText = restTimerDurationFormatter.string(from: abs(remaining.rounded(.up))) ?? "0:00"
-                HStack(spacing: 8) {
+                HStack(spacing: ActiveRestTimerMetrics.contentSpacing) {
                     Button(action: { activeSheet = .restTimer }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: "timer")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text(remaining < 0 ? "+\(timeText)" : timeText)
-                                .font(.system(size: 16, weight: .bold).monospacedDigit())
-                                .contentTransition(.numericText())
-                        }
-                        .foregroundColor(remaining < 0 ? IronTheme.danger : IronTheme.accent)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        Text(restTimerCountdownText(remaining))
+                            .font(.system(size: 16, weight: .bold).monospacedDigit())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
+                            .contentTransition(.numericText())
+                        .foregroundColor(IronTheme.accent)
+                        .frame(width: ActiveRestTimerMetrics.countdownWidth, alignment: .leading)
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("Rest timer")
-                    .accessibilityValue(remaining < 0 ? "Over by \(timeText)" : timeText)
+                    .accessibilityValue(remaining <= 0 ? "Finished" : restTimerTimeText(remaining))
 
-                    activeTimerControl(systemImage: "minus", label: "Subtract 15 seconds") {
-                        adjustActiveRestTimer(by: -15)
+                    HStack(spacing: 0) {
+                        activeTimerControl(title: "−15", systemImage: nil, label: "Subtract 15 seconds") {
+                            adjustActiveRestTimer(by: -15)
+                        }
+                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
+                        activeTimerControl(
+                            title: "",
+                            systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
+                            label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
+                        ) {
+                            restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
+                            WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+                        }
+                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
+                        activeTimerControl(title: "+15", systemImage: nil, label: "Add 15 seconds") {
+                            adjustActiveRestTimer(by: 15)
+                        }
+                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
+                        activeTimerControl(
+                            title: "",
+                            systemImage: "xmark",
+                            label: "Stop rest timer",
+                            tint: .red,
+                            action: stopActiveRestTimer
+                        )
                     }
-                    activeTimerControl(systemImage: "plus", label: "Add 15 seconds") {
-                        adjustActiveRestTimer(by: 15)
-                    }
-
-                    Button(action: stopActiveRestTimer) {
-                        Text("Skip")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.primaryText)
-                            .padding(.horizontal, 12)
-                            .frame(height: 44)
-                            .background(Capsule(style: .continuous).fill(IronTheme.raisedSurface))
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Skip rest timer")
+                    .frame(maxWidth: .infinity)
                 }
-                .padding(.horizontal, 12)
-                .frame(minHeight: 54)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                        .fill(IronTheme.accentSoft.opacity(0.72))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                        .stroke(IronTheme.accent.opacity(0.28), lineWidth: 1)
-                )
+                .padding(.horizontal, ActiveRestTimerMetrics.horizontalPadding)
+                .frame(maxWidth: .infinity)
+                .frame(height: ActiveRestTimerMetrics.containerHeight)
+                // The live countdown is the one thing on this screen that must
+                // stay readable at a glance mid-set, so it floats on glass.
+                .ironLiquidGlassPill(tint: .clear)
             }
         }
     }
 
+    private func restTimerTimeText(_ remaining: TimeInterval) -> String {
+        restTimerDurationFormatter.string(from: abs(remaining.rounded(.up))) ?? "0:00"
+    }
+
+    private func restTimerCountdownText(_ remaining: TimeInterval) -> String {
+        restTimerTimeText(max(remaining, 0))
+    }
+
     private func activeTimerControl(
-        systemImage: String,
+        title: String,
+        systemImage: String?,
         label: String,
+        tint: Color = IronTheme.accent,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 44, height: 44)
-                .background(Circle().fill(IronTheme.raisedSurface))
+            Group {
+                if title.isEmpty, let systemImage {
+                    Image(systemName: systemImage)
+                } else if let systemImage {
+                    Label(title, systemImage: systemImage)
+                        .labelStyle(.titleAndIcon)
+                } else {
+                    Text(title)
+                }
+            }
+
+            .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .minimumScaleFactor(0.7)
+            .frame(
+                width: title.isEmpty
+                    ? ActiveRestTimerMetrics.iconControlWidth
+                    : ActiveRestTimerMetrics.textControlWidth,
+                height: ActiveRestTimerMetrics.controlHeight
+            )
         }
         .buttonStyle(.plain)
+        .contentShape(Capsule(style: .continuous))
+        .foregroundStyle(tint)
+        .tint(tint)
+        .ironLiquidGlassPill(tint: tint.opacity(0.06))
         .accessibilityLabel(label)
     }
 
@@ -1055,54 +1251,42 @@ struct CurrentWorkoutView: View {
     }
 
     private func restTimerMenu(for workoutExercise: WorkoutExercise) -> some View {
-        Button(action: { restTimerEditorExercise = workoutExercise }) {
+        Button {
+            restTimerEditorExercise = workoutExercise
+        } label: {
             HStack(spacing: 7) {
-                Image(systemName: "timer")
-                Text("Rest Timer: \(restTimerTitle(for: workoutExercise))")
+                Label("Rest Timer", systemImage: "timer")
                 Spacer()
-                Image(systemName: "chevron.up")
-                    .font(.caption2.weight(.bold))
+                Text(restTimerTitle(for: workoutExercise))
+                    .monospacedDigit()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
             }
-            .font(.system(size: 15, weight: .medium))
-            .foregroundColor(IronTheme.accent)
+            .font(.subheadline)
             .frame(minHeight: 44)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Rest timer for \(restTimerTitle(for: workoutExercise))")
-        .accessibilityHint("Opens a radial rest-duration picker")
+        .accessibilityHint("Opens the rest duration picker")
     }
 
     private var finishWorkoutSheet: some View {
         NavigationStack {
-            ZStack {
-                IronScreenBackground()
-
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        finishIntroCard
-                        finishSessionSummaryCard
-                        finishEffortCard
-                        finishMediaCard
-                        finishNotesCard
-                        finishStartDateCard
-                        finishVisibilityCard
-                        finishRoutineSettingsCard
-                        finishHealthCard
-                        finishExerciseSummaryCard
-                        finishSaveActions
-                    }
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.top, 12)
-                    .padding(.bottom, 36)
-                }
+            Form {
+                finishSummarySection
+                finishTitleSection
+                finishEffortSection
+                finishNotesSection
+                finishMediaSection
+                finishTimingSection
+                finishSyncSection
+                finishExerciseSummarySection
+                finishDiscardSection
             }
             .navigationTitle("Finish Workout")
             .navigationBarTitleDisplayMode(.inline)
-            .navigationBarHidden(false)
-            .toolbar(.visible, for: .navigationBar)
-            .toolbarBackground(IronTheme.topBar, for: .navigationBar)
-            .toolbarBackground(.visible, for: .navigationBar)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { showingFinishEditor = false }
@@ -1135,136 +1319,103 @@ struct CurrentWorkoutView: View {
         }
     }
 
-    private var finishIntroCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 10) {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.title2.weight(.bold))
-                        .foregroundColor(IronTheme.success)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("Session complete")
-                            .font(.title3.weight(.bold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text("Make a few final edits before saving it to your history.")
-                            .font(.subheadline)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                }
-
-                TextField("Workout title", text: $finishTitle)
-                    .font(.headline.weight(.semibold))
-                    .textInputAutocapitalization(.words)
-                    .padding(.horizontal, 14)
-                    .frame(minHeight: 48)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .fill(IronTheme.field)
-                    )
-            }
+    private var finishSummarySection: some View {
+        Section {
+            LabeledContent("Duration", value: workoutDurationFormatter.string(from: finishDuration) ?? "0:00")
+                .monospacedDigit()
+            LabeledContent("Volume", value: workoutVolumeTitle)
+                .monospacedDigit()
+            LabeledContent("Completed Sets", value: "\(workout.numberOfCompletedSets ?? 0)")
+                .monospacedDigit()
+        } header: {
+            Text("Session Summary")
+        } footer: {
+            Text("Review the session, then tap Finish to save it to your history.")
         }
     }
 
-    private var finishSessionSummaryCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                finishSectionLabel("Session summary", systemImage: "chart.bar.xaxis")
-
-                HStack(spacing: 0) {
-                    finishSummaryMetric(
-                        icon: "clock",
-                        value: workoutDurationFormatter.string(from: finishDuration) ?? "0:00",
-                        label: "Duration",
-                        tint: IronTheme.accent
-                    )
-                    finishSummaryDivider
-                    finishSummaryMetric(
-                        icon: "scalemass",
-                        value: workoutVolumeTitle,
-                        label: "Volume",
-                        tint: IronTheme.warning
-                    )
-                    finishSummaryDivider
-                    finishSummaryMetric(
-                        icon: "checkmark.circle",
-                        value: "\(workout.numberOfCompletedSets ?? 0)",
-                        label: "Sets",
-                        tint: IronTheme.success
-                    )
-                }
-                .padding(.vertical, 13)
-            }
+    private var finishTitleSection: some View {
+        Section {
+            TextField(suggestedWorkoutTitle, text: $finishTitle)
+                .textInputAutocapitalization(.words)
+        } header: {
+            Text("Title")
+        } footer: {
+            Text("Leave blank to keep \(suggestedWorkoutTitle).")
         }
     }
 
-    private var finishEffortCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 13) {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        finishSectionLabel("Session effort", systemImage: "gauge.with.dots.needle.67percent")
-                        Text(effortLabel)
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                    Spacer()
-                    Text("\(Int(sessionEffort))/10")
-                        .font(.title2.weight(.bold).monospacedDigit())
-                        .foregroundColor(IronTheme.accent)
-                }
+    private var suggestedWorkoutTitle: String {
+        workout.generatedTitle(in: exerciseStore.exercises) ?? "Workout"
+    }
 
-                IronEffortCarousel(
-                    selection: Binding(
-                        get: { sessionEffort },
-                        set: { newValue in
-                            if let newValue { sessionEffort = newValue }
-                        }
-                    )
+    private var finishEffortSection: some View {
+        Section {
+            EffortRatingGraph(rating: sessionEffortSelection)
+                .padding(.vertical, 6)
+        } header: {
+            Text("Session Effort")
+        } footer: {
+            Text(effortLabel)
+        }
+    }
+
+    /// The effort picker writes back into the same 1–10 scale the rest of the
+    /// app stores, so the segmented control stays the source of truth.
+    private var sessionEffortSelection: Binding<Int> {
+        Binding(
+            get: { Int(sessionEffort.rounded()) },
+            set: { sessionEffort = Double($0) }
+        )
+    }
+
+    private var finishNotesSection: some View {
+        Section {
+            TextField(
+                "What went well? Add context for your future self…",
+                text: workoutComment,
+                axis: .vertical
+            )
+            .lineLimit(4...10)
+        } header: {
+            Text("Notes")
+        }
+    }
+
+    private var finishMediaSection: some View {
+        Section {
+            if finishMediaURL != nil {
+                finishMediaPreview
+            }
+
+            PhotosPicker(
+                selection: $finishMediaItem,
+                matching: .any(of: [.images, .videos]),
+                photoLibrary: .shared()
+            ) {
+                Label(
+                    finishMediaURL == nil ? "Add Photo or Video" : "Replace Media",
+                    systemImage: finishMediaURL == nil ? "plus" : "arrow.triangle.2.circlepath"
                 )
             }
-        }
-    }
+            .disabled(isLoadingFinishMedia)
 
-    private var finishMediaCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                finishSectionLabel("Workout media", systemImage: "photo.on.rectangle")
-                Text("Add one photo or video to remember this session. It stays on this device.")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-
-                if finishMediaURL != nil {
-                    finishMediaPreview
-                }
-
-                PhotosPicker(
-                    selection: $finishMediaItem,
-                    matching: .any(of: [.images, .videos]),
-                    photoLibrary: .shared()
-                ) {
-                    Label(
-                        finishMediaURL == nil ? "Add photo or video" : "Replace media",
-                        systemImage: finishMediaURL == nil ? "plus" : "arrow.triangle.2.circlepath"
-                    )
-                }
-                .buttonStyle(IronSecondaryButtonStyle())
-                .disabled(isLoadingFinishMedia)
-
-                if isLoadingFinishMedia {
-                    HStack(spacing: 8) {
-                        ProgressView().tint(IronTheme.accent)
-                        Text("Saving media…")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                }
-
-                if let finishMediaError = finishMediaError {
-                    Text(finishMediaError)
-                        .font(.caption)
-                        .foregroundColor(IronTheme.danger)
+            if isLoadingFinishMedia {
+                HStack(spacing: 8) {
+                    ProgressView()
+                    Text("Saving media…")
+                        .foregroundStyle(.secondary)
                 }
             }
+
+            if let finishMediaError = finishMediaError {
+                Text(finishMediaError)
+                    .foregroundStyle(.red)
+            }
+        } header: {
+            Text("Media")
+        } footer: {
+            Text("One photo or video per workout. It stays on this device.")
         }
     }
 
@@ -1279,268 +1430,95 @@ struct CurrentWorkoutView: View {
                         .scaledToFill()
                 } else {
                     Image(systemName: finishMediaKind == .video ? "video.fill" : "photo.fill")
-                        .font(.title2.weight(.bold))
-                        .foregroundColor(IronTheme.accent)
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(IronTheme.accentSoft)
+                        .background(Color(.tertiarySystemFill))
                 }
             }
-            .frame(width: 72, height: 72)
-            .clipShape(
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-            )
+            .frame(width: 56, height: 56)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(finishMediaKind == .video ? "Video attached" : "Photo attached")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Saved with this workout")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-            }
+            Text(finishMediaKind == .video ? "Video attached" : "Photo attached")
 
             Spacer()
 
             Button("Remove", role: .destructive, action: removeFinishMedia)
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.plain)
+                .buttonStyle(.borderless)
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(IronTheme.raisedSurface)
-        )
     }
 
-    private var finishNotesCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 10) {
-                finishSectionLabel("Description & notes", systemImage: "note.text")
-
-                ZStack(alignment: .topLeading) {
-                    if workoutComment.wrappedValue.isEmpty {
-                        Text("What went well? Add context for your future self…")
-                            .font(.body)
-                            .foregroundColor(IronTheme.tertiaryText)
-                            .padding(.horizontal, 6)
-                            .padding(.vertical, 8)
-                            .allowsHitTesting(false)
-                    }
-
-                    TextEditor(text: workoutComment)
-                        .font(.body)
-                        .foregroundColor(IronTheme.primaryText)
-                        .frame(minHeight: 116)
-                        .scrollContentBackground(.hidden)
-                        .padding(2)
-                        .background(IronTheme.field)
-                        .clipShape(RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
-                }
+    private var finishTimingSection: some View {
+        Section {
+            Button {
+                showingFinishStartDateEditor = true
+            } label: {
+                LabeledContent("Started", value: finishStartDate.formatted(date: .abbreviated, time: .shortened))
             }
+        } header: {
+            Text("Timing")
+        } footer: {
+            Text("Duration stays \(workoutDurationFormatter.string(from: finishDuration) ?? "0:00"); the finish time becomes \(finishEndDate.formatted(date: .omitted, time: .shortened)).")
         }
     }
 
-    private var finishStartDateCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 12) {
-                finishSectionLabel("Start date & time", systemImage: "calendar.badge.clock")
+    private var finishSyncSection: some View {
+        Section {
+            Toggle("Sync with Apple Health", isOn: $syncWithHealth)
 
-                IronDateTimeButton(
-                    title: "Started",
-                    systemImage: "play.fill",
-                    date: finishStartDate,
-                    action: { showingFinishStartDateEditor = true }
-                )
-
-                HStack(spacing: 8) {
-                    Image(systemName: "lock.rotation")
-                        .foregroundColor(IronTheme.accent)
-                    Text("Duration stays \(workoutDurationFormatter.string(from: finishDuration) ?? "0:00"); finish time becomes \(finishEndDate.formatted(date: .omitted, time: .shortened)).")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-            }
-        }
-    }
-
-    private var finishVisibilityCard: some View {
-        finishPanel {
-            Button(action: { showingVisibilityInfo = true }) {
-                HStack(spacing: 12) {
-                    Image(systemName: "lock.fill")
-                        .font(.headline.weight(.bold))
-                        .foregroundColor(IronTheme.accent)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(IronTheme.accentSoft))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Visibility")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text("Private · Only you")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-
-                    Spacer()
-                    Image(systemName: "info.circle")
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Iron workouts are private. Tap to learn why.")
-        }
-    }
-
-    private var finishRoutineSettingsCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 10) {
-                finishSectionLabel("Saved workout", systemImage: "arrow.triangle.2.circlepath")
-
-                Toggle(isOn: $updateLinkedRoutine) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Update linked workout")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(workout.workoutRoutine == nil ? IronTheme.tertiaryText : IronTheme.primaryText)
-                        Text(workout.workoutRoutine == nil
-                             ? "This session was not started from a saved workout."
-                             : "Write completed weights and reps back to \(workout.workoutRoutine?.displayTitle ?? "this workout") next time.")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                }
-                .toggleStyle(.switch)
-                .tint(IronTheme.accent)
+            Toggle("Update Linked Workout", isOn: $updateLinkedRoutine)
                 .disabled(workout.workoutRoutine == nil)
 
-                if workout.workoutRoutine != nil {
-                    Text("Only completed sets are used; your saved workout remains editable afterward.")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.tertiaryText)
-                }
+            Button {
+                showingVisibilityInfo = true
+            } label: {
+                LabeledContent("Visibility", value: "Private")
             }
+            .accessibilityHint("Iron workouts are private. Tap to learn why.")
+        } header: {
+            Text("Saving")
+        } footer: {
+            Text(workout.workoutRoutine == nil
+                 ? "This session was not started from a saved workout."
+                 : "Completed weights and reps are written back to \(workout.workoutRoutine?.displayTitle ?? "the linked workout").")
         }
     }
 
-    private var finishHealthCard: some View {
-        finishPanel {
-            Toggle(isOn: $syncWithHealth) {
+    private var finishExerciseSummarySection: some View {
+        Section("Exercises") {
+            ForEach(workoutExercises) { workoutExercise in
+                let exercise = workoutExercise.exercise(in: exerciseStore.exercises)
                 HStack(spacing: 12) {
-                    Image(systemName: "heart.fill")
-                        .font(.headline.weight(.bold))
-                        .foregroundColor(IronTheme.danger)
-                        .frame(width: 34, height: 34)
-                        .background(Circle().fill(IronTheme.danger.opacity(0.12)))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("Sync with Apple Health")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text(syncWithHealth ? "Will save this workout to Apple Health." : "Stored in Iron only for now.")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
+                    if let exercise = exercise {
+                        ExerciseDiagramThumbnail(exercise: exercise, size: 38)
+                    } else {
+                        Circle()
+                            .fill(Color(.tertiarySystemFill))
+                            .frame(width: 38, height: 38)
+                            .overlay(Image(systemName: "dumbbell.fill").foregroundStyle(.secondary))
                     }
+
+                    Text(exercise?.title ?? "Unknown exercise")
+
+                    Spacer()
+
+                    Text("\(workoutExercise.numberOfCompletedSets ?? 0)")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
                 }
-            }
-            .toggleStyle(.switch)
-            .tint(IronTheme.accent)
-        }
-    }
-
-    private var finishExerciseSummaryCard: some View {
-        finishPanel {
-            VStack(alignment: .leading, spacing: 10) {
-                finishSectionLabel("Exercise summary", systemImage: "figure.strengthtraining.traditional")
-
-                ForEach(Array(workoutExercises.enumerated()), id: \.element.id) { index, workoutExercise in
-                    let exercise = workoutExercise.exercise(in: exerciseStore.exercises)
-                    HStack(spacing: 12) {
-                        if let exercise = exercise {
-                            ExerciseDiagramThumbnail(exercise: exercise, size: 38)
-                        } else {
-                            Circle()
-                                .fill(IronTheme.raisedSurface)
-                                .frame(width: 38, height: 38)
-                                .overlay(Image(systemName: "dumbbell.fill").foregroundColor(IronTheme.accent))
-                        }
-
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(exercise?.title ?? "Unknown exercise")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("\(workoutExercise.numberOfCompletedSets ?? 0) completed sets")
-                                .font(.caption)
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-
-                        Spacer()
-                        Text("\(index + 1)")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundColor(IronTheme.tertiaryText)
-                    }
-
-                    if index < workoutExercises.count - 1 {
-                        Divider().background(IronTheme.outline)
-                    }
-                }
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(exercise?.title ?? "Unknown exercise"), \(workoutExercise.numberOfCompletedSets ?? 0) completed sets")
             }
         }
     }
 
-    private var finishSaveActions: some View {
-        finishPanel {
-            Button("Discard workout", role: .destructive) {
+    private var finishDiscardSection: some View {
+        Section {
+            Button("Discard Workout", role: .destructive) {
                 showingDiscardConfirmation = true
             }
-            .font(.subheadline.weight(.semibold))
-            .foregroundColor(IronTheme.danger)
-            .buttonStyle(.plain)
-            .padding(.vertical, 8)
             .accessibilityHint("Permanently deletes this workout and its logged sets.")
         }
-    }
-
-    private func finishSectionLabel(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.subheadline.weight(.semibold))
-            .foregroundColor(IronTheme.primaryText)
-    }
-
-    private func finishPanel<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        content()
-            .padding(16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                    .fill(IronTheme.surface)
-            )
-    }
-
-    private func finishSummaryMetric(
-        icon: String,
-        value: String,
-        label: String,
-        tint: Color
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Label(label, systemImage: icon)
-                .font(.caption)
-                .foregroundColor(tint)
-            Text(value)
-                .font(.system(size: 19, weight: .semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.66)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-    }
-
-    private var finishSummaryDivider: some View {
-        Rectangle()
-            .fill(IronTheme.outline.opacity(0.6))
-            .frame(width: 1, height: 42)
     }
 
     private var finishEndDate: Date {
@@ -1555,38 +1533,30 @@ struct CurrentWorkoutView: View {
             onClose: { showingVisibilityInfo = false }
         ) {
             VStack(alignment: .leading, spacing: 14) {
-                IronCard(padding: 14) {
-                    Text("Iron has no social feed or public profiles. Finished workouts are always saved as Private · Only you, so your training history stays on this device and in your personal backups.")
-                        .font(.subheadline)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
+                Text("Iron has no social feed or public profiles. Finished workouts are always saved as Private · Only you, so your training history stays on this device and in your personal backups.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Label {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Only you can see it")
+                            .font(.subheadline.weight(.semibold))
+                        Text("There is nothing else to publish or configure.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                } icon: {
+                    Image(systemName: "person.crop.circle.badge.checkmark")
+                        .foregroundStyle(IronTheme.success)
                 }
 
-                IronCard(padding: 14) {
-                    HStack(spacing: 11) {
-                        Image(systemName: "person.crop.circle.badge.checkmark")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundColor(IronTheme.success)
-                            .frame(width: 38, height: 38)
-                            .background(Circle().fill(IronTheme.success.opacity(0.14)))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Only you can see it")
-                                .font(.subheadline.weight(.bold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("There is nothing else to publish or configure.")
-                                .font(.caption)
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-                        Spacer(minLength: 0)
-                    }
-                }
+                Spacer(minLength: 0)
             }
             .padding(IronTheme.horizontalPadding)
         }
         .presentationDetents([.height(360), .medium])
-        .presentationDragIndicator(.visible)
-        .presentationBackground(IronTheme.modalSurface)
-    }
+        .presentationDragIndicator(.visible)    }
 
     private var effortLabel: String {
         switch sessionEffort {
@@ -1692,7 +1662,9 @@ struct CurrentWorkoutView: View {
     }
 
     private func createDefaultWorkoutSets(for workoutExercise: WorkoutExercise, exercise: Exercise) -> NSOrderedSet {
-        let history = (try? managedObjectContext.fetch(workoutExercise.historyFetchRequest)) ?? []
+        let history = settingsStore.prefillPreviousValues
+            ? (try? managedObjectContext.fetch(workoutExercise.historyFetchRequest)) ?? []
+            : []
         let recentSets = history.first?.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
         let numberOfSets = max(recentSets.count, 3)
 
@@ -1727,31 +1699,35 @@ struct CurrentWorkoutView: View {
     }
 
     private func addSet(to workoutExercise: WorkoutExercise) {
-        let existingSets = workoutSets(for: workoutExercise)
-        let set = WorkoutSet.create(context: managedObjectContext)
-        set.workoutExercise = workoutExercise
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            let existingSets = workoutSets(for: workoutExercise)
+            let set = WorkoutSet.create(context: managedObjectContext)
+            set.workoutExercise = workoutExercise
 
-        if let source = existingSets.last ?? latestHistorySet(for: workoutExercise, at: existingSets.count) {
-            if let duration = source.durationValue, source.distanceValue == nil {
-                set.durationValue = duration
+            if let source = existingSets.last ?? latestHistorySet(for: workoutExercise, at: existingSets.count) {
+                if let duration = source.durationValue, source.distanceValue == nil {
+                    set.durationValue = duration
+                } else {
+                    set.weightValue = source.weightValue
+                    set.repetitionsValue = source.repetitionsValue
+                }
+                set.rpeValue = source.rpeValue
+                set.tagValue = source.tagValue
             } else {
-                set.weightValue = source.weightValue
-                set.repetitionsValue = source.repetitionsValue
+                set.repetitionsValue = 5
             }
-            set.rpeValue = source.rpeValue
-            set.tagValue = source.tagValue
-        } else {
-            set.repetitionsValue = 5
+            set.isCompleted = false
+            save()
         }
-        set.isCompleted = false
-        save()
         WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
     }
 
     private func deleteSet(_ set: WorkoutSet, from workoutExercise: WorkoutExercise) {
-        workoutExercise.removeFromWorkoutSets(set)
-        managedObjectContext.delete(set)
-        save()
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            workoutExercise.removeFromWorkoutSets(set)
+            managedObjectContext.delete(set)
+            save()
+        }
         WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
     }
 
@@ -1788,15 +1764,29 @@ struct CurrentWorkoutView: View {
             set.completedAt = Date()
             workout.start = workout.start ?? Date()
 
-            let feedback = UINotificationFeedbackGenerator()
-            feedback.prepare()
-            feedback.notificationOccurred(.success)
-            AudioServicesPlaySystemSound(1103)
+            let isRecord = settingsStore.personalRecordAlerts && set.isPersonalRecord == true
 
-            restTimerStore.restTimerDuration = restTimerDuration(for: workoutExercise)
-            restTimerStore.restTimerStart = Date()
+            if settingsStore.workoutHaptics {
+                let feedback = UINotificationFeedbackGenerator()
+                feedback.prepare()
+                feedback.notificationOccurred(isRecord ? .warning : .success)
+            }
+            if settingsStore.workoutSounds {
+                AudioServicesPlaySystemSound(isRecord ? 1025 : 1103)
+            }
+            if isRecord {
+                announcePersonalRecord(for: set, in: workoutExercise)
+            }
+
+            if settingsStore.autoStartRestTimer {
+                restTimerStore.start(duration: restTimerDuration(for: workoutExercise))
+            }
         }
         save()
+
+        if justCompleted, settingsStore.supersetAutoScroll {
+            advanceThroughSuperset(from: workoutExercise)
+        }
 
         if justCompleted {
             WorkoutLiveActivityManager.shared.setCompleted(
@@ -1810,6 +1800,29 @@ struct CurrentWorkoutView: View {
                 preservingTransition: false
             )
         }
+    }
+
+    private func announcePersonalRecord(for set: WorkoutSet, in workoutExercise: WorkoutExercise) {
+        let title = workoutExercise.exercise(in: exerciseStore.exercises)?.title ?? "Personal Record"
+        let detail = set.resultTitle(weightUnit: settingsStore.weightUnit)
+        withAnimation(IronMotion.snappy) {
+            personalRecordBanner = PersonalRecordBanner(exerciseTitle: title, detail: detail)
+        }
+    }
+
+    /// Moves the log to the next unfinished exercise in the same superset so the
+    /// user can keep alternating without scrolling by hand.
+    private func advanceThroughSuperset(from workoutExercise: WorkoutExercise) {
+        guard let supersetUuid = workoutExercise.supersetUuid else { return }
+        let partners = workoutExercises.filter { $0.supersetUuid == supersetUuid }
+        guard partners.count > 1,
+              let currentIndex = partners.firstIndex(of: workoutExercise) else { return }
+
+        let rotated = partners[(currentIndex + 1)...] + partners[..<currentIndex]
+        guard let next = rotated.first(where: { partner in
+            workoutSets(for: partner).contains { !$0.isCompleted }
+        }) else { return }
+        scrollTarget = next.id
     }
 
     private func setRestTimer(_ duration: TimeInterval?, for workoutExercise: WorkoutExercise) {
@@ -1898,7 +1911,12 @@ struct CurrentWorkoutView: View {
     }
 
     private func prepareFinishEditor() {
-        finishTitle = workout.title ?? workout.workoutPlanAndRoutineTitle() ?? ""
+        if let named = workout.title ?? workout.workoutPlanAndRoutineTitle(),
+           !named.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            finishTitle = named
+        } else {
+            finishTitle = workout.generatedTitle(in: exerciseStore.exercises) ?? ""
+        }
         finishStartDate = workout.safeStart
         finishDuration = max(workout.safeDuration, 0)
         sessionEffort = workout.sessionEffortValue ?? 7
@@ -2013,7 +2031,9 @@ struct CurrentWorkoutView: View {
 
         let trimmedTitle = finishTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedComment = workout.comment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        workout.title = trimmedTitle.isEmpty ? nil : trimmedTitle
+        workout.title = trimmedTitle.isEmpty
+            ? workout.generatedTitle(in: exerciseStore.exercises)
+            : trimmedTitle
         workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
         workout.start = finishStartDate
         workout.end = finishEndDate
@@ -2150,6 +2170,7 @@ enum InlineWorkoutSetLayout {
 }
 
 struct InlineWorkoutSetRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
     @ObservedObject var set: WorkoutSet
 
@@ -2165,6 +2186,71 @@ struct InlineWorkoutSetRow: View {
 
     @State private var showingRPEPicker = false
     @State private var showingDurationPicker = false
+    @State private var inlineTimerStart: Date?
+
+    /// Timed sets can be run like a stopwatch instead of dialling in a target
+    /// first: tap to start, tap to bank the elapsed time.
+    @ViewBuilder
+    private var durationControl: some View {
+        if settingsStore.inlineSetTimer, !set.isCompleted {
+            TimelineView(.periodic(from: Date(), by: 0.5)) { context in
+                Button(action: toggleInlineTimer) {
+                    durationLabel(
+                        text: inlineTimerText(now: context.date),
+                        isRunning: inlineTimerStart != nil
+                    )
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(inlineTimerStart == nil ? "Start set timer" : "Stop set timer")
+            }
+            .contextMenu {
+                Button("Enter Duration", systemImage: "keyboard") { showingDurationPicker = true }
+            }
+        } else {
+            Button(action: { showingDurationPicker = true }) {
+                durationLabel(
+                    text: restTimerDurationFormatter.string(from: set.durationValue ?? 60) ?? "1:00",
+                    isRunning: false
+                )
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Set duration")
+        }
+    }
+
+    private func durationLabel(text: String, isRunning: Bool) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: isRunning ? "stop.fill" : "stopwatch")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(
+                    set.isCompleted
+                        ? IronTheme.onSuccessContainer
+                        : (isRunning ? .red : IronTheme.accent)
+                )
+            Text(text)
+                .font(.system(size: 15, weight: .semibold).monospacedDigit())
+                .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.primaryText)
+        }
+        .frame(maxWidth: .infinity, minHeight: 44)
+    }
+
+    private func inlineTimerText(now: Date) -> String {
+        guard let inlineTimerStart else {
+            return restTimerDurationFormatter.string(from: set.durationValue ?? 0) ?? "0:00"
+        }
+        let elapsed = max(0, now.timeIntervalSince(inlineTimerStart))
+        return restTimerDurationFormatter.string(from: elapsed) ?? "0:00"
+    }
+
+    private func toggleInlineTimer() {
+        if let inlineTimerStart {
+            set.durationValue = max(1, (Date().timeIntervalSince(inlineTimerStart)).rounded())
+            self.inlineTimerStart = nil
+            onChanged()
+        } else {
+            inlineTimerStart = Date()
+        }
+    }
     @State private var weightText = ""
     @State private var repetitionsText = ""
     @State private var swipeOffset: CGFloat = 0
@@ -2255,7 +2341,9 @@ struct InlineWorkoutSetRow: View {
             }
 
             HStack(spacing: InlineWorkoutSetLayout.spacing) {
-            IronPopupMenu(title: "Set type", actions: setTypePopupActions, arrowEdge: .bottom) {
+            Menu {
+                setTypeMenuItems
+            } label: {
                 Text(setLabel)
                     .font(.system(size: 16, weight: .semibold).monospacedDigit())
                     .foregroundColor(
@@ -2266,9 +2354,10 @@ struct InlineWorkoutSetRow: View {
                     .frame(width: InlineWorkoutSetLayout.setWidth, height: 44)
                     .background(
                         RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(set.isCompleted ? IronTheme.successControl : IronTheme.raisedSurface)
+                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
                     )
             }
+            .accessibilityLabel("Set type")
 
             Text(previousTitle)
                 .font(.system(size: 13).monospacedDigit())
@@ -2280,19 +2369,7 @@ struct InlineWorkoutSetRow: View {
 
             if usesDuration {
                 setField {
-                    Button(action: { showingDurationPicker = true }) {
-                        HStack(spacing: 6) {
-                            Image(systemName: "stopwatch")
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.accent)
-                            Text(restTimerDurationFormatter.string(from: set.durationValue ?? 60) ?? "1:00")
-                                .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                                .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.primaryText)
-                        }
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Set duration")
+                    durationControl
                 }
             } else {
                 setField(isFocused: focusedField == .weight) {
@@ -2317,43 +2394,53 @@ struct InlineWorkoutSetRow: View {
                 }
             }
 
-            Button(action: { showingRPEPicker = true }) {
-                Group {
-                    if let rpe = set.rpeValue {
-                        Text(String(format: "%g", rpe))
-                    } else {
-                        Image(systemName: "gauge.with.dots.needle.50percent")
+            if settingsStore.logRPE {
+                Button(action: { showingRPEPicker = true }) {
+                    Group {
+                        if let rpe = set.rpeValue {
+                            Text(String(format: "%g", rpe))
+                        } else {
+                            Image(systemName: "gauge.with.dots.needle.50percent")
+                        }
                     }
+                    .font(.system(size: 13, weight: .medium).monospacedDigit())
+                    .foregroundColor(
+                        set.isCompleted
+                            ? IronTheme.onSuccessContainer
+                            : (set.rpeValue == nil ? IronTheme.secondaryText : IronTheme.accent)
+                    )
+                    .frame(width: InlineWorkoutSetLayout.rpeWidth, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
+                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
+                    )
                 }
-                .font(.system(size: 13, weight: .medium).monospacedDigit())
-                .foregroundColor(
-                    set.isCompleted
-                        ? IronTheme.onSuccessContainer
-                        : (set.rpeValue == nil ? IronTheme.secondaryText : IronTheme.accent)
-                )
-                .frame(width: InlineWorkoutSetLayout.rpeWidth, height: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                        .fill(set.isCompleted ? IronTheme.successControl : IronTheme.raisedSurface)
-                )
+                .buttonStyle(.plain)
+                .accessibilityLabel(rpeAccessibilityLabel)
+                .accessibilityHint("Opens the effort selector")
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel(rpeAccessibilityLabel)
-            .accessibilityHint("Opens the effort selector")
 
-            Button(action: onToggleCompleted) {
+            Button {
+                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                    onToggleCompleted()
+                }
+            } label: {
                 Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .bold))
+                    .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(
                         set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.secondaryText
                     )
+                    // Completing a set is the most repeated action in the app, so
+                    // it gets the one piece of overshoot motion in the logger.
+                    .scaleEffect(set.isCompleted ? 1.12 : 1)
                     .frame(width: InlineWorkoutSetLayout.completionWidth, height: 44)
                     .background(
                         RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(set.isCompleted ? IronTheme.successControl : IronTheme.raisedSurface)
+                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
                 )
             }
             .buttonStyle(.plain)
+            .sensoryFeedback(.success, trigger: set.isCompleted) { _, completed in completed }
             .accessibilityLabel(
                 set.isCompleted
                     ? "Set \(index + 1) completed"
@@ -2363,18 +2450,17 @@ struct InlineWorkoutSetRow: View {
             .accessibilityRemoveTraits(.isSelected)
             .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
             }
-            .padding(.vertical, 4)
+            // The same row geometry is used in both states. The temporary
+            // padding lets the fill reach the exercise-card edges; the matching
+            // negative inset keeps every column in exactly the same position.
+            .padding(.horizontal, 14)
+            .padding(.vertical, 5)
             .background(
-                ZStack {
-                    RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                        .fill(IronTheme.background)
-
-                    if set.isCompleted {
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .fill(IronTheme.successContainer)
-                    }
-                }
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(set.isCompleted ? IronTheme.successContainer : .clear)
             )
+            .padding(.horizontal, -14)
+            .padding(.vertical, 2)
             .offset(x: swipeOffset)
         }
         .background(
@@ -2389,9 +2475,14 @@ struct InlineWorkoutSetRow: View {
             }
         )
         .contentShape(Rectangle())
-        .clipped()
         .simultaneousGesture(swipeDeleteGesture)
         .onAppear(perform: synchronizeEntryText)
+        .onChange(of: set.isCompleted) { _, isCompleted in
+            // Banking the elapsed time on completion keeps a running stopwatch
+            // from being silently discarded.
+            guard isCompleted, inlineTimerStart != nil else { return }
+            toggleInlineTimer()
+        }
         .onChange(of: set.weightValue) { _, _ in
             guard focusedField != .weight else { return }
             weightText = formattedWeight
@@ -2415,29 +2506,17 @@ struct InlineWorkoutSetRow: View {
         .toolbar {
             if focusedField != nil {
                 ToolbarItemGroup(placement: .keyboard) {
-                    if focusedField == .weight {
-                        Button(action: openPlateCalculator) {
-                            Image(systemName: "circle.grid.cross")
-                                .font(.system(size: 17, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(
-                            IronKeyboardAccessoryButtonStyle(
-                                tint: IronTheme.accent
-                            )
-                        )
-                        .accessibilityLabel("Plate calculator")
-                        .accessibilityHint("Calculates the plates to load for this set")
+                    if focusedField == .weight, settingsStore.showPlateCalculator {
+                        Button("Plate Calculator", systemImage: "plusminus", action: openPlateCalculator)
+                            .labelStyle(.iconOnly)
+                            .accessibilityHint("Calculates the plates to load for this set")
                     }
 
                     Spacer()
 
-                    Button(action: { focusedField = nil }) {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(IronKeyboardAccessoryButtonStyle())
-                    .accessibilityLabel("Dismiss number pad")
+                    Button("Done") { focusedField = nil }
+                        .fontWeight(.semibold)
+                        .accessibilityLabel("Dismiss number pad")
                 }
             }
         }
@@ -2462,36 +2541,29 @@ struct InlineWorkoutSetRow: View {
         return "RPE \(String(format: "%g", rpe))"
     }
 
-    private var setTypePopupActions: [IronPopupAction] {
-        var actions = [
-            IronPopupAction(
-                title: "Normal Set",
-                systemImage: "number",
-                isSelected: set.tagValue == nil
-            ) {
-                set.tagValue = nil
-                onChanged()
-            }
-        ]
-
-        actions += WorkoutSetTag.allCases.map { tag in
-            IronPopupAction(
-                id: tag.rawValue,
-                title: tag.title.capitalized,
-                systemImage: setTypeIcon(for: tag),
-                isSelected: set.tagValue == tag
-            ) {
-                set.tagValue = tag
-                onChanged()
+    @ViewBuilder
+    private var setTypeMenuItems: some View {
+        Picker("Set Type", selection: setTagBinding) {
+            Label("Normal Set", systemImage: "number").tag(WorkoutSetTag?.none)
+            ForEach(WorkoutSetTag.allCases, id: \.self) { tag in
+                Label(tag.title.capitalized, systemImage: setTypeIcon(for: tag))
+                    .tag(WorkoutSetTag?.some(tag))
             }
         }
-        actions.append(IronPopupAction(
-            title: "Delete Set",
-            systemImage: "trash",
-            role: .destructive,
-            action: onDelete
-        ))
-        return actions
+
+        Section {
+            Button("Delete Set", systemImage: "trash", role: .destructive, action: onDelete)
+        }
+    }
+
+    private var setTagBinding: Binding<WorkoutSetTag?> {
+        Binding(
+            get: { set.tagValue },
+            set: {
+                set.tagValue = $0
+                onChanged()
+            }
+        )
     }
 
     private func setTypeIcon(for tag: WorkoutSetTag) -> String {
@@ -2596,19 +2668,18 @@ struct InlineWorkoutSetRow: View {
                     .fill(
                         set.isCompleted
                             ? IronTheme.successControl
-                            : (isFocused ? IronTheme.accentSoft : IronTheme.field)
+                            : (isFocused ? IronTheme.accentSoft : Color(.tertiarySystemFill))
                     )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .stroke(
-                                set.isCompleted
-                                    ? IronTheme.success.opacity(0.58)
-                                    : (isFocused ? IronTheme.accent : IronTheme.outline.opacity(0.55)),
-                                lineWidth: isFocused && !set.isCompleted ? 2 : 1
-                            )
-                    )
+                    // The focus ring is the only stroke left on a set field; the
+                    // resting outline was pure decoration on top of a filled shape.
+                    .overlay {
+                        if isFocused && !set.isCompleted {
+                            RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
+                                .stroke(IronTheme.accent, lineWidth: 2)
+                        }
+                    }
             )
-            .animation(.easeOut(duration: 0.16), value: isFocused)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isFocused)
     }
 
     private var swipeDeleteAction: some View {
@@ -2704,16 +2775,11 @@ private struct RPEPickerSheet: View {
     let onChanged: () -> Void
 
     @State private var selection: Double
-    @State private var carouselSelection: Double?
 
     init(set: WorkoutSet, onChanged: @escaping () -> Void) {
         self.set = set
         self.onChanged = onChanged
-        let initialValue = set.rpeValue ?? 7
-        _selection = State(initialValue: initialValue)
-        // Start unbound so the first post-layout assignment scrolls the
-        // selected effort into the visual center of the carousel.
-        _carouselSelection = State(initialValue: nil)
+        _selection = State(initialValue: set.rpeValue ?? 7)
     }
 
     var body: some View {
@@ -2723,135 +2789,47 @@ private struct RPEPickerSheet: View {
             systemImage: "gauge.with.dots.needle.50percent",
             onClose: { dismiss() }
         ) {
-            VStack(spacing: 12) {
-                IronCard(padding: 12) {
-                    HStack(spacing: 14) {
-                        VStack(spacing: 0) {
-                            Text(String(format: "%g", selection))
-                                .font(.system(size: 36, weight: .bold).monospacedDigit())
-                                .foregroundColor(IronTheme.accent)
-                            Text("RPE")
-                                .font(.caption2.weight(.bold))
-                                .tracking(0.7)
-                                .foregroundColor(IronTheme.secondaryText)
+            List {
+                Section {
+                    // A wheel is the platform control for picking one value from
+                    // an ordered scale, and it reads the selected RPE without the
+                    // bespoke carousel's custom scroll math.
+                    Picker("RPE", selection: $selection) {
+                        ForEach(Array(RPE.allowedValues), id: \.self) { value in
+                            Text(String(format: "%g", value))
+                                .monospacedDigit()
+                                .tag(value)
                         }
-                        .frame(width: 76)
-
-                        Rectangle()
-                            .fill(IronTheme.outline.opacity(0.5))
-                            .frame(width: 1, height: 48)
-
-                        Text(RPE.title(selection) ?? "Choose how many repetitions you had left in reserve.")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundColor(IronTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-
-                        Spacer(minLength: 0)
                     }
+                    .pickerStyle(.wheel)
+                    .labelsHidden()
+                    .frame(height: 130)
+                } footer: {
+                    Text(RPE.title(selection) ?? "Choose how many repetitions you had left in reserve.")
                 }
 
-                rpeCarousel
-
-                HStack(spacing: 10) {
-                    Button("Clear") {
-                        set.rpeValue = nil
-                        onChanged()
-                        dismiss()
-                    }
-                    .buttonStyle(IronSecondaryButtonStyle())
-
-                    Button("Apply RPE") {
+                Section {
+                    Button("Apply RPE \(String(format: "%g", selection))") {
                         set.rpeValue = selection
                         onChanged()
                         dismiss()
                     }
-                    .buttonStyle(IronPrimaryButtonStyle())
+                    .fontWeight(.semibold)
+
+                    if set.rpeValue != nil {
+                        Button("Clear RPE", role: .destructive) {
+                            set.rpeValue = nil
+                            onChanged()
+                            dismiss()
+                        }
+                    }
                 }
             }
-            .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.bottom, 18)
+            .listStyle(.insetGrouped)
         }
         .presentationDetents([.height(430), .large])
         .presentationDragIndicator(.visible)
-        .presentationBackground(IronTheme.modalSurface)
         .sensoryFeedback(.selection, trigger: selection)
-    }
-
-    private var rpeCarousel: some View {
-        GeometryReader { geometry in
-            VStack(spacing: 6) {
-                ZStack {
-                    Capsule(style: .continuous)
-                        .fill(IronTheme.accent.opacity(0.08))
-                        .frame(width: 70, height: 76)
-
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 8) {
-                            ForEach(Array(RPE.allowedValues), id: \.self) { value in
-                                Button(action: {
-                                    withAnimation(.snappy) {
-                                        carouselSelection = value
-                                        selection = value
-                                    }
-                                }) {
-                                    VStack(spacing: 5) {
-                                        Text(String(format: "%g", value))
-                                            .font(.system(
-                                                size: selection == value ? 24 : 17,
-                                                weight: selection == value ? .bold : .semibold
-                                            ).monospacedDigit())
-                                        Text("RPE")
-                                            .font(.system(size: 9, weight: .semibold))
-                                            .opacity(selection == value ? 1 : 0)
-                                    }
-                                    .foregroundColor(selection == value ? IronTheme.onAccent : IronTheme.secondaryText)
-                                    .frame(width: 62, height: selection == value ? 70 : 58)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                            .fill(selection == value ? IronTheme.accent : IronTheme.surface)
-                                    )
-                                }
-                                .buttonStyle(.plain)
-                                .id(value)
-                                .scrollTransition(.interactive, axis: .horizontal) { content, phase in
-                                    content
-                                        .scaleEffect(phase.isIdentity ? 1 : 0.86)
-                                        .opacity(phase.isIdentity ? 1 : 0.58)
-                                }
-                            }
-                        }
-                        .scrollTargetLayout()
-                    }
-                    .contentMargins(
-                        .horizontal,
-                        max((geometry.size.width - 62) / 2, 0),
-                        for: .scrollContent
-                    )
-                    .scrollTargetBehavior(.viewAligned)
-                    .scrollPosition(id: $carouselSelection, anchor: .center)
-                    .onChange(of: carouselSelection) { _, value in
-                        guard let value = value else { return }
-                        selection = value
-                    }
-                    .onAppear {
-                        DispatchQueue.main.async {
-                            carouselSelection = selection
-                        }
-                    }
-                }
-
-                HStack {
-                    Text("5 · Easy")
-                    Spacer()
-                    Text("Swipe to select")
-                    Spacer()
-                    Text("10 · Max")
-                }
-                .font(.caption2)
-                .foregroundColor(IronTheme.tertiaryText)
-            }
-        }
-        .frame(height: 96)
     }
 }
 

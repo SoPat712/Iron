@@ -147,9 +147,7 @@ class NotificationManager: NSObject {
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        if notification.request.identifier == NotificationIdentifier.restTimerUp.rawValue {
-            completionHandler([.alert, .sound])
-        }
+        completionHandler([.banner, .list, .sound])
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {

@@ -20,13 +20,17 @@ The primary references are Apple's Human Interface Guidelines for
 1. Prefer the native SwiftUI control before creating an Iron-specific control.
 2. Use Apple semantic colors and text styles; never recreate separate light and
    dark palettes in a screen.
-3. Keep content on opaque system surfaces. Reserve Liquid Glass and materials for
-   floating controls, navigation, tab accessories, and other functional layers.
-4. Use tint sparingly. Blue means action or selection, green means completion,
+3. Let the system own chrome. Never paint a toolbar, search field, sheet, or list
+   background: an opaque fill flattens the bar at rest and suppresses scroll-edge
+   and Liquid Glass behavior. Content sits on `List`/`Form` grouped surfaces.
+4. Reserve Liquid Glass for layers that float above changing content — the active
+   workout accessory, the Home weekly hero, and the logger summary pill. Glass is
+   depth, not another stacked card.
+5. Use tint sparingly. Blue means action or selection, green means completion,
    orange means warning or attention, and red means destructive or failed.
-5. Preserve data density during a workout. Native does not mean sparse.
-6. Every animation must explain navigation, continuity, or a state change.
-7. Respect Dynamic Type, VoiceOver, Reduce Motion, safe areas, and a 44-point
+6. Preserve data density during a workout. Native does not mean sparse.
+7. Every animation must explain navigation, continuity, or a state change.
+8. Respect Dynamic Type, VoiceOver, Reduce Motion, safe areas, and a 44-point
    minimum touch target.
 
 ## Semantic foundation
@@ -39,17 +43,47 @@ Production views consume `IronTheme`, whose roles map to adaptive UIKit colors.
 | `success` | `systemGreen` | Completed sets and successful operations |
 | `warning` | `systemOrange` | Attention and overtime |
 | `danger` | `systemRed` | Destructive actions and errors |
-| `background` | `systemGroupedBackground` | Screen canvas |
-| `surface` | `secondarySystemGroupedBackground` | Grouped sections and cards |
+| `background` | `systemGroupedBackground` | Full-screen editors that cannot use a `List` |
+| `surface` | `secondarySystemGroupedBackground` | Only where a `Section` row is impossible |
 | `raisedSurface` | `tertiarySystemGroupedBackground` | Nested low-emphasis surfaces |
 | `field` | `secondarySystemFill` | Input and compact control backgrounds |
-| `topBar` | `systemBackground` | Navigation and editor bars |
 | `outline` | `separator` | Hairlines only, not card borders |
 | text roles | `label`, `secondaryLabel`, `tertiaryLabel` | Text hierarchy |
+
+`List`, `Form`, and sheets receive no explicit background. `IronTheme.surface` and
+`raisedSurface` are for the few surfaces the platform cannot express — prefer a
+`Section` row every time.
 
 Do not hard-code black, white, gray, or RGB values for application chrome.
 Exercise diagrams and user photos are the exceptions: they use fixed media roles
 because their contrast must not change with appearance.
+
+## Retired Iron components
+
+The following Iron primitives were removed in favor of the platform control. Do not
+reintroduce them or an equivalent under a new name.
+
+| Removed | Use instead |
+| --- | --- |
+| `IronCard`, `IronScreenBackground`, `IronModalBackground` | `List`/`Form` with `Section` |
+| `IronSectionTitle` | `Section` header, or `Text` in a footer |
+| `IronHairline` | `Divider` |
+| `IronDestinationHeader`, `ironDestinationScreen` | `.navigationTitle` plus `ToolbarItem` |
+| `IronMetricTile` | `LabeledContent` rows |
+| `IronPrimaryButtonStyle`, `IronSecondaryButtonStyle`, `IronIconButtonStyle` | `.borderedProminent`, `.bordered`, `.borderless` |
+| `IronCompactPillButtonStyle`, `IronChoicePillButtonStyle`, `IronUtilityPillButtonStyle` | `Picker`, or `.bordered` with `.buttonBorderShape(.capsule)` |
+| `IronKeyboardAccessoryButtonStyle` | Plain `Button` in a `.keyboard` toolbar |
+| `IronPopupMenu`, `IronPopupAction` | `Menu`, `swipeActions`, `contextMenu` |
+| `IronEffortCarousel` | `Picker` |
+| `IronDateTimeButton` | `DatePicker` |
+| `WatchCard`, `WatchActionButtonStyle` | watchOS `List`/`Section`, `.bordered` buttons |
+| Custom `Canvas`/`Path` chart drawing | Swift Charts |
+| `presentationBackground`, `toolbarBackground` | Nothing — let the system render it |
+
+What remains in `SwiftUISupport.swift` is deliberately small: the semantic palette,
+the two Liquid Glass modifiers, `IronMotion`, and the few sheets that carry more
+explanation than an `.alert` can (`IronUtilitySheet`, `IronConfirmationSheet`,
+`IronStatusSheet`, `IronDateTimePickerSheet`, `IronDurationPickerSheet`).
 
 ## Geometry and spacing
 
@@ -59,6 +93,7 @@ because their contrast must not change with appearance.
 | Icon button | `IronTheme.iconButtonSize` | 44 x 44 pt |
 | Grouped section radius | `IronTheme.cornerRadius` | 12 pt |
 | Field/control radius | `IronTheme.compactCornerRadius` | 10 pt |
+| Hero/glass radius | `IronTheme.heroCornerRadius` | 22 pt |
 | Screen gutter | `IronTheme.horizontalPadding` | 16 pt |
 | Floating workout clearance | `IronTheme.floatingWorkoutBottomClearance` | 152 pt |
 
@@ -85,15 +120,20 @@ decorative outlines or shadows.
 The app has five stable top-level tabs, in this order, and preserves each tab's
 navigation state:
 
-- **Home:** weekly training and health summaries, calendar, measurements, recent activity.
+- **Home:** glass weekly hero, inline activity calendar, body measurements, pinned
+  exercise charts, and recent training. Body measurements live here, not in Settings.
 - **History:** completed workouts, exercise history, trends, records, and muscle load.
 - **Workout:** quick start, saved workouts, folders, and workout sharing.
-- **Exercises:** searchable movement library, muscles, equipment, and instructions.
-- **Settings:** personal measurements, appearance, training defaults, connected services,
-  privacy, backups, imports, exports, licenses, and developer tools.
+- **Exercises:** searchable movement library, instructions, and two independent
+  filter menus — one for muscle, one for equipment. Never combine them in one menu.
+- **Settings:** appearance, training defaults, connected services, privacy, backups,
+  imports, exports, licenses, and developer tools.
 
 Use `NavigationStack`, `.navigationTitle`, standard back behavior, `ToolbarItem`,
-and the native `TabView`. Do not draw a fake circular back button. A custom header
+and the native `TabView`. Navigation bars and `.searchable` fields keep the system
+material so they read as glass at rest and adopt scroll-edge behavior on scroll —
+they must never be given a `toolbarBackground` fill. Do not draw a fake circular
+back button. A custom header
 is allowed only when an interactive full-screen workout or editor cannot be
 expressed by the platform bar; it must still use 44-point controls and standard
 title geometry.
@@ -109,11 +149,12 @@ accessory contains resume, expand, and discard actions.
 
 - Use native `Toggle` with `.switch` and the app tint.
 - Use native `Menu` and `Button(role:)` for pull-down actions.
-- Use `Picker` or a system wheel for standard choices. A custom carousel is valid
-  for effort/RPE because it previews an ordered scale and centers the current value.
-- Primary actions use a filled blue rounded rectangle. Limit each surface to one
-  visually dominant action.
-- Secondary actions use a system-fill rounded rectangle or a plain text toolbar action.
+- Use `Picker` or a system wheel for ordered choices such as effort/RPE and 1RM
+  limits. The active rest timer is the deliberate exception: its compact radial
+  dial supports direct 15-second adjustment with haptic and audio notches.
+- Primary actions use `.borderedProminent`. Limit each surface to one visually
+  dominant action.
+- Secondary actions use `.bordered` or a plain text toolbar action.
 - Destructive actions use the `.destructive` role and system red.
 - Text fields use the correct numeric keyboard and may expose a trailing or keyboard-
   accessory utility such as the plate calculator.
@@ -141,9 +182,9 @@ accessory contains resume, expand, and discard actions.
 - Use `.confirmationDialog` or `.alert` for simple destructive decisions. A custom
   confirmation sheet is reserved for explanations that genuinely need more room.
 - Use `.searchable` for searchable collections rather than drawing a custom search field.
-- Date selection uses `DatePicker`; duration-only training controls may retain a
-  specialized dial when it improves one-handed use.
-- Never impose a custom modal corner radius merely to imitate another app.
+- Date and time selection uses `DatePicker`. Durations use `IronDurationWheel`, the
+  system dual-wheel minute/second picker.
+- Never impose a custom modal corner radius or `presentationBackground`.
 
 ## Active workout behavior
 
@@ -159,13 +200,16 @@ accessory contains resume, expand, and discard actions.
 - A named saved workout remains named throughout the active and completed workout.
 - Weight and repetition fields accept only valid numeric input. Focusing a weight field
   shows the plate-calculator control beside the keyboard-dismiss control.
-- Completing a set paints one semantic green wash from screen edge to screen edge and
-  highlights every editable/control value without changing any row padding, width, or
-  column geometry; completion is never communicated by color alone.
+- Completing a set paints one rounded semantic-green wash from edge to edge inside
+  its exercise surface and highlights every editable/control value without changing
+  row padding, width, or column geometry; completion is never communicated by color alone.
 - Set deletion is a trailing swipe reveal. The red action expands behind the full row
   as the row moves and appears only during the swipe.
-- The active rest timer appears above the exercise that triggered it with live time,
-  minus 15 seconds, plus 15 seconds, and Skip.
+- The active rest timer appears above the exercise that triggered it as a
+  full-width Liquid Glass status pill. Its four separate compact controls share
+  one geometry token and are distributed evenly: minus 15 seconds, pause/resume,
+  plus 15 seconds, and stop. The radial editor scrubs locally and commits on
+  release so notification, Watch, and Live Activity updates never block dragging.
 - The session muscle map highlights only muscles represented by completed sets;
   primary and secondary muscles use distinct emphasis and update during the workout.
 - Exercise actions are Replace, Superset, and Remove. Reordering is direct manipulation:
@@ -193,6 +237,9 @@ grouped Apple sections rather than nested cards or an overlay on the logger.
 
 ## Data visualization
 
+- All charts use Swift Charts. Hand-drawn `Canvas`, `Path`, or `GeometryReader`
+  plotting and third-party chart libraries are not permitted.
+- Selection uses `chartXSelection`; axes use `AxisMarks` with automatic tick counts.
 - Data marks are the most prominent element; axes and framing are secondary.
 - Tapping or horizontally scrubbing selects the nearest point and shows exact period,
   value, workout count, sets, repetitions, duration, volume, and recorded effort.
@@ -210,15 +257,27 @@ grouped Apple sections rather than nested cards or an overlay on the logger.
 - The Lock Screen and expanded Dynamic Island show elapsed workout time, workout name,
   exercise, next set number/count and prescription, completed/total sets, rest progress,
   a live countdown, and native App Intent controls for −15 seconds, +15 seconds, and Skip.
-- The Watch app is set-first: workout identity, current exercise/set, editable values,
-  and one obvious Complete Set action in the first viewport.
+- Declare `supplementalActivityFamilies([.small])` so the activity reaches the Apple
+  Watch Smart Stack, and give `.small` its own layout: one identity line, the live
+  value or countdown, and Skip only when rest is actually running.
+- The Watch app targets watchOS 10 and uses `NavigationStack` with `List`/`Section`
+  throughout. Set logging is a grouped form of `Picker` rows plus a prominent
+  Complete Set control; the rest timer rides in a `safeAreaInset` glass capsule.
 - Watch controls use native watchOS components, Digital Crown interaction where useful,
-  immediate persistence, and truthful reachable/queued/offline status.
+  immediate persistence, and truthful reachable/queued/offline status. No tonal card
+  containers or per-muscle rainbow tinting.
+
+## Home Screen widget
+
+- The Last Workout widget uses `containerBackground(.fill.tertiary, for: .widget)`
+  and supports `.systemSmall` and `.systemMedium`. No solid accent slab behind the
+  statistic, and no white-on-accent text.
 
 ## Motion and feedback
 
 - Prefer platform navigation and presentation transitions.
-- Use short ease-in-out motion for selection and system springs for direct manipulation.
+- Use the `IronMotion` tokens rather than ad-hoc durations: `IronMotion.snappy` for
+  selection and value changes, and the spring tokens for direct manipulation.
 - Haptics reinforce set completion, deletion, and discrete picker changes.
 - Never delay dismissal solely to play a decorative animation.
 - Read `accessibilityReduceMotion` for custom matched-geometry, chart, carousel, and
@@ -248,3 +307,6 @@ grouped Apple sections rather than nested cards or an overlay on the logger.
   completion effort, Health sync, Watch continuity, import/export, and Live Activity.
 - Compare every new control with the closest native iOS control before approving a
   custom implementation.
+- Verify no screen sets `toolbarBackground`, `presentationBackground`, or
+  `scrollContentBackground(.hidden)` with a custom fill.
+- Verify no reintroduced equivalent of a component in “Retired Iron components”.
