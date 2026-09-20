@@ -2170,6 +2170,7 @@ enum FinishWorkoutMediaStore {
 
 enum InlineWorkoutSetLayout {
     static let spacing: CGFloat = 4
+    static let completedContentInset: CGFloat = 6
     static let setWidth: CGFloat = 36
     static let previousWidth: CGFloat = 72
     static let repetitionsWidth: CGFloat = 48
@@ -2477,6 +2478,10 @@ struct InlineWorkoutSetRow: View {
             // same geometry, while the green treatment remains inset from the
             // exercise card and rounds into a true glass capsule.
             .padding(.vertical, 5)
+            .padding(
+                .horizontal,
+                set.isCompleted ? InlineWorkoutSetLayout.completedContentInset : 0
+            )
             .frame(maxWidth: .infinity)
             .modifier(CompletedSetGlassChrome(isCompleted: set.isCompleted))
             .padding(.vertical, 2)
