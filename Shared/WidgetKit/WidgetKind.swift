@@ -24,7 +24,8 @@ enum WidgetKind: String {
 @available(iOS 16.1, *)
 struct WorkoutActivityAttributes: ActivityAttributes {
     struct SetSnapshot: Codable, Hashable {
-        let setID: String
+        /// Optional so activities started by an older app build still decode after updating.
+        let setID: String?
         let exerciseName: String
         let setNumber: Int
         let setCount: Int

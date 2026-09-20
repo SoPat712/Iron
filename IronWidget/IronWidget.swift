@@ -593,17 +593,20 @@ private struct WorkoutActivityCompleteSetButton: View {
     let set: WorkoutActivityAttributes.SetSnapshot
     let size: CGFloat
 
+    @ViewBuilder
     var body: some View {
-        Button(intent: CompleteWorkoutSetIntent(
-            workoutID: workoutID,
-            setID: set.setID
-        )) {
-            Image(systemName: "checkmark")
-                .font(.system(size: size * 0.42, weight: .bold))
-                .frame(width: size, height: size)
+        if let setID = set.setID {
+            Button(intent: CompleteWorkoutSetIntent(
+                workoutID: workoutID,
+                setID: setID
+            )) {
+                Image(systemName: "checkmark")
+                    .font(.system(size: size * 0.42, weight: .bold))
+                    .frame(width: size, height: size)
+            }
+            .buttonStyle(WorkoutActivityCompletionButtonStyle())
+            .accessibilityLabel("Complete set \(set.setNumber)")
         }
-        .buttonStyle(WorkoutActivityCompletionButtonStyle())
-        .accessibilityLabel("Complete set \(set.setNumber)")
     }
 }
 
