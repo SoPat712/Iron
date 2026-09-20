@@ -919,11 +919,6 @@ struct CurrentWorkoutView: View {
         let usesDuration = sets.contains { $0.durationValue != nil }
 
         return VStack(spacing: 0) {
-            if activeRestTimerExercise?.objectID == workoutExercise.objectID {
-                activeRestTimerStrip
-                    .padding(.bottom, 14)
-            }
-
             HStack(spacing: 12) {
                 if let exercise = exercise {
                     ExerciseDiagramThumbnail(exercise: exercise, size: 50)
@@ -1026,6 +1021,12 @@ struct CurrentWorkoutView: View {
             .buttonBorderShape(.capsule)
             .controlSize(.regular)
             .padding(.top, 12)
+
+            if activeRestTimerExercise?.objectID == workoutExercise.objectID {
+                activeRestTimerStrip
+                    .padding(.top, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
         .padding(14)
         // One continuous grouped container per exercise. The previous layout
