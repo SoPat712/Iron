@@ -19,6 +19,7 @@ struct ExerciseDiagramThumbnail: View {
     var size: CGFloat = 58
 
     @State private var image: UIImage?
+    @State private var loadedRemoteMediaURL: URL?
 
     private func load() {
         guard image == nil, let path = exercise.pdfPaths.first else { return }
@@ -52,12 +53,15 @@ struct ExerciseDiagramThumbnail: View {
         ZStack {
             Circle()
                 .fill(IronTheme.diagramCanvas)
-            fallbackContent
+            if exercise.imageURL == nil || loadedRemoteMediaURL != exercise.imageURL {
+                fallbackContent
+            }
             if let remoteURL = exercise.imageURL {
                 ExerciseRemoteMediaView(
                     url: remoteURL,
                     animated: false,
-                    targetPixelSize: min(size * UIScreen.main.scale, 240)
+                    targetPixelSize: min(size * UIScreen.main.scale, 240),
+                    onLoaded: { loadedRemoteMediaURL = remoteURL }
                 )
                 // Keep the complete movement canvas inside the circular mask.
                 // Several wide machine/cable frames reach all four corners,
@@ -73,6 +77,11 @@ struct ExerciseDiagramThumbnail: View {
         )
         .shadow(color: IronTheme.mediaBackdrop.opacity(0.08), radius: 2, x: 0, y: 1)
         .onAppear(perform: load)
+        .onChange(of: exercise.imageURL) { _, newURL in
+            if loadedRemoteMediaURL != newURL {
+                loadedRemoteMediaURL = nil
+            }
+        }
         .accessibilityHidden(true)
     }
 
@@ -106,7 +115,7 @@ struct ExerciseLibraryRow: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(exercise.title)
                     .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
+                    .foregroundStyle(.primary)
                     .lineLimit(2)
                 HStack(spacing: 6) {
                     Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
@@ -116,7 +125,7 @@ struct ExerciseLibraryRow: View {
                     }
                 }
                 .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
             }
             Spacer()
@@ -140,20 +149,12 @@ struct ExercisesView : View {
     var exercises: [Exercise]
     
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    ForEach(exercises, id: \.id) { exercise in
-                        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                            ExerciseLibraryRow(exercise: exercise)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
+        List(exercises, id: \.id) { exercise in
+            NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                ExerciseLibraryRow(exercise: exercise)
             }
         }
+        .listStyle(.insetGrouped)
     }
 }
 

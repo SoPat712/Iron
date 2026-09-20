@@ -181,10 +181,12 @@ struct ExerciseRemoteMediaView: UIViewRepresentable {
     let url: URL
     var animated = false
     var targetPixelSize: CGFloat
+    var onLoaded: (() -> Void)? = nil
 
     final class Coordinator {
         var requestKey: String?
         var task: Task<Void, Never>?
+        var onLoaded: (() -> Void)?
 
         deinit {
             task?.cancel()
@@ -218,6 +220,7 @@ struct ExerciseRemoteMediaView: UIViewRepresentable {
     }
 
     func updateUIView(_ view: UIImageView, context: Context) {
+        context.coordinator.onLoaded = onLoaded
         let requestKey = "\(url.absoluteString)|\(animated)|\(Int(targetPixelSize.rounded(.up)))"
         guard context.coordinator.requestKey != requestKey else { return }
         context.coordinator.requestKey = requestKey
@@ -237,6 +240,7 @@ struct ExerciseRemoteMediaView: UIViewRepresentable {
             if animated {
                 view.startAnimating()
             }
+            context.coordinator.onLoaded?()
         }
     }
 
@@ -254,9 +258,14 @@ struct ExerciseDetailView : View {
     var exercise: Exercise
     
     @State private var showingEditExercise = false
+    @State private var loadedRemoteMediaURL: URL?
 
     private var currentExercise: Exercise {
         exerciseStore.find(with: exercise.uuid) ?? exercise
+    }
+
+    private var currentRemoteMediaURL: URL? {
+        currentExercise.animationURL ?? currentExercise.imageURL
     }
 
     private func pdfToImage(url: URL, fit: CGSize) -> UIImage? {
@@ -315,400 +324,240 @@ struct ExerciseDetailView : View {
         return images
     }
     
-    @ViewBuilder private func mediaSection(geometry: GeometryProxy) -> some View {
-        let mediaSide = min(geometry.size.width - (IronTheme.horizontalPadding * 2), 330)
-        let mediaHeight = min(mediaSide * 0.76, 252)
+    /// The provider's diagram canvas is intentionally fixed white; the media
+    /// keeps a continuous corner and no decorative stroke so it reads as a hero
+    /// rather than another bordered card.
+    private var mediaHero: some View {
+        GeometryReader { geometry in
+            ZStack {
+                IronTheme.diagramCanvas
 
-        ZStack {
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.diagramCanvas)
-            if !currentExercise.pdfPaths.isEmpty {
-                AnimatedImageView(
-                    uiImages: self.exerciseImages(width: geometry.size.width, height: mediaHeight),
-                    duration: 2,
-                    contentKey: currentExercise.uuid.uuidString
-                )
-                    .padding(16)
-            } else {
-                Exercise.imageFor(muscleGroup: currentExercise.muscleGroup)
-                    .font(.system(size: 72, weight: .black))
-                    .foregroundColor(Exercise.colorFor(muscleGroup: currentExercise.muscleGroup))
-            }
-            if let animationURL = currentExercise.animationURL {
-                ExerciseRemoteMediaView(
-                    url: animationURL,
-                    animated: true,
-                    targetPixelSize: min(mediaSide * UIScreen.main.scale, 1_200)
-                )
+                if currentRemoteMediaURL == nil || loadedRemoteMediaURL != currentRemoteMediaURL {
+                    if !currentExercise.pdfPaths.isEmpty {
+                        AnimatedImageView(
+                            uiImages: exerciseImages(width: geometry.size.width, height: geometry.size.height),
+                            duration: 2,
+                            contentKey: currentExercise.uuid.uuidString
+                        )
+                        .padding(16)
+                    } else {
+                        Exercise.imageFor(muscleGroup: currentExercise.muscleGroup)
+                            .font(.system(size: 72, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
+                if let animationURL = currentExercise.animationURL {
+                    ExerciseRemoteMediaView(
+                        url: animationURL,
+                        animated: true,
+                        targetPixelSize: min(geometry.size.width * UIScreen.main.scale, 1_200),
+                        onLoaded: { loadedRemoteMediaURL = animationURL }
+                    )
                     // Match the thumbnail's conservative optical fit. Some
                     // animation frames extend farther than their first frame,
                     // especially on cable and machine exercises.
                     .scaleEffect(0.69)
-            } else if let imageURL = currentExercise.imageURL {
-                ExerciseRemoteMediaView(
-                    url: imageURL,
-                    animated: false,
-                    targetPixelSize: min(mediaSide * UIScreen.main.scale, 1_200)
-                )
-                .scaleEffect(0.69)
+                } else if let imageURL = currentExercise.imageURL {
+                    ExerciseRemoteMediaView(
+                        url: imageURL,
+                        animated: false,
+                        targetPixelSize: min(geometry.size.width * UIScreen.main.scale, 1_200),
+                        onLoaded: { loadedRemoteMediaURL = imageURL }
+                    )
+                    .scaleEffect(0.69)
+                }
             }
         }
-        .frame(width: mediaSide, height: mediaHeight)
-        .clipped()
-        .frame(maxWidth: .infinity)
-        .overlay(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .stroke(IronTheme.outline.opacity(0.5), lineWidth: 1)
-        )
-    }
-    
-    private var popupActions: [IronPopupAction] {
-        var actions: [IronPopupAction] = []
-        if currentExercise.isCustom {
-            actions.append(IronPopupAction(title: "Edit Exercise", systemImage: "pencil") {
-                showingEditExercise = true
-            })
+        .frame(height: 240)
+        .clipShape(RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+        .overlay(alignment: .bottomTrailing) {
+            if currentRemoteMediaURL != nil {
+                Link(destination: URL(string: "https://gymvisual.com/")!) {
+                    Text(Exercise.mediaAttribution)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 9)
+                        .padding(.vertical, 6)
+                        .background(.ultraThinMaterial, in: Capsule(style: .continuous))
+                }
+                .tint(.secondary)
+                .padding(10)
+                .accessibilityLabel("Exercise media by Gym Visual")
+            }
         }
-        if exerciseStore.isHidden(exercise: currentExercise) {
-            actions.append(IronPopupAction(title: "Unhide Exercise", systemImage: "eye") {
-                exerciseStore.show(exercise: currentExercise)
-            })
-        } else if !currentExercise.isCustom {
-            actions.append(IronPopupAction(title: "Hide Exercise", systemImage: "eye.slash") {
-                exerciseStore.hide(exercise: currentExercise)
-            })
+        .onChange(of: currentRemoteMediaURL) { _, newURL in
+            if loadedRemoteMediaURL != newURL {
+                loadedRemoteMediaURL = nil
+            }
         }
-        return actions
     }
-    
+
     var body: some View {
-        GeometryReader { geometry in
-            ZStack {
-                IronScreenBackground()
-                overviewContent(geometry: geometry)
+        List {
+            Section {
+                mediaHero
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
             }
+
+            Section {
+                NavigationLink {
+                    ExerciseHistoryView(exercise: currentExercise)
+                        .navigationTitle("History")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("History", systemImage: "clock.arrow.circlepath")
+                }
+
+                NavigationLink {
+                    ExerciseStatisticsView(exercise: currentExercise)
+                        .navigationTitle("Progress")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("Progress", systemImage: "chart.xyaxis.line")
+                }
+            }
+
+            Section("Target") {
+                LabeledContent("Primary", value: muscleList(currentExercise.primaryMuscleCommonName))
+                LabeledContent("Secondary", value: muscleList(currentExercise.secondaryMuscleCommonName))
+                if !currentExercise.equipment.isEmpty {
+                    LabeledContent(
+                        "Equipment",
+                        value: currentExercise.equipment.map { $0.capitalized }.joined(separator: ", ")
+                    )
+                }
+            }
+
+            if !primaryMapMuscles.isEmpty || !secondaryMapMuscles.isEmpty {
+                muscleMapSection
+            }
+
+            if let description = currentExercise.description, !description.isEmpty {
+                Section("About") {
+                    Text(description)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+
+            if !currentExercise.steps.isEmpty {
+                Section("Instructions") {
+                    ForEach(Array(currentExercise.steps.enumerated()), id: \.offset) { index, step in
+                        instructionRow(number: index + 1, step: step)
+                    }
+                }
+            }
+
+            if !currentExercise.tips.isEmpty {
+                Section("Tips") {
+                    ForEach(currentExercise.tips, id: \.self) { tip in
+                        Label {
+                            Text(tip).fixedSize(horizontal: false, vertical: true)
+                        } icon: {
+                            Image(systemName: "checkmark.circle")
+                        }
+                    }
+                }
+            }
+
+            if !displayAliases.isEmpty {
+                Section("Also Known As") {
+                    ForEach(Array(displayAliases.enumerated()), id: \.offset) { _, alias in
+                        Text(alias)
+                    }
+                }
+            }
+
+            if !referenceLinks.isEmpty {
+                Section("References") {
+                    ForEach(Array(referenceLinks.enumerated()), id: \.offset) { _, item in
+                        Link(destination: item.url) {
+                            LabeledContent {
+                                Image(systemName: "arrow.up.right")
+                                    .font(.caption.weight(.semibold))
+                            } label: {
+                                Label(item.title, systemImage: "safari")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
         .sheet(isPresented: $showingEditExercise) {
             EditCustomExerciseSheet(exercise: currentExercise)
                 .environmentObject(exerciseStore)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
         }
         .navigationTitle(currentExercise.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                IronPopupMenu(title: "Exercise actions", actions: popupActions) {
-                    Image(systemName: "ellipsis")
-                }
-                .accessibilityLabel("Exercise actions")
-            }
-        }
-    }
-
-    private func overviewContent(geometry: GeometryProxy) -> some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                mediaSection(geometry: geometry)
-                    .padding(.bottom, 18)
-
-                trainingDataLinks
-                metadataCard
-
-                if !displayAliases.isEmpty {
-                    aliasesCard
-                }
-
-                if !primaryMapMuscles.isEmpty || !secondaryMapMuscles.isEmpty {
-                    muscleMapCard
-                }
-
-                if let description = currentExercise.description, !description.isEmpty {
-                    detailCard(title: "About", icon: "info.circle") {
-                        Text(description)
-                            .font(.body)
-                            .foregroundColor(IronTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                if !currentExercise.steps.isEmpty {
-                    detailCard(title: "Instructions", icon: "list.number") {
-                        VStack(alignment: .leading, spacing: 16) {
-                            ForEach(Array(currentExercise.steps.enumerated()), id: \.offset) { index, step in
-                                HStack(alignment: .top, spacing: 12) {
-                                    Text("\(index + 1)")
-                                        .font(.subheadline.weight(.semibold).monospacedDigit())
-                                        .foregroundColor(IronTheme.accent)
-                                        .frame(width: 24, alignment: .leading)
-                                    Text(step)
-                                        .font(.body)
-                                        .foregroundColor(IronTheme.primaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
+                Menu {
+                    if currentExercise.isCustom {
+                        Button("Edit Exercise", systemImage: "pencil") {
+                            showingEditExercise = true
                         }
                     }
-                }
-
-                if !currentExercise.tips.isEmpty {
-                    detailCard(title: "Tips", icon: "lightbulb") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            ForEach(currentExercise.tips, id: \.self) { tip in
-                                Label(tip, systemImage: "checkmark.circle")
-                                    .font(.body)
-                                    .foregroundColor(IronTheme.primaryText)
-                            }
+                    if exerciseStore.isHidden(exercise: currentExercise) {
+                        Button("Unhide Exercise", systemImage: "eye") {
+                            exerciseStore.show(exercise: currentExercise)
+                        }
+                    } else if !currentExercise.isCustom {
+                        Button("Hide Exercise", systemImage: "eye.slash") {
+                            exerciseStore.hide(exercise: currentExercise)
                         }
                     }
-                }
-
-                if !referenceLinks.isEmpty {
-                    referencesCard
-                }
-            }
-            .padding(IronTheme.horizontalPadding)
-            .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
-        }
-    }
-
-    private var trainingDataLinks: some View {
-        VStack(spacing: 0) {
-            NavigationLink {
-                ExerciseHistoryView(exercise: currentExercise)
-                    .navigationTitle("History")
-                    .navigationBarTitleDisplayMode(.inline)
-            } label: {
-                destinationRow(
-                    title: "History",
-                    subtitle: "Logged sets and previous sessions",
-                    systemImage: "clock.arrow.circlepath"
-                )
-            }
-
-            Divider()
-                .padding(.leading, 44)
-
-            NavigationLink {
-                ExerciseStatisticsView(exercise: currentExercise)
-                    .navigationTitle("Progress")
-                    .navigationBarTitleDisplayMode(.inline)
-            } label: {
-                destinationRow(
-                    title: "Progress",
-                    subtitle: "Strength, volume, and personal records",
-                    systemImage: "chart.xyaxis.line"
-                )
-            }
-        }
-        .buttonStyle(.plain)
-        .padding(.vertical, 4)
-        .overlay(Divider(), alignment: .top)
-        .overlay(Divider(), alignment: .bottom)
-    }
-
-    private func destinationRow(
-        title: String,
-        subtitle: String,
-        systemImage: String
-    ) -> some View {
-        HStack(spacing: 12) {
-            Image(systemName: systemImage)
-                .font(.body)
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 28)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.body)
-                    .foregroundColor(IronTheme.primaryText)
-                Text(subtitle)
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-            }
-
-            Spacer(minLength: 8)
-
-            Image(systemName: "chevron.right")
-                .font(.caption.weight(.semibold))
-                .foregroundColor(IronTheme.tertiaryText)
-        }
-        .frame(minHeight: 58)
-        .contentShape(Rectangle())
-    }
-
-    private var aliasesCard: some View {
-        detailCard(title: "Also known as", icon: "text.bubble.fill") {
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 118), spacing: 8)],
-                alignment: .leading,
-                spacing: 8
-            ) {
-                ForEach(Array(displayAliases.enumerated()), id: \.offset) { _, alias in
-                    Text(alias)
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                        .lineLimit(2)
-                        .minimumScaleFactor(0.85)
-                        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-                        .padding(.horizontal, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                .fill(IronTheme.field)
-                        )
+                } label: {
+                    Label("Exercise Actions", systemImage: "ellipsis.circle")
                 }
             }
         }
     }
 
-    private var howToContent: some View {
-        ScrollView(showsIndicators: false) {
-            VStack(alignment: .leading, spacing: 0) {
-                if !hasHowToContent {
-                    howToEmptyState
-                        .padding(.bottom, 18)
-                }
-
-                if let description = currentExercise.description, !description.isEmpty {
-                    detailCard(title: "About", icon: "info.circle.fill") {
-                        Text(description)
-                            .foregroundColor(IronTheme.secondaryText)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                }
-
-                if !currentExercise.steps.isEmpty {
-                    detailCard(title: "How to perform", icon: "list.number") {
-                        VStack(alignment: .leading, spacing: 14) {
-                            ForEach(Array(currentExercise.steps.enumerated()), id: \.offset) { index, step in
-                                HStack(alignment: .top, spacing: 12) {
-                                    Text("\(index + 1)")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(IronTheme.onAccent)
-                                        .frame(width: 24, height: 24)
-                                        .background(IronTheme.accent)
-                                        .clipShape(Circle())
-                                    Text(step)
-                                        .foregroundColor(IronTheme.secondaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if !currentExercise.tips.isEmpty {
-                    detailCard(title: "Coach cues", icon: "lightbulb.fill") {
-                        VStack(alignment: .leading, spacing: 10) {
-                            ForEach(currentExercise.tips, id: \.self) { tip in
-                                Label(tip, systemImage: "checkmark.circle.fill")
-                                    .foregroundColor(IronTheme.secondaryText)
-                            }
-                        }
-                    }
-                }
-
-                if !referenceLinks.isEmpty {
-                    referencesCard
-                }
-            }
-            .padding(IronTheme.horizontalPadding)
-            .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
-        }
+    private func muscleList(_ values: [String]) -> String {
+        values.isEmpty ? "—" : values.map { $0.capitalized }.joined(separator: ", ")
     }
 
-    private var hasHowToContent: Bool {
-        !(currentExercise.description?.isEmpty ?? true)
-            || !currentExercise.steps.isEmpty
-            || !currentExercise.tips.isEmpty
-            || !referenceLinks.isEmpty
+    private func instructionRow(number: Int, step: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text("\(number)")
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 18, alignment: .trailing)
+            Text(step)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Step \(number). \(step)")
     }
 
-    private var howToEmptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "list.bullet.clipboard")
-                .font(.system(size: 32, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text("No instructions yet")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Iron will show setup instructions and coaching cues here when they are available.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 42)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
-
-    private var referencesCard: some View {
-        detailCard(title: "References", icon: "link") {
-            VStack(spacing: 0) {
-                ForEach(Array(referenceLinks.enumerated()), id: \.offset) { index, item in
-                    Link(destination: item.url) {
-                        HStack(spacing: 12) {
-                            Image(systemName: "safari.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                                .foregroundColor(IronTheme.accent)
-                                .frame(width: 34, height: 34)
-                                .background(Circle().fill(IronTheme.accentSoft))
-
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(item.title)
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundColor(IronTheme.primaryText)
-                                    .lineLimit(1)
-                                Text(item.url.absoluteString)
-                                    .font(.caption)
-                                    .foregroundColor(IronTheme.secondaryText)
-                                    .lineLimit(1)
-                            }
-
-                            Spacer(minLength: 8)
-                            Image(systemName: "arrow.up.right")
-                                .font(.caption.weight(.bold))
-                                .foregroundColor(IronTheme.accent)
-                        }
-                        .frame(minHeight: 48)
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-
-                    if index < referenceLinks.count - 1 {
-                        IronHairline().padding(.leading, 46)
-                    }
-                }
+    private var muscleMapSection: some View {
+        Section {
+            HStack(spacing: 8) {
+                muscleBody(side: .front)
+                muscleBody(side: .back)
             }
-        }
-    }
+            .frame(height: 210)
 
-    private var metadataCard: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            Label("Target & equipment", systemImage: "scope")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            HStack(alignment: .top, spacing: 20) {
-                metadataColumn(title: "Primary", values: currentExercise.primaryMuscleCommonName)
-                metadataColumn(title: "Secondary", values: currentExercise.secondaryMuscleCommonName)
+            HStack {
+                Text("Front")
+                Spacer()
+                Text("Back")
             }
-            if !currentExercise.equipment.isEmpty {
-                IronHairline()
-                Label(
-                    currentExercise.equipment.map { $0.capitalized }.joined(separator: ", "),
-                    systemImage: "dumbbell.fill"
-                )
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(IronTheme.secondaryText)
-            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } header: {
+            Text("Muscle Map")
+        } footer: {
+            Text("Solid highlights are primary movers; lighter highlights assist.")
         }
-        .padding(.vertical, 18)
-        .overlay(IronHairline(opacity: 0.52), alignment: .bottom)
     }
 
     private var displayAliases: [String] {
@@ -727,47 +576,6 @@ struct ExerciseDetailView : View {
         }
     }
 
-    private var muscleMapCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack {
-                Label("Muscle map", systemImage: "figure.strengthtraining.traditional")
-                    .font(.headline.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                Spacer()
-                HStack(spacing: 12) {
-                    muscleLegend(color: IronTheme.accent, label: "Primary")
-                    muscleLegend(color: IronTheme.accent.opacity(0.42), label: "Secondary")
-                }
-            }
-
-            HStack(spacing: 8) {
-                muscleBody(side: .front)
-                muscleBody(side: .back)
-            }
-            .frame(height: 210)
-
-            HStack {
-                Text("FRONT")
-                Spacer()
-                Text("BACK")
-            }
-            .font(.caption2.weight(.bold))
-            .foregroundColor(IronTheme.tertiaryText)
-        }
-        .padding(.vertical, 18)
-    }
-
-    private func muscleLegend(color: Color, label: String) -> some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(color)
-                .frame(width: 7, height: 7)
-            Text(label)
-                .font(.caption2.weight(.semibold))
-                .foregroundColor(IronTheme.secondaryText)
-        }
-    }
-
     private var primaryMapMuscles: [Muscle] {
         mappedMuscles(currentExercise.primaryMuscle)
     }
@@ -778,14 +586,14 @@ struct ExerciseDetailView : View {
 
     private func muscleBody(side: BodySide) -> BodyView {
         let style = BodyViewStyle(
-            defaultFillColor: IronTheme.secondaryText.opacity(0.16),
-            strokeColor: IronTheme.secondaryText.opacity(0.18),
+            defaultFillColor: Color(.tertiaryLabel).opacity(0.4),
+            strokeColor: Color(.separator),
             strokeWidth: 0.6,
             selectionColor: IronTheme.accent,
             selectionStrokeColor: IronTheme.accent,
             selectionStrokeWidth: 1.5,
-            headColor: IronTheme.secondaryText.opacity(0.22),
-            hairColor: IronTheme.secondaryText.opacity(0.12)
+            headColor: Color(.tertiaryLabel).opacity(0.5),
+            hairColor: Color(.quaternaryLabel)
         )
         return BodyView(gender: .male, side: side, style: style)
             .highlight(secondaryMapMuscles, color: IronTheme.accent, opacity: 0.42)
@@ -834,28 +642,6 @@ struct ExerciseDetailView : View {
         }
     }
 
-    private func metadataColumn(title: String, values: [String]) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(.caption)
-                .foregroundColor(IronTheme.tertiaryText)
-            Text(values.isEmpty ? "—" : values.map { $0.capitalized }.joined(separator: ", "))
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func detailCard<Content: View>(title: String, icon: String, @ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Label(title, systemImage: icon)
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            content()
-        }
-        .padding(.vertical, 18)
-        .overlay(IronHairline(opacity: 0.52), alignment: .bottom)
-    }
 }
 
 #if DEBUG
