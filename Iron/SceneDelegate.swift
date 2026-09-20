@@ -34,6 +34,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 .environmentObject(SettingsStore.shared)
                 .environmentObject(RestTimerStore.shared)
                 .environmentObject(ExerciseStore.shared)
+                .environmentObject(PinnedChartsStore.shared)
                 .environment(\.managedObjectContext, WorkoutDataStorage.shared.persistentContainer.viewContext)
             window.rootViewController = UIHostingController(rootView: rootView)
             self.window = window
@@ -213,7 +214,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
             }
         }
 
-        NotificationManager.shared.notificationCenter.removeAllDeliveredNotifications()
+        // UserNotifications may synchronously wait on its XPC service. Keep that work off
+        // the main thread so a slow simulator or notification daemon cannot stall launch.
+        NotificationManager.shared.removeAllDeliveredNotifications()
         NotificationManager.shared.removePendingNotificationRequests(withIdentifiers: [.unfinishedWorkout])
         
         NotificationManager.shared.removePendingNotificationRequests(withIdentifiers: [.unfinishedTraining]) // TODO: remove unfinishedTraining in future version

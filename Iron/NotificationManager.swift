@@ -12,6 +12,10 @@ class NotificationManager: NSObject {
     static let shared = NotificationManager(notificationCenter: UNUserNotificationCenter.current())
     
     let notificationCenter: UNUserNotificationCenter
+    private let notificationOperationQueue = DispatchQueue(
+        label: "com.iron.notifications.operations",
+        qos: .utility
+    )
     
     init(notificationCenter: UNUserNotificationCenter) {
         self.notificationCenter = notificationCenter
@@ -41,11 +45,23 @@ class NotificationManager: NSObject {
     }
     
     func removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier]) {
-        notificationCenter.removePendingNotificationRequests(withIdentifiers: withIdentifiers.map { $0.rawValue })
+        let identifiers = withIdentifiers.map { $0.rawValue }
+        notificationOperationQueue.async { [notificationCenter] in
+            notificationCenter.removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
     }
     
     func removeDeliveredNotification(withIdentifiers: [NotificationIdentifier]) {
-        notificationCenter.removeDeliveredNotifications(withIdentifiers: withIdentifiers.map { $0.rawValue })
+        let identifiers = withIdentifiers.map { $0.rawValue }
+        notificationOperationQueue.async { [notificationCenter] in
+            notificationCenter.removeDeliveredNotifications(withIdentifiers: identifiers)
+        }
+    }
+
+    func removeAllDeliveredNotifications() {
+        notificationOperationQueue.async { [notificationCenter] in
+            notificationCenter.removeAllDeliveredNotifications()
+        }
     }
 
     func requestUnfinishedWorkoutNotification() {
