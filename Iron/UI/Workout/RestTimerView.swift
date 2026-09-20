@@ -399,9 +399,12 @@ struct RestTimerDurationDial: View {
                     .frame(width: 16, height: 16)
                     .overlay(Circle().stroke(.white.opacity(0.88), lineWidth: 1.5))
                     .shadow(color: IronTheme.accent.opacity(0.30), radius: 3, y: 1)
+                    // Scale the knob in its own local space. Applying this
+                    // after the radial offset also scales the offset vector,
+                    // which made a press-and-hold visibly jump outward.
+                    .scaleEffect(isDragging ? 1.10 : 1)
                     .offset(y: -trackRadius)
                     .rotationEffect(.degrees(-135 + (Double(progress) * 270)))
-                    .scaleEffect(isDragging ? 1.10 : 1)
                     .animation(
                         isDragging || reduceMotion ? nil : IronMotion.snappy,
                         value: progress
