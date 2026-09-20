@@ -88,7 +88,7 @@ struct RestTimerView: View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             let remaining = restTimerStore.restTimerRemainingTime ?? 0
 
-            VStack(spacing: 10) {
+            VStack(spacing: 14) {
                 RestTimerDurationDial(
                     selection: activeDurationBinding(fallback: remaining),
                     minimumDuration: 0,
@@ -96,7 +96,7 @@ struct RestTimerView: View {
                     secondsStep: durationStep,
                     subtitle: restTimerStore.isPaused ? "Paused · spin to adjust" : "Spin to adjust remaining"
                 )
-                .frame(width: 172, height: 172)
+                .frame(width: 214, height: 214)
 
                 HStack(spacing: 8) {
                     timerActionButton("−15") {
@@ -120,9 +120,9 @@ struct RestTimerView: View {
                 .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     @ViewBuilder
@@ -142,10 +142,10 @@ struct RestTimerView: View {
                     Text(title)
                 }
             }
-            .font(.caption.weight(.semibold))
+            .font(.body.weight(.semibold))
             .lineLimit(1)
-            .minimumScaleFactor(0.7)
-            .frame(maxWidth: .infinity, minHeight: 38)
+            .minimumScaleFactor(0.8)
+            .frame(maxWidth: .infinity, minHeight: 44)
         }
 
         Group {
@@ -201,10 +201,112 @@ struct RestTimerView: View {
     }
 }
 
-/// A 270-degree rotary duration scrubber. It deliberately looks like a physical
-/// control rather than a progress ring or clock face: a neutral rail, tactile
-/// notches, and one restrained position marker communicate rotation.
-private struct RestTimerDurationDial: View {
+/// Uses the same sheet chrome, dial, notches, presets, and spacing as the live
+/// rest timer. Only the bottom actions change from playback controls to
+/// configuration actions.
+struct RestTimerConfigurationSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    let title: String
+    let subtitle: String
+    let initialDuration: TimeInterval
+    let secondaryActionTitle: String?
+    let onSecondaryAction: (() -> Void)?
+    let onApply: (TimeInterval) -> Void
+
+    @State private var selection: TimeInterval
+
+    private let minimumDuration: TimeInterval = 30
+    private let maximumDuration: TimeInterval = 600
+    private let durationStep: TimeInterval = 15
+    private let quickDurations: [TimeInterval] = [60, 90, 120, 180]
+
+    init(
+        title: String = "Rest Timer",
+        subtitle: String = "Recovery after each completed set",
+        initialDuration: TimeInterval,
+        secondaryActionTitle: String? = nil,
+        onSecondaryAction: (() -> Void)? = nil,
+        onApply: @escaping (TimeInterval) -> Void
+    ) {
+        self.title = title
+        self.subtitle = subtitle
+        self.initialDuration = initialDuration
+        self.secondaryActionTitle = secondaryActionTitle
+        self.onSecondaryAction = onSecondaryAction
+        self.onApply = onApply
+        _selection = State(initialValue: min(max(initialDuration, 30), 600))
+    }
+
+    var body: some View {
+        IronUtilitySheet(
+            title: title,
+            subtitle: subtitle,
+            systemImage: "timer",
+            onClose: { dismiss() }
+        ) {
+            VStack(spacing: 10) {
+                RestTimerDurationDial(
+                    selection: $selection,
+                    minimumDuration: minimumDuration,
+                    maximumDuration: maximumDuration,
+                    secondsStep: durationStep,
+                    subtitle: "Spin to choose duration"
+                )
+                .frame(width: 214, height: 214)
+
+                Picker("Presets", selection: $selection) {
+                    ForEach(quickDurations, id: \.self) { duration in
+                        Text(timeTitle(duration))
+                            .monospacedDigit()
+                            .tag(duration)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, IronTheme.horizontalPadding)
+
+                Button {
+                    onApply(selection)
+                    dismiss()
+                } label: {
+                    Text("Use \(timeTitle(selection))")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .padding(.horizontal, IronTheme.horizontalPadding)
+
+                if let secondaryActionTitle, let onSecondaryAction {
+                    Button {
+                        onSecondaryAction()
+                        dismiss()
+                    } label: {
+                        Text(secondaryActionTitle)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .ironGlassButtonStyle()
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .padding(.horizontal, IronTheme.horizontalPadding)
+                }
+            }
+            .padding(.bottom, 18)
+        }
+        .presentationDetents([.height(540), .large])
+        .presentationDragIndicator(.visible)
+        .sensoryFeedback(.selection, trigger: Int(selection))
+    }
+
+    private func timeTitle(_ duration: TimeInterval) -> String {
+        restTimerDurationFormatter.string(from: duration) ?? "0:00"
+    }
+}
+
+/// The shared 270-degree duration dial used by both the running timer and every
+/// rest-duration selector. The filled accent arc makes the selected proportion
+/// immediately legible while the notches preserve the physical scrubber feel.
+struct RestTimerDurationDial: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @Binding var selection: TimeInterval
@@ -235,7 +337,11 @@ private struct RestTimerDurationDial: View {
         GeometryReader { proxy in
             let size = min(proxy.size.width, proxy.size.height)
             let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            let radius = size * 0.405
+            let notchRadius = size * 0.405
+            // `Circle().stroke` follows the circle's geometric path at exactly
+            // half the proposed size. Keep the knob centered on that same path
+            // instead of approximating it with an inset percentage.
+            let trackRadius = size / 2
             let markerCount = 31
 
             ZStack {
@@ -255,15 +361,32 @@ private struct RestTimerDurationDial: View {
                     )
                     .rotationEffect(.degrees(startRotation))
 
+                Circle()
+                    .trim(from: 0, to: 0.75 * progress)
+                    .stroke(
+                        IronTheme.accent.gradient,
+                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
+                    )
+                    .rotationEffect(.degrees(startRotation))
+                    .shadow(color: IronTheme.accent.opacity(0.22), radius: 4)
+                    .animation(
+                        isDragging || reduceMotion ? nil : IronMotion.snappy,
+                        value: progress
+                    )
+
                 ForEach(0..<markerCount, id: \.self) { index in
                     let markerProgress = Double(index) / Double(markerCount - 1)
                     Capsule(style: .continuous)
-                        .fill(Color.secondary.opacity(index.isMultiple(of: 5) ? 0.46 : 0.25))
+                        .fill(
+                            markerProgress <= Double(progress)
+                                ? IronTheme.accent.opacity(index.isMultiple(of: 5) ? 0.92 : 0.62)
+                                : Color.secondary.opacity(index.isMultiple(of: 5) ? 0.46 : 0.25)
+                        )
                         .frame(
                             width: index.isMultiple(of: 5) ? 2.5 : 1.5,
                             height: index.isMultiple(of: 5) ? 9 : 6
                         )
-                        .offset(y: -radius)
+                        .offset(y: -notchRadius)
                         .rotationEffect(.degrees(-135 + (markerProgress * 270)))
                 }
 
@@ -272,7 +395,7 @@ private struct RestTimerDurationDial: View {
                     .frame(width: 16, height: 16)
                     .overlay(Circle().stroke(.white.opacity(0.88), lineWidth: 1.5))
                     .shadow(color: IronTheme.accent.opacity(0.30), radius: 3, y: 1)
-                    .offset(y: -radius)
+                    .offset(y: -trackRadius)
                     .rotationEffect(.degrees(-135 + (Double(progress) * 270)))
                     .scaleEffect(isDragging ? 1.10 : 1)
                     .animation(
@@ -307,7 +430,7 @@ private struct RestTimerDurationDial: View {
                             draftSelection = displayedSelection
                             lastFeedbackNotch = notch(for: displayedSelection)
                         }
-                        updateDraft(at: value.location, center: center, radius: radius)
+                        updateDraft(at: value.location, center: center, radius: notchRadius)
                     }
                     .onEnded { _ in
                         if let draftSelection {

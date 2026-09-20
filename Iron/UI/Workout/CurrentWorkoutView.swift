@@ -269,15 +269,10 @@ struct CurrentWorkoutView: View {
         }
         .sheet(item: $restTimerEditorExercise) { workoutExercise in
             let inheritedDuration = workoutDefaultRestTimerDuration(for: workoutExercise)
-            IronDurationPickerSheet(
+            RestTimerConfigurationSheet(
                 title: "Rest timer",
                 subtitle: "Recovery after each completed set",
-                systemImage: "timer",
                 initialDuration: workoutExercise.restTimerDurationValue ?? inheritedDuration,
-                minimumDuration: 30,
-                maximumDuration: 600,
-                durationStep: 15,
-                presets: [30, 45, 60, 90, 120, 150, 180, 240, 300],
                 secondaryActionTitle: workoutExercise.restTimerDurationValue == nil
                     ? "Keep workout default · \(restTimerDurationFormatter.string(from: inheritedDuration) ?? "0:00")"
                     : "Use workout default · \(restTimerDurationFormatter.string(from: inheritedDuration) ?? "0:00")",
@@ -396,20 +391,18 @@ struct CurrentWorkoutView: View {
             }
 
         case .restTimer:
-            NavigationStack {
+            IronUtilitySheet(
+                title: "Rest Timer",
+                subtitle: "Dial in your recovery",
+                systemImage: "timer",
+                onClose: { activeSheet = nil }
+            ) {
                 RestTimerView()
                     .environmentObject(restTimerStore)
-                    .navigationTitle("Rest Timer")
-                    .navigationBarTitleDisplayMode(.inline)
-                    .toolbar {
-                        ToolbarItem(placement: .confirmationAction) {
-                            Button("Done") { activeSheet = nil }
-                        }
-                    }
             }
-            // The timer is deliberately a half-height utility sheet. Its dial
-            // and four controls are sized to fit without a second pull-up.
-            .presentationDetents([.medium])
+            // Running and selector states now use one bottom-sheet language;
+            // their contextual actions are the only visual difference.
+            .presentationDetents([.height(500), .large])
             .presentationDragIndicator(.visible)
 
         case .workoutOptions:
