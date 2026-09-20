@@ -402,7 +402,7 @@ struct CurrentWorkoutView: View {
             }
             // Running and selector states now use one bottom-sheet language;
             // their contextual actions are the only visual difference.
-            .presentationDetents([.height(500), .large])
+            .presentationDetents([.height(RestTimerSheetLayout.height)])
             .presentationDragIndicator(.visible)
 
         case .workoutOptions:

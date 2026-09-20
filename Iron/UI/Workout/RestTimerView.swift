@@ -11,6 +11,10 @@ import SwiftUI
 import UIKit
 import AudioToolbox
 
+enum RestTimerSheetLayout {
+    static let height: CGFloat = 540
+}
+
 struct RestTimerView: View {
     @EnvironmentObject private var restTimerStore: RestTimerStore
 
@@ -293,7 +297,7 @@ struct RestTimerConfigurationSheet: View {
             }
             .padding(.bottom, 18)
         }
-        .presentationDetents([.height(540), .large])
+        .presentationDetents([.height(RestTimerSheetLayout.height)])
         .presentationDragIndicator(.visible)
         .sensoryFeedback(.selection, trigger: Int(selection))
     }
