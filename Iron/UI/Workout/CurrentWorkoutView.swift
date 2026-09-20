@@ -2163,7 +2163,7 @@ enum FinishWorkoutMediaStore {
 
 enum InlineWorkoutSetLayout {
     static let spacing: CGFloat = 4
-    static let completedContentInset: CGFloat = 6
+    static let completedChromeExpansion: CGFloat = 6
     static let setWidth: CGFloat = 36
     static let previousWidth: CGFloat = 72
     static let repetitionsWidth: CGFloat = 48
@@ -2178,8 +2178,13 @@ private struct CompletedSetGlassChrome: ViewModifier {
     func body(content: Content) -> some View {
         if isCompleted {
             content
+                // Expand only the completed chrome. The negative outer inset
+                // preserves the row's reported width, so none of its columns
+                // reflow when completion toggles.
+                .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
                 .background(IronTheme.successContainer, in: Capsule(style: .continuous))
                 .ironLiquidGlassPill(tint: IronTheme.success.opacity(0.10))
+                .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
         } else {
             content
         }
@@ -2471,10 +2476,6 @@ struct InlineWorkoutSetRow: View {
             // same geometry, while the green treatment remains inset from the
             // exercise card and rounds into a true glass capsule.
             .padding(.vertical, 5)
-            .padding(
-                .horizontal,
-                set.isCompleted ? InlineWorkoutSetLayout.completedContentInset : 0
-            )
             .frame(maxWidth: .infinity)
             .modifier(CompletedSetGlassChrome(isCompleted: set.isCompleted))
             .padding(.vertical, 2)
