@@ -414,12 +414,14 @@ class WorkoutDataTests: XCTestCase {
 @available(iOS 16.1, *)
 final class WorkoutLiveActivityStateTests: XCTestCase {
     private let completedSet = WorkoutActivityAttributes.SetSnapshot(
+        setID: "completed-set",
         exerciseName: "Deadlift (Barbell)",
         setNumber: 1,
         setCount: 4,
         result: "135 lb × 5 reps"
     )
     private let nextSet = WorkoutActivityAttributes.SetSnapshot(
+        setID: "next-set",
         exerciseName: "Deadlift (Barbell)",
         setNumber: 2,
         setCount: 4,

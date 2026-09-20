@@ -24,6 +24,7 @@ enum WidgetKind: String {
 @available(iOS 16.1, *)
 struct WorkoutActivityAttributes: ActivityAttributes {
     struct SetSnapshot: Codable, Hashable {
+        let setID: String
         let exerciseName: String
         let setNumber: Int
         let setCount: Int
@@ -95,6 +96,42 @@ struct WorkoutActivityAttributes: ActivityAttributes {
     let workoutID: String
     let workoutTitle: String
     let workoutStart: Date
+}
+
+@available(iOS 17.0, *)
+struct CompleteWorkoutSetIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "Complete Workout Set"
+    static var description = IntentDescription("Marks the displayed Iron workout set complete.")
+    static var openAppWhenRun = false
+    static var isDiscoverable = false
+
+    @Parameter(title: "Workout ID")
+    var workoutID: String
+
+    @Parameter(title: "Set ID")
+    var setID: String
+
+    init() {
+        workoutID = ""
+        setID = ""
+    }
+
+    init(workoutID: String, setID: String) {
+        self.workoutID = workoutID
+        self.setID = setID
+    }
+
+    func perform() async throws -> some IntentResult {
+        #if IRON_WIDGET_EXTENSION
+        // The system executes this LiveActivityIntent in the containing app.
+        #else
+        await WorkoutLiveActivityIntentHandler.completeSet(
+            workoutID: workoutID,
+            setID: setID
+        )
+        #endif
+        return .result()
+    }
 }
 
 @available(iOS 17.0, *)

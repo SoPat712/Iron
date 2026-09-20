@@ -65,55 +65,54 @@ struct WorkoutInfo {
 struct LastWorkoutWidgetEntryView : View {
     @Environment(\.widgetFamily) var widgetFamily
     @Environment(\.calendar) var calendar
-    
+
     var entry: Provider.Entry
-    
+
     private var daysSinceLastWorkout: Int? {
         guard let workoutInfo = entry.workoutInfo else { return nil }
         return calendar.calendarDays(from: workoutInfo.start, to: entry.date)
     }
 
-    var body: some View {
-        ZStack {
-            Color(.systemGroupedBackground)
-            VStack(alignment: .leading) {
-                Spacer()
-                
-                Text("Activity")
-                    .font(.headline)
-                    .foregroundColor(.primary)
-                
-                Spacer()
-                
-                HStack {
-                    VStack(alignment: .leading) {
-                        Text("Last Workout")
-                            .font(.subheadline)
-                            .foregroundColor(Color.white.opacity(0.8))
-                        
-                        if let days = daysSinceLastWorkout {
-                            Text(String(days))
-                                .font(.system(.title3, design: .rounded))
-                                .foregroundColor(.white)
-                                +
-                                Text(" ")
-                                +
-                                Text(days == 1 ? "day" : "days")
-                                .font(.system(.body, design: .rounded))
-                        } else {
-                            Text("-")
-                                .font(.system(.title3, design: .rounded))
-                        }
-                    }
-                    .foregroundColor(Color.white.opacity(0.9))
-                    .padding(8)
-                    
-                    Spacer()
-                }
-                .background(ContainerRelativeShape().fill(Color.accentColor))
-            }
-            .padding()
+    private var headline: String {
+        guard let days = daysSinceLastWorkout else { return "—" }
+        switch days {
+        case 0: return "Today"
+        case 1: return "Yesterday"
+        default: return "\(days) days"
         }
+    }
+
+    private var detail: String {
+        guard let workoutInfo = entry.workoutInfo else {
+            return "No workouts logged yet."
+        }
+        let duration = Duration.seconds(workoutInfo.duration)
+            .formatted(.units(allowed: [.hours, .minutes], width: .narrow))
+        return "\(duration) · \(workoutInfo.start.formatted(.dateTime.month(.abbreviated).day()))"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label("Last Workout", systemImage: "figure.strengthtraining.traditional")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.tint)
+                .lineLimit(1)
+
+            Spacer(minLength: 0)
+
+            Text(headline)
+                .font(.title2.weight(.semibold))
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+
+            Text(detail)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .containerBackground(.fill.tertiary, for: .widget)
+        .widgetURL(DeepLink.url(for: .startWorkout))
     }
 }
 
@@ -130,7 +129,7 @@ struct LastWorkoutWidget: Widget {
         }
         .configurationDisplayName("Last Workout")
         .description("The number of days since the last workout.")
-        .supportedFamilies([.systemSmall])
+        .supportedFamilies([.systemSmall, .systemMedium])
     }
 }
 
@@ -147,7 +146,7 @@ private enum WorkoutActivityPalette {
 struct WorkoutLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: WorkoutActivityAttributes.self) { context in
-            WorkoutLiveActivityLockScreenView(context: context)
+            WorkoutLiveActivityContainer(context: context)
                 .activityBackgroundTint(WorkoutActivityPalette.surface)
                 .activitySystemActionForegroundColor(WorkoutActivityPalette.onSurface)
                 .widgetURL(DeepLink.url(for: .startWorkout))
@@ -179,6 +178,122 @@ struct WorkoutLiveActivityWidget: Widget {
             }
             .keylineTint(WorkoutActivityPalette.accent)
             .widgetURL(DeepLink.url(for: .startWorkout))
+        }
+        .supplementalActivityFamiliesCompat()
+    }
+}
+
+private extension ActivityConfiguration {
+    /// The Apple Watch Smart Stack renders the `.small` activity family. Older
+    /// systems keep the default (`.medium`) presentation only.
+    func supplementalActivityFamiliesCompat() -> some WidgetConfiguration {
+        if #available(iOS 18.0, *) {
+            return supplementalActivityFamilies([.small])
+        } else {
+            return self
+        }
+    }
+}
+
+/// Routes to the Apple Watch Smart Stack layout where the system supports the
+/// `.small` activity family, and to the Lock Screen layout everywhere else.
+private struct WorkoutLiveActivityContainer: View {
+    let context: ActivityViewContext<WorkoutActivityAttributes>
+
+    var body: some View {
+        if #available(iOS 18.0, watchOS 11.0, *) {
+            WorkoutActivityFamilyRouter(context: context)
+        } else {
+            WorkoutLiveActivityLockScreenView(context: context)
+        }
+    }
+}
+
+@available(iOS 18.0, watchOS 11.0, *)
+private struct WorkoutActivityFamilyRouter: View {
+    @Environment(\.activityFamily) private var activityFamily
+    let context: ActivityViewContext<WorkoutActivityAttributes>
+
+    var body: some View {
+        switch activityFamily {
+        case .small:
+            WorkoutSmartStackView(context: context)
+        default:
+            WorkoutLiveActivityLockScreenView(context: context)
+        }
+    }
+}
+
+/// Compact Smart Stack layout for Apple Watch: one glanceable line of state,
+/// the live value, and rest controls only when they are actionable.
+private struct WorkoutSmartStackView: View {
+    let context: ActivityViewContext<WorkoutActivityAttributes>
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+            let presentationDate = workoutPresentationDate(context, timeline.date)
+            let phase = context.state.resolvedPhase(at: presentationDate)
+            let set = context.state.visibleSet(at: presentationDate)
+
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 5) {
+                    Image(systemName: phaseSystemImage(phase))
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(phaseTint(phase))
+
+                    Text(set?.exerciseName ?? context.attributes.workoutTitle)
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+
+                    Spacer(minLength: 4)
+
+                    Text("\(context.state.completedSets)/\(context.state.totalSets)")
+                        .font(.caption2.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+
+                if phase == .resting, let end = context.state.restTimerEnd {
+                    HStack(spacing: 6) {
+                        workoutRestTimerText(until: end)
+                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .contentTransition(.numericText(countsDown: true))
+                            .invalidatableContent()
+
+                        Spacer(minLength: 4)
+
+                        Button(intent: SkipWorkoutRestTimerIntent(
+                            workoutID: context.attributes.workoutID
+                        )) {
+                            Image(systemName: "forward.fill")
+                        }
+                        .buttonBorderShape(.circle)
+                        .accessibilityLabel("Skip rest timer")
+                    }
+                } else {
+                    HStack(spacing: 6) {
+                        Text(set?.result.isEmpty == false && set?.result != "—" ? set!.result : "Log a set")
+                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+
+                        Spacer(minLength: 4)
+
+                        Text(context.attributes.workoutStart, style: .timer)
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
+                        if phase == .currentSet, let set {
+                            WorkoutActivityCompleteSetButton(
+                                workoutID: context.attributes.workoutID,
+                                set: set,
+                                size: 30
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -263,25 +378,30 @@ private struct WorkoutLiveActivityLockScreenView: View {
                             .foregroundStyle(WorkoutActivityPalette.secondary)
                             .lineLimit(1)
 
-                        Image(systemName: phaseSystemImage(phase))
-                            .font(.system(size: 16, weight: .bold))
-                            .foregroundStyle(
-                                phaseIsCompletion(phase)
-                                    ? WorkoutActivityPalette.onSuccess
-                                    : tint
+                        if phase == .currentSet, let set {
+                            WorkoutActivityCompleteSetButton(
+                                workoutID: context.attributes.workoutID,
+                                set: set,
+                                size: 38
                             )
-                            .frame(width: 36, height: 36)
-                            .background(
-                                RoundedRectangle(
-                                    cornerRadius: WorkoutActivityPalette.compactCornerRadius,
-                                    style: .continuous
-                                )
-                                .fill(
+                        } else {
+                            Image(systemName: phaseSystemImage(phase))
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundStyle(
                                     phaseIsCompletion(phase)
-                                        ? tint
-                                        : tint.opacity(0.14)
+                                        ? WorkoutActivityPalette.onSuccess
+                                        : tint
                                 )
-                            )
+                                .frame(width: 38, height: 38)
+                                .background(
+                                    Circle()
+                                        .fill(
+                                            phaseIsCompletion(phase)
+                                                ? tint
+                                                : tint.opacity(0.14)
+                                        )
+                                )
+                        }
                     }
                 }
             }
@@ -427,6 +547,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
         }
         return result
     }
+
 }
 
 private struct WorkoutActivityControlButtonStyle: ButtonStyle {
@@ -454,64 +575,46 @@ private struct WorkoutActivityControlButtonStyle: ButtonStyle {
     }
 }
 
+private struct WorkoutActivityCompletionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .foregroundStyle(WorkoutActivityPalette.onSuccess)
+            .background(
+                Circle()
+                    .fill(WorkoutActivityPalette.accent)
+            )
+            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .opacity(configuration.isPressed ? 0.78 : 1)
+    }
+}
+
+private struct WorkoutActivityCompleteSetButton: View {
+    let workoutID: String
+    let set: WorkoutActivityAttributes.SetSnapshot
+    let size: CGFloat
+
+    var body: some View {
+        Button(intent: CompleteWorkoutSetIntent(
+            workoutID: workoutID,
+            setID: set.setID
+        )) {
+            Image(systemName: "checkmark")
+                .font(.system(size: size * 0.42, weight: .bold))
+                .frame(width: size, height: size)
+        }
+        .buttonStyle(WorkoutActivityCompletionButtonStyle())
+        .accessibilityLabel("Complete set \(set.setNumber)")
+    }
+}
+
 private struct WorkoutDynamicIslandCenter: View {
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let presentationDate = workoutPresentationDate(context, timeline.date)
-            let phase = context.state.resolvedPhase(at: presentationDate)
-            let set = context.state.visibleSet(at: presentationDate)
-            VStack(spacing: 2) {
-                Text(primaryTitle(phase: phase, set: set))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(
-                        phaseIsCompletion(phase)
-                            ? WorkoutActivityPalette.success
-                            : WorkoutActivityPalette.onSurface
-                    )
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.70)
-                    .allowsTightening(true)
-                Text(secondaryTitle(phase: phase, set: set))
-                    .font(.caption2)
-                    .foregroundStyle(WorkoutActivityPalette.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
-                    .allowsTightening(true)
-            }
-        }
-    }
-
-    private func primaryTitle(
-        phase: WorkoutActivityAttributes.Phase,
-        set: WorkoutActivityAttributes.SetSnapshot?
-    ) -> String {
-        switch phase {
-        case .setCompleted: return set?.exerciseName ?? "Set complete"
-        case .resting: return set?.exerciseName ?? "Rest"
-        case .finished: return "Workout complete"
-        case .currentSet: return set?.exerciseName ?? "Workout"
-        }
-    }
-
-    private func secondaryTitle(
-        phase: WorkoutActivityAttributes.Phase,
-        set: WorkoutActivityAttributes.SetSnapshot?
-    ) -> String {
-        guard let set else {
-            return "\(context.state.completedSets) of \(context.state.totalSets) sets"
-        }
-        switch phase {
-        case .setCompleted:
-            return "Set \(set.setNumber)/\(set.setCount) complete · \(set.result)"
-        case .resting:
-            return "Next: set \(set.setNumber)/\(set.setCount) · \(set.result)"
-        case .currentSet:
-            return "Set \(set.setNumber)/\(set.setCount) · \(set.result)"
-        case .finished:
-            return "\(context.state.completedSets) sets logged"
-        }
+        // The exercise header lives in the full-width bottom region. Leaving
+        // center empty prevents the system's centered column from offsetting
+        // it relative to the result and controls underneath.
+        EmptyView()
     }
 }
 
@@ -523,7 +626,35 @@ private struct WorkoutDynamicIslandBottom: View {
             let presentationDate = workoutPresentationDate(context, timeline.date)
             let phase = context.state.resolvedPhase(at: presentationDate)
             let set = context.state.visibleSet(at: presentationDate)
-            Group {
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Image(systemName: phase == .resting ? "timer" : "dumbbell.fill")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(phaseTint(phase))
+                        .frame(width: 30, height: 30)
+                        .background(phaseTint(phase).opacity(0.16), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(dynamicTitle(phase: phase, set: set))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(
+                                phaseIsCompletion(phase)
+                                    ? WorkoutActivityPalette.success
+                                    : WorkoutActivityPalette.onSurface
+                            )
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.70)
+
+                        Text(dynamicSubtitle(phase: phase, set: set))
+                            .font(.caption2)
+                            .foregroundStyle(WorkoutActivityPalette.secondary)
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+                    }
+
+                    Spacer(minLength: 4)
+                }
+
                 if phase == .resting,
                    let end = context.state.restTimerEnd,
                    let progress = context.state.restProgress(at: presentationDate) {
@@ -575,31 +706,63 @@ private struct WorkoutDynamicIslandBottom: View {
                     }
                 } else {
                     HStack(spacing: 10) {
-                    Image(systemName: phaseIsCompletion(phase) ? "checkmark.circle.fill" : "dumbbell.fill")
-                        .foregroundStyle(
-                            phaseIsCompletion(phase)
-                                ? WorkoutActivityPalette.success
-                                : WorkoutActivityPalette.accent
-                        )
-                    Text(dynamicResult(set))
-                        .font(.title3.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(
-                            phaseIsCompletion(phase)
-                                ? WorkoutActivityPalette.success
-                                : WorkoutActivityPalette.onSurface
-                        )
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.68)
-                        .allowsTightening(true)
-                    Spacer(minLength: 4)
-                    Text("\(context.state.completedSets)/\(context.state.totalSets) sets")
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(WorkoutActivityPalette.secondary)
-                        .lineLimit(1)
+                        Text(dynamicResult(set))
+                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(
+                                phaseIsCompletion(phase)
+                                    ? WorkoutActivityPalette.success
+                                    : WorkoutActivityPalette.onSurface
+                            )
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.68)
+                            .allowsTightening(true)
+                        Spacer(minLength: 4)
+                        Text("\(context.state.completedSets)/\(context.state.totalSets) sets")
+                            .font(.caption2.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(WorkoutActivityPalette.secondary)
+                            .lineLimit(1)
+
+                        if phase == .currentSet, let set {
+                            WorkoutActivityCompleteSetButton(
+                                workoutID: context.attributes.workoutID,
+                                set: set,
+                                size: 34
+                            )
+                        } else {
+                            Image(systemName: phaseIsCompletion(phase) ? "checkmark.circle.fill" : "checkmark.seal.fill")
+                                .font(.title3)
+                                .foregroundStyle(WorkoutActivityPalette.success)
+                        }
                     }
                 }
             }
-            .padding(.top, 4)
+        }
+    }
+
+    private func dynamicTitle(
+        phase: WorkoutActivityAttributes.Phase,
+        set: WorkoutActivityAttributes.SetSnapshot?
+    ) -> String {
+        if phase == .finished { return "Workout complete" }
+        return set?.exerciseName ?? "Workout"
+    }
+
+    private func dynamicSubtitle(
+        phase: WorkoutActivityAttributes.Phase,
+        set: WorkoutActivityAttributes.SetSnapshot?
+    ) -> String {
+        guard let set else {
+            return "\(context.state.completedSets) of \(context.state.totalSets) sets"
+        }
+        switch phase {
+        case .setCompleted:
+            return "Set \(set.setNumber) of \(set.setCount) complete"
+        case .resting:
+            return "Next: set \(set.setNumber) of \(set.setCount) · \(dynamicResult(set))"
+        case .currentSet:
+            return "Set \(set.setNumber) of \(set.setCount) · \(dynamicResult(set))"
+        case .finished:
+            return "\(context.state.completedSets) sets logged"
         }
     }
 

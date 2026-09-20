@@ -714,6 +714,7 @@ final class WorkoutLiveActivityManager {
         let setIndex = sets.firstIndex { $0.objectID == set.objectID } ?? 0
         let exerciseName = workoutExercise.exercise(in: ExerciseStore.shared.exercises)?.title ?? "Exercise"
         return WorkoutActivityAttributes.SetSnapshot(
+            setID: set.uuid?.uuidString ?? set.objectID.uriRepresentation().absoluteString,
             exerciseName: exerciseName,
             setNumber: setIndex + 1,
             setCount: max(sets.count, 1),
@@ -759,6 +760,40 @@ final class WorkoutLiveActivityManager {
 @available(iOS 17.0, *)
 @MainActor
 enum WorkoutLiveActivityIntentHandler {
+    static func completeSet(workoutID: String, setID: String) {
+        guard let workout = matchingCurrentWorkout(workoutID: workoutID),
+              let (workoutExercise, set) = matchingSet(setID: setID, in: workout),
+              !set.isCompleted,
+              let context = set.managedObjectContext else { return }
+
+        set.isCompleted = true
+        set.completedAt = Date()
+        workout.start = workout.start ?? Date()
+
+        if SettingsStore.shared.autoStartRestTimer {
+            RestTimerStore.shared.start(duration: restTimerDuration(for: workoutExercise))
+        }
+
+        do {
+            try context.save()
+        } catch {
+            os_log(
+                "Could not complete workout set from Live Activity: %@",
+                log: .workoutData,
+                type: .error,
+                error.localizedDescription
+            )
+            return
+        }
+
+        WatchConnectionManager.shared.syncCurrentWorkoutSnapshot()
+        WorkoutLiveActivityManager.shared.setCompleted(
+            set,
+            in: workoutExercise,
+            workout: workout
+        )
+    }
+
     static func adjustRestTimer(workoutID: String, by interval: TimeInterval) {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID) else { return }
         RestTimerStore.shared.adjust(by: interval)
@@ -769,6 +804,34 @@ enum WorkoutLiveActivityIntentHandler {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID) else { return }
         RestTimerStore.shared.cancel()
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+    }
+
+    private static func matchingSet(
+        setID: String,
+        in workout: Workout
+    ) -> (WorkoutExercise, WorkoutSet)? {
+        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+        for exercise in exercises {
+            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+            if let set = sets.first(where: {
+                ($0.uuid?.uuidString ?? $0.objectID.uriRepresentation().absoluteString) == setID
+            }) {
+                return (exercise, set)
+            }
+        }
+        return nil
+    }
+
+    private static func restTimerDuration(for workoutExercise: WorkoutExercise) -> TimeInterval {
+        if let duration = workoutExercise.restTimerDurationValue { return duration }
+        switch workoutExercise.exercise(in: ExerciseStore.shared.exercises)?.type {
+        case .barbell:
+            return SettingsStore.shared.defaultRestTimeBarbellBased
+        case .dumbbell:
+            return SettingsStore.shared.defaultRestTimeDumbbellBased
+        default:
+            return SettingsStore.shared.defaultRestTime
+        }
     }
 
     private static func matchingCurrentWorkout(workoutID: String) -> Workout? {
