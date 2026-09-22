@@ -13,6 +13,39 @@ import os.log
 import os.signpost
 
 extension NSManagedObjectContext {
+    /// Run on this context's queue. On failure, undo only this mutation, not
+    /// unrelated user edits that were already pending when it began.
+    public func persistMutation<T>(
+        save: () throws -> Void,
+        mutation: () throws -> T
+    ) throws -> T {
+        processPendingChanges()
+        let previousUndoManager = undoManager
+        let mutationUndoManager = UndoManager()
+        mutationUndoManager.groupsByEvent = false
+        undoManager = mutationUndoManager
+        defer { undoManager = previousUndoManager }
+
+        mutationUndoManager.beginUndoGrouping()
+        do {
+            let result = try mutation()
+            processPendingChanges()
+            mutationUndoManager.endUndoGrouping()
+            try save()
+            return result
+        } catch {
+            processPendingChanges()
+            if mutationUndoManager.groupingLevel > 0 {
+                mutationUndoManager.endUndoGrouping()
+            }
+            mutationUndoManager.undo()
+            processPendingChanges()
+            throw error
+        }
+    }
+}
+
+extension NSManagedObjectContext {
     public struct ObjectChanges {
         public let inserted: Set<NSManagedObject>
         public let updated: Set<NSManagedObject>

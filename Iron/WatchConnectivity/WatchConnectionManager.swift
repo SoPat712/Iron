@@ -231,29 +231,7 @@ extension WatchConnectionManager {
         save: () throws -> Void,
         mutation: () throws -> DeferredWatchEventEffects
     ) throws -> DeferredWatchEventEffects {
-        context.processPendingChanges()
-        let previousUndoManager = context.undoManager
-        let eventUndoManager = UndoManager()
-        eventUndoManager.groupsByEvent = false
-        context.undoManager = eventUndoManager
-        defer { context.undoManager = previousUndoManager }
-
-        eventUndoManager.beginUndoGrouping()
-        do {
-            let effects = try mutation()
-            context.processPendingChanges()
-            eventUndoManager.endUndoGrouping()
-            try save()
-            return effects
-        } catch {
-            context.processPendingChanges()
-            if eventUndoManager.groupingLevel > 0 {
-                eventUndoManager.endUndoGrouping()
-            }
-            eventUndoManager.undo()
-            context.processPendingChanges()
-            throw error
-        }
+        try context.persistMutation(save: save, mutation: mutation)
     }
 
     static func commitWatchEventMutation(
