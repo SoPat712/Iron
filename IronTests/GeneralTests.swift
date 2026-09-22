@@ -908,3 +908,126 @@ final class HistoryMutationPersistenceTests: XCTestCase {
         XCTAssertEqual(destination.tagValue, .dropSet)
     }
 }
+
+final class HealthSampleReconciliationTests: XCTestCase {
+    private struct Sample: Equatable {
+        let id: UUID
+        let matches: Bool
+    }
+
+    private enum CleanupError: Error, Equatable {
+        case failed
+    }
+
+    private let lowID = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+    private let middleID = UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+    private let highID = UUID(uuidString: "00000000-0000-0000-0000-000000000003")!
+
+    private func reconcile(_ samples: [Sample]) -> HealthManager.ExistingSampleReconciliation<Sample> {
+        HealthManager.reconcileExistingSamples(
+            samples,
+            matches: { $0.matches },
+            stableID: { $0.id }
+        )
+    }
+
+    func testSingleMatchingSampleCompletesWithoutDeletingAnything() throws {
+        let canonical = Sample(id: lowID, matches: true)
+        let decision = reconcile([canonical])
+        var deleteCalled = false
+        var result: Result<Void, Error>?
+
+        XCTAssertTrue(HealthManager.completeUsingReusableSample(
+            decision,
+            delete: { _, _ in deleteCalled = true },
+            completion: { result = $0 }
+        ))
+
+        XCTAssertEqual(decision.reusable, canonical)
+        XCTAssertTrue(decision.surplus.isEmpty)
+        XCTAssertFalse(deleteCalled)
+        try XCTUnwrap(result).get()
+    }
+
+    func testCanonicalMatchingSampleIsIndependentOfQueryOrder() {
+        let low = Sample(id: lowID, matches: true)
+        let middle = Sample(id: middleID, matches: false)
+        let high = Sample(id: highID, matches: true)
+
+        let forward = reconcile([high, middle, low])
+        let reversed = reconcile([low, middle, high])
+
+        XCTAssertEqual(forward.reusable, low)
+        XCTAssertEqual(reversed.reusable, low)
+        XCTAssertEqual(Set(forward.surplus.map(\.id)), Set([middleID, highID]))
+        XCTAssertEqual(Set(reversed.surplus.map(\.id)), Set([middleID, highID]))
+    }
+
+    func testPartialCleanupRetryKeepsCanonicalAndOnlyReturnsRemainingSurplus() {
+        let canonical = Sample(id: lowID, matches: true)
+        let firstSurplus = Sample(id: middleID, matches: false)
+        let remainingSurplus = Sample(id: highID, matches: false)
+        let initial = reconcile([firstSurplus, canonical, remainingSurplus])
+
+        XCTAssertEqual(initial.reusable, canonical)
+        XCTAssertEqual(Set(initial.surplus.map(\.id)), Set([middleID, highID]))
+
+        let retry = reconcile([remainingSurplus, canonical])
+        XCTAssertEqual(retry.reusable, canonical)
+        XCTAssertEqual(retry.surplus, [remainingSurplus])
+    }
+
+    func testEmptyAndNoMatchRequireReplacementWithoutInventingCleanup() {
+        let empty = reconcile([])
+        XCTAssertNil(empty.reusable)
+        XCTAssertTrue(empty.surplus.isEmpty)
+
+        let samples = [
+            Sample(id: lowID, matches: false),
+            Sample(id: middleID, matches: false)
+        ]
+        let noMatch = reconcile(samples)
+        XCTAssertNil(noMatch.reusable)
+        XCTAssertEqual(noMatch.surplus, samples)
+    }
+
+    func testCleanupFailureDeletesOnlySurplusAndCannotSave() {
+        let canonical = Sample(id: lowID, matches: true)
+        let surplus = Sample(id: middleID, matches: false)
+        let decision = reconcile([surplus, canonical])
+        var deleted: [Sample] = []
+        var result: Result<Void, Error>?
+
+        let handled = HealthManager.completeUsingReusableSample(
+            decision,
+            delete: { samples, completion in
+                deleted = samples
+                completion(.failure(CleanupError.failed))
+            },
+            completion: { result = $0 }
+        )
+
+        XCTAssertTrue(handled)
+        XCTAssertEqual(deleted, [surplus])
+        XCTAssertFalse(deleted.contains(canonical))
+        XCTAssertThrowsError(try result?.get()) { error in
+            XCTAssertEqual(error as? CleanupError, .failed)
+        }
+    }
+
+    func testNoMatchIsNotHandledAsCleanup() {
+        let decision = reconcile([Sample(id: lowID, matches: false)])
+        var deleted = false
+        var completed = false
+
+        let handled = HealthManager.completeUsingReusableSample(
+            decision,
+            delete: { _, _ in deleted = true },
+            completion: { _ in completed = true }
+        )
+
+        XCTAssertFalse(handled)
+        XCTAssertFalse(deleted)
+        XCTAssertFalse(completed)
+    }
+}

@@ -183,6 +183,50 @@ extension HealthManager {
 }
 
 extension HealthManager {
+    struct ExistingSampleReconciliation<Sample> {
+        let reusable: Sample?
+        let surplus: [Sample]
+    }
+
+    static func reconcileExistingSamples<Sample>(
+        _ samples: [Sample],
+        matches: (Sample) -> Bool,
+        stableID: (Sample) -> UUID
+    ) -> ExistingSampleReconciliation<Sample> {
+        let reusable = samples
+            .filter(matches)
+            .min { stableID($0).uuidString < stableID($1).uuidString }
+        guard let reusable else {
+            return ExistingSampleReconciliation(reusable: nil, surplus: samples)
+        }
+        let reusableID = stableID(reusable)
+        return ExistingSampleReconciliation(
+            reusable: reusable,
+            surplus: samples.filter { stableID($0) != reusableID }
+        )
+    }
+
+    /// Returns false only when the caller still needs to create a replacement.
+    /// A reusable matching sample is retained while exact surplus objects are
+    /// deleted through the same error-reporting path as other removals.
+    @discardableResult
+    static func completeUsingReusableSample<Sample>(
+        _ reconciliation: ExistingSampleReconciliation<Sample>,
+        delete: @escaping ([Sample], @escaping (Result<Void, Error>) -> Void) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) -> Bool {
+        guard reconciliation.reusable != nil else { return false }
+        coordinateReplacement(
+            oldObjects: reconciliation.surplus,
+            replacements: [Sample](),
+            intent: .delete,
+            save: { _, _ in assertionFailure("Delete-only reconciliation must not save") },
+            delete: delete,
+            completion: completion
+        )
+        return true
+    }
+
     enum ReplacementIntent {
         case replace
         case delete
@@ -379,15 +423,35 @@ extension HealthManager {
                     }
 
                     let existingSamples = (samples as? [HKWorkout]) ?? []
-                    if existingSamples.count == 1,
-                       self.healthWorkout(
-                            existingSamples[0],
-                            matchesStart: start,
-                            end: end,
-                            duration: duration,
-                            title: workoutTitle
-                       ) {
-                        completion(.success(.alreadyPresent))
+                    let reconciliation = Self.reconcileExistingSamples(
+                        existingSamples,
+                        matches: {
+                            self.healthWorkout(
+                                $0,
+                                matchesStart: start,
+                                end: end,
+                                duration: duration,
+                                title: workoutTitle
+                            )
+                        },
+                        stableID: { $0.uuid }
+                    )
+                    let reusedOutcome: WorkoutSyncOutcome = reconciliation.surplus.isEmpty
+                        ? .alreadyPresent
+                        : .updated
+                    if Self.completeUsingReusableSample(
+                        reconciliation,
+                        delete: { surplus, deleted in
+                            self.healthStore.delete(surplus) { success, error in
+                                deleted(success
+                                    ? .success(())
+                                    : .failure(error ?? AuthorizationError.denied))
+                            }
+                        },
+                        completion: { result in
+                            completion(result.map { reusedOutcome })
+                        }
+                    ) {
                         return
                     }
 
@@ -886,6 +950,7 @@ extension HealthManager {
                                 }, by: { $0.0 }).mapValues { $0.map(\.1) }
                                 var workoutSamplesToSave: [HKWorkout] = []
                                 var workoutReplacementPlans: [(old: [HKWorkout], new: HKWorkout)] = []
+                                var workoutCleanupPlans: [ExistingSampleReconciliation<HKWorkout>] = []
 
                                 for workout in workouts {
                                     guard let uuid = workout.uuid,
@@ -902,14 +967,23 @@ extension HealthManager {
                                     }
                                     let existing = samplesByID[uuid] ?? []
                                     let title = workout.optionalDisplayTitle(in: exerciseStore.exercises)
-                                    if existing.count == 1,
-                                       self.healthWorkout(
-                                        existing[0],
-                                        matchesStart: start,
-                                        end: end,
-                                        duration: duration,
-                                        title: title
-                                       ) {
+                                    let reconciliation = Self.reconcileExistingSamples(
+                                        existing,
+                                        matches: {
+                                            self.healthWorkout(
+                                                $0,
+                                                matchesStart: start,
+                                                end: end,
+                                                duration: duration,
+                                                title: title
+                                            )
+                                        },
+                                        stableID: { $0.uuid }
+                                    )
+                                    if reconciliation.reusable != nil {
+                                        if !reconciliation.surplus.isEmpty {
+                                            workoutCleanupPlans.append(reconciliation)
+                                        }
                                         continue
                                     }
 
@@ -978,7 +1052,29 @@ extension HealthManager {
                                         }
                                     )
                                 }
-                                let modifiedCount = workoutReplacementPlans.count
+                                for cleanup in workoutCleanupPlans {
+                                    group.enter()
+                                    _ = Self.completeUsingReusableSample(
+                                        cleanup,
+                                        delete: { surplus, deleted in
+                                            self.healthStore.delete(surplus) { success, error in
+                                                deleted(success
+                                                    ? .success(())
+                                                    : .failure(error ?? AuthorizationError.denied))
+                                            }
+                                        },
+                                        completion: { result in
+                                            switch result {
+                                            case .success:
+                                                recordResult(success: true, error: nil)
+                                            case .failure(let error):
+                                                recordResult(success: false, error: error)
+                                            }
+                                            group.leave()
+                                        }
+                                    )
+                                }
+                                let modifiedCount = workoutReplacementPlans.count + workoutCleanupPlans.count
                                 
                                 group.notify(queue: .global(qos: .background)) {
                                     resultLock.lock()
