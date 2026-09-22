@@ -107,7 +107,13 @@ struct ExerciseDiagramThumbnail: View {
 }
 
 struct ExerciseLibraryRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let exercise: Exercise
+
+    private var muscleTitle: String {
+        exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
+    }
 
     var body: some View {
         HStack(spacing: 12) {
@@ -116,17 +122,29 @@ struct ExerciseLibraryRow: View {
                 Text(exercise.title)
                     .font(.body)
                     .foregroundStyle(.primary)
-                    .lineLimit(2)
-                HStack(spacing: 6) {
-                    Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                    if let equipment = exercise.equipment.first {
-                        Text("•")
-                        Text(equipment.capitalized)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                Group {
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(muscleTitle)
+                            if let equipment = exercise.equipment.first {
+                                Text(equipment.capitalized)
+                            }
+                        }
+                        .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        HStack(spacing: 6) {
+                            Text(muscleTitle)
+                            if let equipment = exercise.equipment.first {
+                                Text("•")
+                                Text(equipment.capitalized)
+                            }
+                        }
+                        .lineLimit(1)
                     }
                 }
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
             }
             Spacer()
         }
