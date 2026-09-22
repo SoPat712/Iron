@@ -64,7 +64,7 @@ final class WorkoutPlanEditorSession: ObservableObject {
     private let parentContext: NSManagedObjectContext
     private let route: WorkoutPlanEditorRoute
 
-    init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute) {
+    init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute) throws {
         self.parentContext = parentContext
         self.route = route
 
@@ -73,12 +73,23 @@ final class WorkoutPlanEditorSession: ObservableObject {
         context.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
         self.context = context
 
+        // Resolve against the parent first: a child may still see a snapshot
+        // for an object that has been deleted but not yet saved by its parent.
+        func load<T: NSManagedObject>(_ id: NSManagedObjectID, as type: T.Type) throws -> T {
+            guard let source = try? parentContext.existingObject(with: id) as? T,
+                  !source.isDeleted,
+                  let draft = try? context.existingObject(with: id) as? T,
+                  !draft.isDeleted else {
+                throw WorkoutPlanEditorLoadError.unavailable
+            }
+            return draft
+        }
+
         switch route.kind {
         case .create(let containerID):
             let container: WorkoutPlan
-            if let containerID,
-               let existing = try? context.existingObject(with: containerID) as? WorkoutPlan {
-                container = existing
+            if let containerID {
+                container = try load(containerID, as: WorkoutPlan.self)
             } else {
                 container = WorkoutPlan.create(context: context)
             }
@@ -89,16 +100,11 @@ final class WorkoutPlanEditorSession: ObservableObject {
             self.isNew = true
 
         case .edit(let planID):
-            guard let routine = try? context.existingObject(with: planID) as? WorkoutRoutine else {
-                preconditionFailure("Could not load plan editor object")
-            }
-            self.routine = routine
+            self.routine = try load(planID, as: WorkoutRoutine.self)
             self.isNew = false
 
         case .duplicate(let planID):
-            guard let source = try? context.existingObject(with: planID) as? WorkoutRoutine else {
-                preconditionFailure("Could not load plan to duplicate")
-            }
+            let source = try load(planID, as: WorkoutRoutine.self)
             self.routine = source.duplicate(context: context)
             self.isNew = true
         }
@@ -139,6 +145,14 @@ final class WorkoutPlanEditorSession: ObservableObject {
 
     func cancel() {
         context.rollback()
+    }
+}
+
+enum WorkoutPlanEditorLoadError: LocalizedError {
+    case unavailable
+
+    var errorDescription: String? {
+        "This saved workout or folder is no longer available. Close this editor and select a workout again."
     }
 }
 
@@ -242,8 +256,16 @@ enum SavedWorkoutImporter {
     }
 }
 
+private final class WorkoutPlanEditorPresentation: ObservableObject {
+    let result: Result<WorkoutPlanEditorSession, Error>
+
+    init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute) {
+        result = Result { try WorkoutPlanEditorSession(parentContext: parentContext, route: route) }
+    }
+}
+
 private struct WorkoutPlanEditorHost: View {
-    @StateObject private var session: WorkoutPlanEditorSession
+    @StateObject private var presentation: WorkoutPlanEditorPresentation
     @State private var persistenceError: String?
 
     let onDismiss: () -> Void
@@ -253,40 +275,58 @@ private struct WorkoutPlanEditorHost: View {
         route: WorkoutPlanEditorRoute,
         onDismiss: @escaping () -> Void
     ) {
-        _session = StateObject(
-            wrappedValue: WorkoutPlanEditorSession(parentContext: parentContext, route: route)
+        _presentation = StateObject(
+            wrappedValue: WorkoutPlanEditorPresentation(parentContext: parentContext, route: route)
         )
         self.onDismiss = onDismiss
     }
 
     var body: some View {
         NavigationStack {
-            WorkoutRoutineView(
-                workoutRoutine: session.routine,
-                isNew: session.isNew,
-                autosavesChanges: false,
-                onCancel: {
-                    session.cancel()
-                    onDismiss()
-                },
-                onCommit: {
-                    do {
-                        try session.commit()
-                        onDismiss()
-                    } catch {
-                        persistenceError = "Your workout could not be saved. Try again. \(error.localizedDescription)"
+            switch presentation.result {
+            case .success(let session):
+                editor(session)
+            case .failure(let error):
+                ContentUnavailableView {
+                    Label("Workout Unavailable", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(error.localizedDescription)
+                }
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Close", action: onDismiss)
                     }
                 }
-            )
-            .environment(\.managedObjectContext, session.context)
-            .alert("Workout Not Saved", isPresented: Binding(
-                get: { persistenceError != nil },
-                set: { if !$0 { persistenceError = nil } }
-            )) {
-                Button("OK", role: .cancel) { persistenceError = nil }
-            } message: {
-                Text(persistenceError ?? "Please try again.")
             }
+        }
+    }
+
+    private func editor(_ session: WorkoutPlanEditorSession) -> some View {
+        WorkoutRoutineView(
+            workoutRoutine: session.routine,
+            isNew: session.isNew,
+            autosavesChanges: false,
+            onCancel: {
+                session.cancel()
+                onDismiss()
+            },
+            onCommit: {
+                do {
+                    try session.commit()
+                    onDismiss()
+                } catch {
+                    persistenceError = "Your workout could not be saved. Try again. \(error.localizedDescription)"
+                }
+            }
+        )
+        .environment(\.managedObjectContext, session.context)
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
         }
     }
 }
