@@ -104,6 +104,7 @@ enum HevyCSVError: LocalizedError {
     case missingColumns([String])
     case noWorkoutRows
     case couldNotCreateExercise(String)
+    case couldNotSaveMeasurements
 
     var errorDescription: String? {
         switch self {
@@ -117,6 +118,8 @@ enum HevyCSVError: LocalizedError {
             return "The Hevy CSV does not contain any valid workout rows."
         case .couldNotCreateExercise(let title):
             return "Iron could not create the missing exercise “\(title)”."
+        case .couldNotSaveMeasurements:
+            return "Iron could not save the imported measurements."
         }
     }
 }
@@ -144,7 +147,7 @@ enum HevyCSV {
     }()
 
     private struct WorkoutKey: Hashable {
-        let startSecond: Int64
+        let startSecond: TimeInterval
         let normalizedTitle: String
     }
 
@@ -584,15 +587,15 @@ enum HevyCSV {
         let document = try parseMeasurementData(data)
         let importedEntries = document.entries
 
-        var knownEntries = [Int64: BodyMeasurementEntry]()
+        var knownEntries = [TimeInterval: BodyMeasurementEntry]()
         for entry in store.entries {
-            knownEntries[Int64(entry.date.timeIntervalSince1970.rounded())] = entry
+            knownEntries[entry.date.timeIntervalSince1970.rounded()] = entry
         }
         var inserted = 0
         var updated = 0
         var duplicates = 0
         for entry in importedEntries {
-            let key = Int64(entry.date.timeIntervalSince1970.rounded())
+            let key = entry.date.timeIntervalSince1970.rounded()
             if var existing = knownEntries[key] {
                 let mergedValues = existing.values.merging(entry.values) { _, imported in imported }
                 guard mergedValues != existing.values else {
@@ -600,11 +603,15 @@ enum HevyCSV {
                     continue
                 }
                 existing.values = mergedValues
-                store.save(existing, exportToHealth: false)
+                guard store.save(existing, exportToHealth: false) else {
+                    throw HevyCSVError.couldNotSaveMeasurements
+                }
                 knownEntries[key] = existing
                 updated += 1
             } else {
-                store.save(entry, exportToHealth: false)
+                guard store.save(entry, exportToHealth: false) else {
+                    throw HevyCSVError.couldNotSaveMeasurements
+                }
                 knownEntries[key] = entry
                 inserted += 1
             }
@@ -791,7 +798,7 @@ enum HevyCSV {
 
     private static func workoutKey(start: Date, title: String) -> WorkoutKey {
         WorkoutKey(
-            startSecond: Int64(start.timeIntervalSince1970.rounded()),
+            startSecond: start.timeIntervalSince1970.rounded(),
             normalizedTitle: normalizedName(title.isEmpty ? "Workout" : title)
         )
     }

@@ -334,4 +334,27 @@ class ExportImportWorkoutDataTests: XCTestCase {
         XCTAssertEqual(result.importedMeasurements, 1)
         XCTAssertEqual(store.entries.first?[.height], 182.5)
     }
+
+    func testMeasurementImportHandlesStoredDatesOutsideIntegerRange() throws {
+        let suiteName = "HevyExtremeStoredDate.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let existing = BodyMeasurementEntry(
+            date: Date(timeIntervalSince1970: 1e100),
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 80]
+        )
+        XCTAssertTrue(store.save(existing, exportToHealth: false))
+
+        let result = try HevyCSV.importData(
+            Data("date,weight_kg\n2026-08-17T08:00:00Z,82\n".utf8),
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+
+        XCTAssertEqual(result.importedMeasurements, 1)
+        XCTAssertEqual(store.entries.count, 2)
+        XCTAssertTrue(store.entries.contains { $0.id == existing.id })
+    }
 }
