@@ -615,15 +615,10 @@ private struct WorkoutRoutineExerciseCard: View {
         .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
         .onDisappear(perform: onSave)
         .sheet(isPresented: $showingRestTimerEditor) {
-            IronDurationPickerSheet(
+            RestTimerConfigurationSheet(
                 title: "Rest timer",
                 subtitle: "Recovery after each completed set",
-                systemImage: "timer",
                 initialDuration: routineExercise.restTimerDurationValue ?? workoutDefaultRestTimerDuration,
-                minimumDuration: 30,
-                maximumDuration: 600,
-                durationStep: 15,
-                presets: [30, 45, 60, 90, 120, 150, 180, 240, 300],
                 secondaryActionTitle: routineExercise.restTimerDurationValue == nil
                     ? "Keep workout default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")"
                     : "Use workout default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")",
