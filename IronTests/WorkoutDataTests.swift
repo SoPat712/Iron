@@ -1473,3 +1473,123 @@ final class NewWorkoutStartPersistenceTests: XCTestCase {
         }
     }
 }
+
+final class SupersetDuplicationTests: XCTestCase {
+    private struct RoutineFixture {
+        let routine: WorkoutRoutine
+        let exercises: [WorkoutRoutineExercise]
+        let firstGroupID: UUID
+        let secondGroupID: UUID
+    }
+
+    private func makeRoutine(
+        in context: NSManagedObjectContext,
+        plan: WorkoutPlan? = nil,
+        firstGroupID sharedFirstGroupID: UUID? = nil
+    ) -> RoutineFixture {
+        let routine = WorkoutRoutine.create(context: context)
+        routine.title = "Grouped Routine"
+        routine.workoutPlan = plan
+        let firstGroupID = sharedFirstGroupID ?? UUID()
+        let secondGroupID = UUID()
+        let groupIDs: [UUID?] = [firstGroupID, firstGroupID, secondGroupID, secondGroupID, nil]
+        let exercises = groupIDs.map { groupID -> WorkoutRoutineExercise in
+            let exercise = WorkoutRoutineExercise.create(context: context)
+            exercise.exerciseUuid = UUID()
+            exercise.supersetUuid = groupID
+            return exercise
+        }
+        routine.workoutRoutineExercises = NSOrderedSet(array: exercises)
+        return RoutineFixture(
+            routine: routine,
+            exercises: exercises,
+            firstGroupID: firstGroupID,
+            secondGroupID: secondGroupID
+        )
+    }
+
+    private func assertPreservedGroups(
+        source: RoutineFixture,
+        copiedRoutine: WorkoutRoutine,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) throws {
+        let copies = try XCTUnwrap(
+            copiedRoutine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise],
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(copies.count, source.exercises.count, file: file, line: line)
+        guard copies.count == 5, source.exercises.count == 5 else {
+            XCTFail("Expected five source and copied exercises", file: file, line: line)
+            return
+        }
+        let sourceExerciseIDs = Set(source.exercises.compactMap(\.uuid))
+        for (original, copy) in zip(source.exercises, copies) {
+            let copiedID = try XCTUnwrap(copy.uuid, file: file, line: line)
+            XCTAssertNotEqual(copiedID, original.uuid, file: file, line: line)
+            XCTAssertFalse(sourceExerciseIDs.contains(copiedID), file: file, line: line)
+            XCTAssertEqual(copy.exerciseUuid, original.exerciseUuid, file: file, line: line)
+        }
+
+        let copiedFirstGroupID = try XCTUnwrap(copies[0].supersetUuid, file: file, line: line)
+        let copiedSecondGroupID = try XCTUnwrap(copies[2].supersetUuid, file: file, line: line)
+        XCTAssertEqual(copies[1].supersetUuid, copiedFirstGroupID, file: file, line: line)
+        XCTAssertEqual(copies[3].supersetUuid, copiedSecondGroupID, file: file, line: line)
+        XCTAssertNotEqual(copiedFirstGroupID, copiedSecondGroupID, file: file, line: line)
+        let sourceGroupIDs: Set<UUID> = [source.firstGroupID, source.secondGroupID]
+        XCTAssertFalse(sourceGroupIDs.contains(copiedFirstGroupID), file: file, line: line)
+        XCTAssertFalse(sourceGroupIDs.contains(copiedSecondGroupID), file: file, line: line)
+        XCTAssertNil(copies[4].supersetUuid, file: file, line: line)
+
+        XCTAssertEqual(source.exercises[0].supersetUuid, source.firstGroupID, file: file, line: line)
+        XCTAssertEqual(source.exercises[1].supersetUuid, source.firstGroupID, file: file, line: line)
+        XCTAssertEqual(source.exercises[2].supersetUuid, source.secondGroupID, file: file, line: line)
+        XCTAssertEqual(source.exercises[3].supersetUuid, source.secondGroupID, file: file, line: line)
+        XCTAssertNil(source.exercises[4].supersetUuid, file: file, line: line)
+    }
+
+    func testRoutineDuplicatePreservesSupersetMembershipWithFreshGroupIDs() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let source = makeRoutine(in: context)
+
+        let copy = source.routine.duplicate(context: context)
+
+        try assertPreservedGroups(source: source, copiedRoutine: copy)
+    }
+
+    func testPlanDuplicatePreservesSupersetMembershipWithFreshGroupIDs() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let plan = WorkoutPlan.create(context: context)
+        plan.title = "Original Plan"
+        let sharedSourceGroupID = UUID()
+        let firstSource = makeRoutine(
+            in: context,
+            plan: plan,
+            firstGroupID: sharedSourceGroupID
+        )
+        let secondSource = makeRoutine(
+            in: context,
+            plan: plan,
+            firstGroupID: sharedSourceGroupID
+        )
+        plan.workoutRoutines = NSOrderedSet(array: [firstSource.routine, secondSource.routine])
+
+        let copiedPlan = plan.duplicate(context: context)
+        let copiedRoutines = try XCTUnwrap(copiedPlan.workoutRoutines?.array as? [WorkoutRoutine])
+        guard copiedRoutines.count == 2 else {
+            XCTFail("Expected two copied routines")
+            return
+        }
+
+        XCTAssertNotEqual(copiedPlan.uuid, plan.uuid)
+        XCTAssertNotEqual(copiedRoutines[0].uuid, firstSource.routine.uuid)
+        XCTAssertNotEqual(copiedRoutines[1].uuid, secondSource.routine.uuid)
+        try assertPreservedGroups(source: firstSource, copiedRoutine: copiedRoutines[0])
+        try assertPreservedGroups(source: secondSource, copiedRoutine: copiedRoutines[1])
+        XCTAssertNotEqual(
+            (copiedRoutines[0].workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)?.supersetUuid,
+            (copiedRoutines[1].workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)?.supersetUuid
+        )
+    }
+}

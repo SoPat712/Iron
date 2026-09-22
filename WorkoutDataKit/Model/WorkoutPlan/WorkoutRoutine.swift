@@ -67,14 +67,14 @@ public class WorkoutRoutine: NSManagedObject, Codable {
             exerciseCopy.restTimerDurationValue = source.restTimerDurationValue
             return (source, exerciseCopy)
         }
-        let copiedExerciseIDBySourceID: [UUID: UUID] = Dictionary(uniqueKeysWithValues:
-            copiedPairs.compactMap { source, exerciseCopy in
-                guard let sourceID = source.uuid, let copyID = exerciseCopy.uuid else { return nil }
-                return (sourceID, copyID)
-            })
+        var copiedGroupIDBySourceID = [UUID: UUID]()
 
         for (source, exerciseCopy) in copiedPairs {
-            exerciseCopy.supersetUuid = source.supersetUuid.flatMap { copiedExerciseIDBySourceID[$0] }
+            if let sourceGroupID = source.supersetUuid {
+                let copiedGroupID = copiedGroupIDBySourceID[sourceGroupID] ?? UUID()
+                copiedGroupIDBySourceID[sourceGroupID] = copiedGroupID
+                exerciseCopy.supersetUuid = copiedGroupID
+            }
             let sourceSets = source.workoutRoutineSets?.array
                 .compactMap { $0 as? WorkoutRoutineSet } ?? []
             let copiedSets = sourceSets.map { sourceSet -> WorkoutRoutineSet in
