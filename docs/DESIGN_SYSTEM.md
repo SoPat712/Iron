@@ -97,10 +97,10 @@ explanation than an `.alert` can (`IronUtilitySheet`, `IronConfirmationSheet`,
 | Screen gutter | `IronTheme.horizontalPadding` | 16 pt |
 | Floating workout clearance | `IronTheme.floatingWorkoutBottomClearance` | 152 pt |
 
-Capsules are reserved for inherently compact status controls, prominent toolbar
-actions, and the floating active-workout accessory. Fields, cards, rows, and
-full-width buttons use continuous rounded rectangles. Grouped sections do not get
-decorative outlines or shadows.
+Capsules are reserved for compact status controls, prominent toolbar actions,
+the floating active-workout accessory, and the workout logger's set controls and
+completed-set wash. Other fields, cards, rows, and full-width buttons use continuous
+rounded rectangles. Grouped sections do not get decorative outlines or shadows.
 
 ## Typography
 
@@ -114,6 +114,9 @@ decorative outlines or shadows.
   semantic text style.
 - Avoid custom point sizes unless a chart, timer, or compact workout grid has a
   measured requirement.
+- At accessibility text sizes, exercise names wrap and muscle/equipment labels
+  stack instead of competing for one truncated line. Keep the compact metadata
+  row at standard text sizes.
 
 ## Navigation and tabs
 
@@ -205,7 +208,7 @@ accessory contains resume, expand, and discard actions.
   row padding, width, or column geometry; completion is never communicated by color alone.
 - Set deletion is a trailing swipe reveal. The red action expands behind the full row
   as the row moves and appears only during the swipe.
-- The active rest timer appears above the exercise that triggered it as a
+- The active rest timer appears below the sets of the exercise that triggered it as a
   full-width Liquid Glass status pill. Its four separate compact controls share
   one geometry token and are distributed evenly: minus 15 seconds, pause/resume,
   plus 15 seconds, and stop. The radial editor scrubs locally and commits on
