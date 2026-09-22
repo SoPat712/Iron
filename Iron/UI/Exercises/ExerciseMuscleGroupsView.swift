@@ -81,60 +81,52 @@ struct ExerciseMuscleGroupsView : View {
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
-                    Section("Equipment") {
-                        Button {
-                            selectedEquipment = nil
-                        } label: {
-                            Label("All Equipment", systemImage: selectedEquipment == nil ? "checkmark" : "dumbbell.fill")
-                        }
-                        ForEach(equipment, id: \.self) { item in
-                            Button {
-                                selectedEquipment = item
-                            } label: {
-                                Label(item.capitalized, systemImage: selectedEquipment == item ? "checkmark" : "dumbbell")
-                            }
-                        }
-                    }
-
-                    Section("Muscle Group") {
-                        Button {
-                            selectedMuscleGroup = nil
-                        } label: {
-                            Label("All Muscles", systemImage: selectedMuscleGroup == nil ? "checkmark" : "figure.strengthtraining.traditional")
-                        }
+                    Picker("Muscle", selection: $selectedMuscleGroup) {
+                        Text("All Muscles").tag(String?.none)
                         ForEach(muscleGroups, id: \.self) { group in
-                            Button {
-                                selectedMuscleGroup = group
-                            } label: {
-                                Label(group.capitalized, systemImage: selectedMuscleGroup == group ? "checkmark" : "figure.strengthtraining.traditional")
-                            }
-                        }
-                    }
-
-                    Section("Library") {
-                        Button {
-                            showingHiddenExercises = true
-                        } label: {
-                            Label("Hidden (\(exerciseStore.hiddenExercises.count))", systemImage: "eye.slash")
-                        }
-                        Button {
-                            showingCustomExercises = true
-                        } label: {
-                            Label("Custom (\(exerciseStore.customExercises.count))", systemImage: "square.grid.2x2.fill")
+                            Text(group.capitalized).tag(String?.some(group))
                         }
                     }
                 } label: {
-                    Image(systemName: selectedEquipment != nil || selectedMuscleGroup != nil
-                          ? "line.3.horizontal.decrease.circle.fill"
-                          : "line.3.horizontal.decrease.circle")
+                    Image(systemName: "figure.arms.open")
+                        .foregroundStyle(selectedMuscleGroup == nil ? Color.primary : Color.accentColor)
                 }
-                .accessibilityLabel("Filter and manage exercises")
+                .accessibilityLabel("Filter by muscle group")
+                .accessibilityValue(selectedMuscleGroup?.capitalized ?? "All muscles")
             }
             ToolbarItem(placement: .topBarTrailing) {
-                Button { showingCreateExercise = true } label: {
+                Menu {
+                    Picker("Equipment", selection: $selectedEquipment) {
+                        Text("All Equipment").tag(String?.none)
+                        ForEach(equipment, id: \.self) { item in
+                            Text(item.capitalized).tag(String?.some(item))
+                        }
+                    }
+                } label: {
+                    Image(systemName: "dumbbell")
+                        .foregroundStyle(selectedEquipment == nil ? Color.primary : Color.accentColor)
+                }
+                .accessibilityLabel("Filter by equipment")
+                .accessibilityValue(selectedEquipment?.capitalized ?? "All equipment")
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button("Create Exercise", systemImage: "plus") {
+                        showingCreateExercise = true
+                    }
+
+                    Section("Library") {
+                        Button("Hidden (\(exerciseStore.hiddenExercises.count))", systemImage: "eye.slash") {
+                            showingHiddenExercises = true
+                        }
+                        Button("Custom (\(exerciseStore.customExercises.count))", systemImage: "square.grid.2x2") {
+                            showingCustomExercises = true
+                        }
+                    }
+                } label: {
                     Image(systemName: "plus")
                 }
-                    .accessibilityLabel("Create custom exercise")
+                .accessibilityLabel("Create exercise or manage library")
             }
         }
         .searchable(
