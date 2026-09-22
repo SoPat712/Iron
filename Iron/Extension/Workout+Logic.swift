@@ -15,16 +15,18 @@ import os.log
 extension Workout {
     // TODO: would be better when SettingsStore, WatchConnectionManager, RestTimerStore etc are injected
     
-    func start(startWatchCompanionErrorHandler: WatchConnectionManager.StartWatchCompanionErrorHandler? = nil) throws {
+    func start(startWatchCompanionErrorHandler: WatchConnectionManager.StartWatchCompanionErrorHandler? = nil,
+               save: (() throws -> Void)? = nil) throws {
         guard let context = managedObjectContext else {
             os_log("Attempt to start workout without context", log: .workoutData, type: .error)
             assertionFailure("Attempt to start workout without context")
             return
         }
 
-        start = Date()
-        isCurrentWorkout = true
-        try context.save() // this also checks that there is only one currentWorkout
+        try context.persistMutation(save: { try save?() ?? context.save() }) {
+            start = Date()
+            isCurrentWorkout = true
+        }
 
         WorkoutLiveActivityManager.shared.startOrUpdate(for: self)
         
@@ -42,25 +44,28 @@ extension Workout {
         }
     }
     
-    func cancel() throws {
+    func cancel(save: (() throws -> Void)? = nil) throws {
         guard let context = managedObjectContext else {
             os_log("Attempt to cancel workout without context", log: .workoutData, type: .error)
             assertionFailure("Attempt to cancel workout without context")
             return
         }
         
+        let workoutID = uuid
+        let activitySnapshot = WorkoutLiveActivityManager.shared.endSnapshot(for: self)
+        try context.persistMutation(save: { try save?() ?? context.save() }) {
+            context.delete(self)
+        }
+
         RestTimerStore.shared.cancel()
-        WorkoutLiveActivityManager.shared.end(for: self, completed: false)
+        WorkoutLiveActivityManager.shared.end(using: activitySnapshot, completed: false)
         
-        if WatchConnectionManager.shared.currentWatchWorkoutUuid != nil, let uuid = uuid {
+        if WatchConnectionManager.shared.currentWatchWorkoutUuid != nil, let uuid = workoutID {
             WatchConnectionManager.shared.discardWatchWorkout(uuid: uuid)
         }
         
         // the user did not go through with the workout, we should remove our previous donation
-        Shortcuts.deleteStartWorkoutInteractionDonation(for: self)
-        
-        context.delete(self)
-        try context.save()
+        if let workoutID { Shortcuts.deleteStartWorkoutInteractionDonation(uuid: workoutID) }
     }
     
     func finish() throws {
@@ -71,24 +76,24 @@ extension Workout {
     /// out of phone-originated HealthKit export. A workout already running on
     /// Apple Watch must still be ended on the watch; watchOS owns that active
     /// HealthKit session.
-    func finish(syncToHealth: Bool) throws {
+    func finish(syncToHealth: Bool, save: (() throws -> Void)? = nil,
+                updatingValues: () -> Void = {}) throws {
         guard let context = managedObjectContext else {
             os_log("Attempt to finish workout without context", log: .workoutData, type: .error)
             assertionFailure("Attempt to finish workout without context")
             return
         }
         
-        try context.save() // just in case something goes wrong
-        
-        RestTimerStore.shared.cancel()
-        
-        deleteExercisesWhereAllSetsAreUncompleted()
-        deleteUncompletedSets()
-        start = safeStart // start/end should already be set, but just to be safe
-        end = safeEnd
-        isCurrentWorkout = false
-        try context.save()
+        try context.persistMutation(save: { try save?() ?? context.save() }) {
+            updatingValues()
+            deleteExercisesWhereAllSetsAreUncompleted()
+            deleteUncompletedSets()
+            start = safeStart
+            end = safeEnd
+            isCurrentWorkout = false
+        }
 
+        RestTimerStore.shared.cancel()
         WorkoutLiveActivityManager.shared.end(for: self, completed: true)
         
         // save workout in Health or tell Apple Watch to finish the workout
@@ -105,19 +110,21 @@ extension Workout {
         }
     }
     
-    func delete() throws {
+    func delete(save: (() throws -> Void)? = nil) throws {
         guard let context = managedObjectContext else {
             os_log("Attempt to delete workout without context", log: .workoutData, type: .error)
             assertionFailure("Attempt to delete workout without context")
             return
         }
         
-        HealthManager.shared.deleteWorkout(workout: self)
-        
-        Shortcuts.deleteStartWorkoutInteractionDonation(for: self)
-        
-        context.delete(self)
-        try context.save()
+        let workoutID = uuid
+        try context.persistMutation(save: { try save?() ?? context.save() }) {
+            context.delete(self)
+        }
+        if let workoutID {
+            HealthManager.shared.deleteWorkout(uuid: workoutID)
+            Shortcuts.deleteStartWorkoutInteractionDonation(uuid: workoutID)
+        }
     }
     
     func copyForRepeat(blank: Bool) -> Workout? {

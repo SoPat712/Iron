@@ -1036,3 +1036,72 @@ final class WorkoutPausedLiveActivityTests: XCTestCase {
         XCTAssertNil(reconcile().pausedRestRemaining)
     }
 }
+
+final class WorkoutLifecyclePersistenceTests: XCTestCase {
+    private enum Failure: Error { case save }
+    private var container: NSPersistentContainer!
+    private var workout: Workout!
+    private var exercise: WorkoutExercise!
+
+    override func setUpWithError() throws {
+        container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        workout = Workout.create(context: context)
+        workout.isCurrentWorkout = true
+        workout.start = Date(timeIntervalSince1970: 1_000)
+        exercise = WorkoutExercise.create(context: context)
+        exercise.workout = workout
+        for completed in [true, false] {
+            let set = WorkoutSet.create(context: context)
+            set.workoutExercise = exercise
+            set.weightValue = 50
+            set.repetitionsValue = 8
+            set.isCompleted = completed
+        }
+        try context.save()
+    }
+
+    override func tearDown() {
+        container.viewContext.reset()
+        container = nil
+        workout = nil
+        exercise = nil
+    }
+
+    func testFailedFinishRestoresUncompletedSetsAndEditorValues() {
+        workout.title = "Pending title"
+        XCTAssertThrowsError(try workout.finish(syncToHealth: false, save: { throw Failure.save }) {
+            self.workout.title = "Changed by finish editor"
+            self.workout.end = Date(timeIntervalSince1970: 2_000)
+            self.workout.sessionEffortValue = 8
+        })
+        XCTAssertTrue(workout.isCurrentWorkout)
+        XCTAssertNil(workout.end)
+        XCTAssertEqual(workout.title, "Pending title")
+        XCTAssertEqual(exercise.workoutSets?.count, 2)
+        XCTAssertEqual(workout.workoutExercises?.count, 1)
+        XCTAssertTrue(container.viewContext.hasChanges)
+    }
+
+    func testFailedCancelLeavesWorkoutAndRelationshipsIntact() {
+        XCTAssertThrowsError(try workout.cancel(save: { throw Failure.save }))
+        XCTAssertFalse(workout.isDeleted)
+        XCTAssertTrue(workout.isCurrentWorkout)
+        XCTAssertEqual(workout.workoutExercises?.count, 1)
+        XCTAssertEqual(exercise.workoutSets?.count, 2)
+    }
+
+    func testFailedHistoryDeletionLeavesSavedWorkoutIntact() {
+        XCTAssertThrowsError(try workout.delete(save: { throw Failure.save }))
+        XCTAssertFalse(workout.isDeleted)
+        XCTAssertEqual(exercise.workoutSets?.count, 2)
+    }
+
+    func testFailedStartRestoresPriorStartAndStatus() {
+        let originalStart = workout.start
+        workout.isCurrentWorkout = false
+        XCTAssertThrowsError(try workout.start(save: { throw Failure.save }))
+        XCTAssertFalse(workout.isCurrentWorkout)
+        XCTAssertEqual(workout.start, originalStart)
+    }
+}

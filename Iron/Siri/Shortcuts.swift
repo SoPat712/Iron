@@ -74,6 +74,10 @@ enum Shortcuts {
     
     static func deleteStartWorkoutInteractionDonation(for workout: Workout) {
         guard let uuid = workout.uuid else { return }
+        deleteStartWorkoutInteractionDonation(uuid: uuid)
+    }
+
+    static func deleteStartWorkoutInteractionDonation(uuid: UUID) {
         os_log("Deleting start workout interaction with uuid=%@", log: .siri, uuid as NSUUID)
         INInteraction.delete(with: [uuid.uuidString]) { error in
             if let error = error {

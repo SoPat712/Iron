@@ -60,6 +60,7 @@ struct CurrentWorkoutView: View {
     @State private var showingVisibilityInfo = false
     @State private var isSessionHeaderCollapsed = false
     @State private var isFinishingWorkout = false
+    @State private var persistenceError: String?
     @State private var restTimerEditorExercise: WorkoutExercise?
     @State private var exercisePendingRemoval: WorkoutExercise?
     @State private var exercisePendingReplacement: WorkoutExercise?
@@ -296,6 +297,14 @@ struct CurrentWorkoutView: View {
             }
         } message: {
             Text("The workout, its notes, and every logged set will be permanently deleted.")
+        }
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil && !showingFinishEditor },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
         }
         .alert(
             "Remove \(exercisePendingRemovalTitle)?",
@@ -1302,6 +1311,14 @@ struct CurrentWorkoutView: View {
             }
         }
         .onAppear(perform: prepareFinishEditor)
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil && showingFinishEditor },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
         .onChange(of: finishMediaItem) { _, item in
             guard let item = item else { return }
             Task { await importFinishMedia(item) }
@@ -1755,17 +1772,22 @@ struct CurrentWorkoutView: View {
 
     private func toggleCompleted(_ set: WorkoutSet, in workoutExercise: WorkoutExercise) {
         let justCompleted = !set.isCompleted
-        if set.isCompleted {
-            set.isCompleted = false
-            set.completedAt = nil
-            restTimerStore.cancel()
-        } else {
-            set.weightValue = max(set.weightValue, 0)
-            set.repetitionsValue = max(set.repetitionsValue, 0)
-            set.isCompleted = true
-            set.completedAt = Date()
-            workout.start = workout.start ?? Date()
+        do {
+            try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
+                set.isCompleted = justCompleted
+                set.completedAt = justCompleted ? Date() : nil
+                if justCompleted {
+                    set.weightValue = max(set.weightValue, 0)
+                    set.repetitionsValue = max(set.repetitionsValue, 0)
+                    workout.start = workout.start ?? Date()
+                }
+            }
+        } catch {
+            persistenceError = "The set was not changed. \(error.localizedDescription)"
+            return
+        }
 
+        if justCompleted {
             let isRecord = settingsStore.personalRecordAlerts && set.isPersonalRecord == true
 
             if settingsStore.workoutHaptics {
@@ -1783,8 +1805,9 @@ struct CurrentWorkoutView: View {
             if settingsStore.autoStartRestTimer {
                 restTimerStore.start(duration: restTimerDuration(for: workoutExercise))
             }
+        } else {
+            restTimerStore.cancel()
         }
-        save()
 
         if justCompleted, settingsStore.supersetAutoScroll {
             advanceThroughSuperset(from: workoutExercise)
@@ -2030,23 +2053,27 @@ struct CurrentWorkoutView: View {
     private func finishWorkout() {
         guard !isFinishingWorkout, !isLoadingFinishMedia else { return }
         isFinishingWorkout = true
+        defer { isFinishingWorkout = false }
 
         let trimmedTitle = finishTitle.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedComment = workout.comment?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        workout.title = trimmedTitle.isEmpty
-            ? workout.generatedTitle(in: exerciseStore.exercises)
-            : trimmedTitle
-        workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
-        workout.start = finishStartDate
-        workout.end = finishEndDate
-        workout.sessionEffortValue = sessionEffort
-        if updateLinkedRoutine {
-            updateLinkedRoutineFromCompletedSets()
+        do {
+            try workout.finish(syncToHealth: syncWithHealth) {
+                workout.title = trimmedTitle.isEmpty
+                    ? workout.generatedTitle(in: exerciseStore.exercises)
+                    : trimmedTitle
+                workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
+                workout.start = finishStartDate
+                workout.end = finishEndDate
+                workout.sessionEffortValue = sessionEffort
+                if updateLinkedRoutine { updateLinkedRoutineFromCompletedSets() }
+            }
+        } catch {
+            persistenceError = "Your workout is still active. Iron could not save it: \(error.localizedDescription)"
+            return
         }
         UserDefaults.standard.set(syncWithHealth, forKey: "Iron.finishWorkout.syncWithHealth")
-        save()
         showingFinishEditor = false
-        workout.finishOrCrash(syncToHealth: syncWithHealth)
 
         let feedback = UINotificationFeedbackGenerator()
         feedback.prepare()
@@ -2063,12 +2090,18 @@ struct CurrentWorkoutView: View {
     }
 
     private func cancelWorkout() {
+        let workoutUUID = workout.uuid
+        do {
+            try workout.cancel()
+        } catch {
+            persistenceError = "Your workout has not been discarded. \(error.localizedDescription)"
+            return
+        }
         activeSheet = nil
         showingFinishEditor = false
-        if let workoutUUID = workout.uuid {
+        if let workoutUUID {
             FinishWorkoutMediaStore.remove(for: workoutUUID)
         }
-        workout.cancelOrCrash()
         let feedback = UINotificationFeedbackGenerator()
         feedback.prepare()
         feedback.notificationOccurred(.warning)
@@ -2076,7 +2109,11 @@ struct CurrentWorkoutView: View {
 
     private func save() {
         guard managedObjectContext.hasChanges else { return }
-        managedObjectContext.saveOrCrash()
+        do {
+            try managedObjectContext.save()
+        } catch {
+            persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+        }
     }
 }
 
