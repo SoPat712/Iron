@@ -239,7 +239,7 @@ class BodyWeightFetcher: ObservableObject {
                         if let error = error { print(error) }
                         return
                     }
-                    let _closestSample = samples.min { $0.startDate.distance(to: date) < $1.startDate.distance(to: date) }
+                    let _closestSample = Self.closestSample(to: date, in: samples)
                     guard let closestSample = _closestSample else { return }
                     
                     let kiloUnit = HKUnit.gramUnit(with: .kilo)
@@ -250,6 +250,12 @@ class BodyWeightFetcher: ObservableObject {
                     }
             }
             HealthManager.shared.healthStore.execute(query)
+        }
+    }
+
+    static func closestSample(to date: Date, in samples: [HKQuantitySample]) -> HKQuantitySample? {
+        samples.min {
+            abs($0.startDate.timeIntervalSince(date)) < abs($1.startDate.timeIntervalSince(date))
         }
     }
 }

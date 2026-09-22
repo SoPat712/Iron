@@ -770,3 +770,33 @@ final class WatchWorkoutPersistenceTests: XCTestCase {
         XCTAssertEqual(currentSnapshot.revision, .max)
     }
 }
+
+final class BodyWeightSampleSelectionTests: XCTestCase {
+    private let referenceDate = Date(timeIntervalSinceReferenceDate: 10_000)
+
+    private func sample(offset: TimeInterval) -> HKQuantitySample {
+        let date = referenceDate.addingTimeInterval(offset)
+        return HKQuantitySample(
+            type: HKQuantityType.quantityType(forIdentifier: .bodyMass)!,
+            quantity: HKQuantity(unit: .gramUnit(with: .kilo), doubleValue: 80),
+            start: date,
+            end: date
+        )
+    }
+
+    func testNearbyPastSampleWinsOverMoreDistantFutureSample() {
+        let past = sample(offset: -600)
+        let future = sample(offset: 3_600)
+        XCTAssertEqual(BodyWeightFetcher.closestSample(to: referenceDate, in: [future, past]), past)
+    }
+
+    func testNearbyFutureSampleWinsOverMoreDistantPastSample() {
+        let past = sample(offset: -3_600)
+        let future = sample(offset: 600)
+        XCTAssertEqual(BodyWeightFetcher.closestSample(to: referenceDate, in: [past, future]), future)
+    }
+
+    func testEmptyQueryHasNoClosestSample() {
+        XCTAssertNil(BodyWeightFetcher.closestSample(to: referenceDate, in: []))
+    }
+}
