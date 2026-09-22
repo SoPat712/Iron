@@ -503,3 +503,237 @@ final class WorkoutLiveActivityStateTests: XCTestCase {
         XCTAssertEqual(state.restProgress(at: now.addingTimeInterval(61)), 1)
     }
 }
+
+@available(iOS 17.0, *)
+final class WorkoutLiveActivityReconciliationTests: XCTestCase {
+    private var persistentContainer: NSPersistentContainer!
+    private var workout: Workout!
+    private var exercise: WorkoutExercise!
+    private var sets: [WorkoutSet]!
+
+    override func setUp() {
+        super.setUp()
+        persistentContainer = setUpInMemoryNSPersistentContainer()
+        let context = persistentContainer.viewContext
+        workout = Workout.create(context: context)
+        workout.start = Date(timeIntervalSinceReferenceDate: 1_000)
+        workout.isCurrentWorkout = true
+        exercise = WorkoutExercise.create(context: context)
+        exercise.workout = workout
+        sets = (0..<3).map { index in
+            let set = WorkoutSet.create(context: context)
+            set.weightValue = Double(100 + index * 10)
+            set.repetitionsValue = Int16(5 + index)
+            set.isCompleted = index == 0
+            set.workoutExercise = exercise
+            return set
+        }
+        workout.workoutExercises = NSOrderedSet(array: [exercise])
+        exercise.workoutSets = NSOrderedSet(array: sets)
+    }
+
+    override func tearDown() {
+        persistentContainer.viewContext.reset()
+        persistentContainer = nil
+        workout = nil
+        exercise = nil
+        sets = nil
+        super.tearDown()
+    }
+
+    private func setID(_ set: WorkoutSet) -> String {
+        set.uuid?.uuidString ?? set.objectID.uriRepresentation().absoluteString
+    }
+
+    private func snapshot(for set: WorkoutSet, number: Int) -> WorkoutActivityAttributes.SetSnapshot {
+        WorkoutActivityAttributes.SetSnapshot(
+            setID: setID(set),
+            exerciseName: "Exercise",
+            setNumber: number,
+            setCount: sets.count,
+            result: "stale result"
+        )
+    }
+
+    private func priorState(
+        phase: WorkoutActivityAttributes.Phase = .setCompleted,
+        confirmationUntil: Date? = Date(timeIntervalSinceReferenceDate: 2_000)
+    ) -> WorkoutActivityAttributes.ContentState {
+        WorkoutActivityAttributes.ContentState(
+            phase: phase,
+            displaySet: snapshot(for: sets[0], number: 1),
+            nextSet: snapshot(for: sets[1], number: 2),
+            confirmationUntil: confirmationUntil,
+            restTimerStart: nil,
+            restTimerEnd: nil,
+            completedSets: 1,
+            totalSets: 3
+        )
+    }
+
+    private func reconcile(
+        prior: WorkoutActivityAttributes.ContentState?,
+        now: Date = Date(timeIntervalSinceReferenceDate: 1_500),
+        restTimerStart: Date? = nil,
+        restTimerEnd: Date? = nil
+    ) -> WorkoutActivityAttributes.ContentState {
+        WorkoutLiveActivityManager.shared.reconciledState(
+            for: workout,
+            priorState: prior,
+            now: now,
+            restTimerStart: restTimerStart,
+            restTimerEnd: restTimerEnd
+        )
+    }
+
+    func testReconciliationRefreshesEditedWeightAndRepetitions() {
+        sets[1].weightValue = 225
+        sets[1].repetitionsValue = 8
+
+        let state = reconcile(prior: priorState())
+
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[1]))
+        XCTAssertEqual(
+            state.nextSet?.result,
+            sets[1].resultTitle(weightUnit: SettingsStore.shared.weightUnit)
+        )
+        XCTAssertNotEqual(state.nextSet?.result, "stale result")
+    }
+
+    func testReconciliationSelectsFollowingSetWhenPriorNextSetWasRemoved() {
+        let prior = priorState()
+        let removed = sets[1]
+        exercise.workoutSets = NSOrderedSet(array: [sets[0], sets[2]])
+        persistentContainer.viewContext.delete(removed)
+        persistentContainer.viewContext.processPendingChanges()
+
+        let state = reconcile(prior: prior)
+
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[2]))
+        XCTAssertEqual(state.nextSet?.setNumber, 2)
+        XCTAssertEqual(state.totalSets, 2)
+    }
+
+    func testReconciliationIgnoresSetPendingDeletionWithoutRelationshipCleanup() {
+        let prior = priorState()
+        persistentContainer.viewContext.delete(sets[1])
+
+        let state = reconcile(prior: prior)
+
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[2]))
+        XCTAssertEqual(state.nextSet?.setNumber, 2)
+        XCTAssertEqual(state.nextSet?.setCount, 2)
+        XCTAssertEqual(state.totalSets, 2)
+    }
+
+    func testReconciliationDropsConfirmationWhenCompletedAnchorWasRemoved() {
+        let prior = priorState()
+        let removed = sets[0]
+        exercise.workoutSets = NSOrderedSet(array: [sets[1], sets[2]])
+        persistentContainer.viewContext.delete(removed)
+        persistentContainer.viewContext.processPendingChanges()
+
+        let state = reconcile(prior: prior)
+
+        XCTAssertEqual(state.phase, .currentSet)
+        XCTAssertNil(state.confirmationUntil)
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[1]))
+        XCTAssertEqual(state.completedSets, 0)
+        XCTAssertEqual(state.totalSets, 2)
+    }
+
+    func testReconciliationUsesCurrentOrderAfterCompletedAnchor() {
+        exercise.workoutSets = NSOrderedSet(array: [sets[0], sets[2], sets[1]])
+
+        let state = reconcile(prior: priorState())
+
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[2]))
+        XCTAssertEqual(state.nextSet?.setNumber, 2)
+    }
+
+    func testRepeatedReconciliationRetainsAnchorWithEarlierIncompleteSet() {
+        exercise.workoutSets = NSOrderedSet(array: [sets[1], sets[0], sets[2]])
+        let first = reconcile(prior: priorState(phase: .resting, confirmationUntil: nil))
+
+        let second = reconcile(prior: first)
+
+        XCTAssertEqual(first.displaySet?.setID, setID(sets[0]))
+        XCTAssertEqual(first.nextSet?.setID, setID(sets[2]))
+        XCTAssertEqual(second.displaySet?.setID, setID(sets[0]))
+        XCTAssertEqual(second.nextSet?.setID, setID(sets[2]))
+    }
+
+    func testReconciliationFinishesWithoutReopeningCompletedSets() {
+        sets.forEach { $0.isCompleted = true }
+
+        let state = reconcile(prior: priorState(confirmationUntil: nil))
+
+        XCTAssertEqual(state.phase, .finished)
+        XCTAssertNil(state.nextSet)
+        XCTAssertNil(state.restTimerStart)
+        XCTAssertNil(state.restTimerEnd)
+        XCTAssertEqual(state.completedSets, 3)
+        XCTAssertEqual(state.totalSets, 3)
+    }
+
+    func testReconciliationRestoresActiveRestTimerWithoutPriorActivityState() {
+        let now = Date(timeIntervalSinceReferenceDate: 3_000)
+        let timerStart = now.addingTimeInterval(-15)
+        let timerEnd = now.addingTimeInterval(45)
+
+        let state = reconcile(
+            prior: nil,
+            now: now,
+            restTimerStart: timerStart,
+            restTimerEnd: timerEnd
+        )
+
+        XCTAssertEqual(state.phase, .resting)
+        XCTAssertEqual(state.restTimerStart, timerStart)
+        XCTAssertEqual(state.restTimerEnd, timerEnd)
+        XCTAssertEqual(state.nextSet?.setID, setID(sets[1]))
+    }
+
+    func testDeletingEverySetClearsStaleSnapshotsWithoutFinishingEmptyWorkout() {
+        let prior = priorState()
+        exercise.workoutSets = NSOrderedSet()
+        sets.forEach { persistentContainer.viewContext.delete($0) }
+
+        let state = reconcile(prior: prior)
+
+        XCTAssertEqual(state.phase, .currentSet)
+        XCTAssertNil(state.displaySet)
+        XCTAssertNil(state.nextSet)
+        XCTAssertEqual(state.totalSets, 0)
+    }
+
+    @MainActor
+    func testFailedCompletionSaveRestoresOwnedFieldsOnly() async {
+        enum ExpectedError: Error { case saveFailed }
+        let set = sets[1]
+        set.repetitionsValue = 12
+        let previousCompletedAt = Date(timeIntervalSinceReferenceDate: 500)
+        set.completedAt = previousCompletedAt
+        workout.start = nil
+
+        do {
+            try WorkoutLiveActivityIntentHandler.persistCompletion(
+                set: set,
+                workout: workout,
+                at: Date(timeIntervalSinceReferenceDate: 4_000),
+                save: { throw ExpectedError.saveFailed }
+            )
+            XCTFail("Expected the save to fail")
+        } catch ExpectedError.saveFailed {
+            // Expected. Assertions below verify the targeted restoration.
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
+
+        XCTAssertFalse(set.isCompleted)
+        XCTAssertEqual(set.completedAt, previousCompletedAt)
+        XCTAssertNil(workout.start)
+        XCTAssertEqual(set.repetitionsValue, 12)
+        XCTAssertTrue(persistentContainer.viewContext.hasChanges)
+    }
+}

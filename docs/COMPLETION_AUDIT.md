@@ -20,11 +20,14 @@ belong to the ongoing overhaul and must not be swept into unrelated commits.
 | TIMER-02 | High | `resume()` restarted the original duration, losing elapsed time. | Resume deadline uses captured remaining time. Regression pauses a 120-second timer after 45 seconds and resumes 30 seconds later with 75 seconds left. | Fixed; tests pass |
 | TIMER-03 | High | A stale notification settings callback could add an alert after cancellation; app sound preference was ignored. | Serialized generation checks, absolute deadlines, app/system sound policy, foreground-only local chime. Scheduling order reviewed; sound policy and expiry invalidation tested. | Fixed; physical delivery check open |
 | TIMER-04 | Medium | Notification actions changed total duration off-main and could fail to extend an expired timer. | Actions validate category/existing timer, run on main, restart an expired timer from now, refresh Live Activity. | Fixed; expired-timer regression passes |
-| LIVE-01 | High | `startOrUpdate` republishes existing confirmation/rest content unchanged. Editing, removing, or reordering sets during rest can leave stale set IDs and counts in the Live Activity. | Reconcile the payload against current model values while preserving valid phase deadlines. Test deletion, replacement, edits, and reorder during rest. | Assigned to Sol medium |
-| SAVE-01 | High | `WorkoutLiveActivityIntentHandler.completeSet` starts the timer before Core Data save. On failure it returns without restoring completion fields or timer state. | Save completion before side effects; restore changed fields on failure. Test failed save and stale intent. | Assigned to Sol medium |
+| LIVE-01 | High | `startOrUpdate` republishes existing confirmation/rest content unchanged. Editing, removing, or reordering sets during rest can leave stale set IDs and counts in the Live Activity. | Reconcile the payload against current model values while preserving valid phase deadlines. Deleted objects are excluded before relationship cleanup. | Fixed; 9 reconciliation regressions pass |
+| SAVE-01 | High | `WorkoutLiveActivityIntentHandler.completeSet` starts the timer before Core Data save. On failure it returns without restoring completion fields or timer state. | Save completion before side effects; restore changed fields on failure without discarding other edits. Reject deleted or already-completed sets. | Fixed; failed-save regression passes |
 | HEALTH-01 | High | `syncWorkoutIfNeeded` deletes old HealthKit samples before saving replacements; a failed replacement can leave no Health sample. `deleteWorkout` queries only one match. | Audit reconciliation and recovery before changing HealthKit writes; test duplicate and failure cases. | Investigation required |
 | BACKUP-01 | High | `applicationWillTerminate` blocks main on a dispatch group while the backup closure calls `viewContext.performAndWait` from a background queue. The closure waits for the blocked main queue. | Capture backup data before asynchronous file work, remove the main-thread wait, and schedule automatic backups during backgrounding. | Planned |
 | WATCH-01 | High | `handleWorkoutEvent` applies timer and Live Activity side effects before the database save. A failed save leaves unsaved model mutations and external state changed. | Separate durable mutation from post-save effects and retry without acknowledging failed events. | Planned |
+| IMPORT-01 | High | CSV `Double` parsing accepts nonfinite values; unchecked `Int` conversion traps for nonfinite or oversized counts. Unit conversion can also overflow and make measurement JSON encoding fail. | Reject invalid numbers per row; use checked integer conversion and validate converted values. Test mixed valid/invalid imports and persisted measurement reload. | Fix implemented; tests pending |
+| UI-01 | Medium | Saved-workout rest selectors still use `IronDurationPickerSheet`, while active-workout rest selectors use `RestTimerConfigurationSheet`. | Use the shared dial for rest durations only; keep duration-entry wheels for timed sets. | Planned |
+| LIVE-02 | Medium | Live Activity content has no paused-rest value. Pausing clears the deadline, so the widget treats it as the next set instead of paused rest. | Add a backwards-compatible paused duration and consistent paused presentation without a running countdown. | Planned |
 
 ## Verification queue
 
@@ -33,7 +36,12 @@ belong to the ongoing overhaul and must not be swept into unrelated commits.
 - Verify Live Activity current set, completion, rest, adjustment, skip, and stale intents.
 - Audit workout persistence, imports/exports, measurement persistence, backup/restore, and Watch offline reconciliation.
 - Inspect all five tabs in light/dark mode and large Dynamic Type; check keyboard and safe-area behavior.
-- Verify iOS, widget, share extension, and watchOS targets build from the same source state.
+- Verify iOS, widget/intents extensions, and watchOS targets build from the same source state; test CSV document opening separately (there is no share-extension target).
+
+## Platform references
+
+- Apple's [HealthKit sync identifier](https://developer.apple.com/documentation/healthkit/hkmetadatakeysyncidentifier) supports replacement using a higher sync version. The installed SDK's `HKMetadata.h` confirms this; reconciliation must account for legacy samples without these keys.
+- Apple's [background preparation guidance](https://developer.apple.com/documentation/uikit/preparing-your-ui-to-run-in-the-background) places data saving at background entry. Automatic backup must not depend on a blocking termination callback.
 
 ## Device-only checks
 
@@ -49,6 +57,8 @@ Simulator boot and idb accessibility inspection succeeded. idb screenshot captur
 failed; simulator-native capture succeeded.
 
 - Full `Iron` scheme simulator test run: 58 tests, 0 failures, including 9 new timer regressions. Result bundle: `/private/tmp/IronAudit-20260922-Tests.xcresult`; log: `/private/tmp/iron-audit-tests.log`.
+- The second run failed to compile a Live Activity test because an XCTest autoclosure crossed actor isolation. The test now calls the main-actor helper explicitly. The third full run passed: 74 tests, 0 failures (`/private/tmp/IronAudit-20260922-Third.xcresult`).
+- Live Activity root review caught lost completion anchors across repeated refreshes and stale numbering for pending-deletion objects. Both received corrections and passing regressions before acceptance.
 - Build validated the iPhone app, widget/intents extensions, and embedded Watch app for simulator. This does not validate device provisioning.
 - Root review required follow-up corrections for timer restoration, foreground-only audio, generic cancellation invalidation, and stale notification actions before accepting the timer patch.
 - idb hold test: selector frame stayed at x=98.259, y=437.111, width=height=205.483 points before/during hold. Screenshots: `/private/tmp/iron-selector-before.png`, `/private/tmp/iron-selector-held.png`.

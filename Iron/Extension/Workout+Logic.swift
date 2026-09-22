@@ -185,28 +185,19 @@ final class WorkoutLiveActivityManager {
 
     func startOrUpdate(for workout: Workout, preservingTransition: Bool = true) {
         let workoutID = identifier(for: workout)
-        if preservingTransition,
-           let activity = activity(for: workoutID) {
-            let existing = activity.content.state
-            let resolvedPhase = existing.resolvedPhase(at: Date())
-            if existing.phase == .setCompleted, let confirmationUntil = existing.confirmationUntil {
-                publish(attributes: activity.attributes, state: existing)
-                ensureConfirmationTransition(
-                    for: workoutID,
-                    confirmationUntil: confirmationUntil
-                )
-                return
-            }
-            if resolvedPhase == .resting {
-                cancelPendingConfirmationTransition(for: workoutID)
-                publish(attributes: activity.attributes, state: existing)
-                return
-            }
-        }
-
-        cancelPendingConfirmationTransition(for: workoutID)
-        guard let payload = currentPayload(for: workout) else { return }
-        publish(attributes: payload.attributes, state: payload.state)
+        let existingActivity = activity(for: workoutID)
+        let state = reconciledState(
+            for: workout,
+            priorState: preservingTransition ? existingActivity?.content.state : nil,
+            now: Date(),
+            restTimerStart: RestTimerStore.shared.restTimerStart,
+            restTimerEnd: RestTimerStore.shared.restTimerEnd
+        )
+        synchronizeConfirmationTransition(for: workoutID, state: state)
+        publish(
+            attributes: existingActivity?.attributes ?? attributes(for: workout),
+            state: state
+        )
     }
 
     func setCompleted(
@@ -248,71 +239,7 @@ final class WorkoutLiveActivityManager {
 
     /// Preserve the 10-second confirmation phase while a timer is adjusted or arrives from Watch.
     func refreshRestTimer(for workout: Workout) {
-        let workoutID = identifier(for: workout)
-        guard let activity = activity(for: workoutID) else {
-            cancelPendingConfirmationTransition(for: workoutID)
-            guard let payload = currentPayload(for: workout) else { return }
-            let restTimerStart = RestTimerStore.shared.restTimerStart
-            let restTimerEnd = RestTimerStore.shared.restTimerEnd
-            let state = WorkoutActivityAttributes.ContentState(
-                phase: restTimerEnd != nil && payload.state.nextSet != nil
-                    ? .resting
-                    : payload.state.phase,
-                displaySet: payload.state.displaySet,
-                nextSet: payload.state.nextSet,
-                confirmationUntil: nil,
-                restTimerStart: restTimerStart,
-                restTimerEnd: restTimerEnd,
-                completedSets: payload.state.completedSets,
-                totalSets: payload.state.totalSets
-            )
-            publish(attributes: payload.attributes, state: state)
-            return
-        }
-
-        let existing = activity.content.state
-        let resolvedPhase = existing.resolvedPhase(at: Date())
-        let restTimerStart = RestTimerStore.shared.restTimerStart
-        let restTimerEnd = RestTimerStore.shared.restTimerEnd
-        let phase: WorkoutActivityAttributes.Phase
-        if resolvedPhase == .setCompleted {
-            phase = .setCompleted
-        } else if restTimerEnd != nil, existing.nextSet != nil {
-            phase = .resting
-        } else if resolvedPhase == .resting {
-            phase = existing.nextSet == nil ? .finished : .currentSet
-        } else {
-            phase = resolvedPhase
-        }
-        let state = WorkoutActivityAttributes.ContentState(
-            phase: phase,
-            displaySet: existing.displaySet,
-            nextSet: existing.nextSet,
-            confirmationUntil: phase == .setCompleted ? existing.confirmationUntil : nil,
-            restTimerStart: restTimerStart,
-            restTimerEnd: restTimerEnd,
-            completedSets: existing.completedSets,
-            totalSets: existing.totalSets
-        )
-
-        let transitionToken: UUID?
-        if phase == .setCompleted, let confirmationUntil = existing.confirmationUntil {
-            transitionToken = replacePendingConfirmationTransition(
-                for: workoutID,
-                confirmationUntil: confirmationUntil
-            )
-        } else {
-            cancelPendingConfirmationTransition(for: workoutID)
-            transitionToken = nil
-        }
-        publish(attributes: activity.attributes, state: state)
-        if let transitionToken, let confirmationUntil = state.confirmationUntil {
-            scheduleConfirmationTransition(
-                for: workoutID,
-                confirmationUntil: confirmationUntil,
-                token: transitionToken
-            )
-        }
+        startOrUpdate(for: workout, preservingTransition: true)
     }
 
     func refreshCurrentWorkoutRestTimer() {
@@ -357,27 +284,93 @@ final class WorkoutLiveActivityManager {
     )
 
     private func currentPayload(for workout: Workout) -> Payload? {
-        let flattenedSets = flattenedSets(in: workout)
-        let current = flattenedSets.first(where: { !$0.set.isCompleted })
-        let currentSnapshot = current.map { snapshot(for: $0.set, in: $0.exercise) }
-        let fallbackSnapshot = flattenedSets.last.map { snapshot(for: $0.set, in: $0.exercise) }
-        let counts = setCounts(in: workout)
-        let phase: WorkoutActivityAttributes.Phase = current == nil && !flattenedSets.isEmpty
-            ? .finished
-            : .currentSet
         return (
             attributes: attributes(for: workout),
-            state: WorkoutActivityAttributes.ContentState(
-                phase: phase,
-                displaySet: currentSnapshot ?? fallbackSnapshot,
-                nextSet: currentSnapshot,
-                confirmationUntil: nil,
-                restTimerStart: nil,
-                restTimerEnd: nil,
-                completedSets: counts.completed,
-                totalSets: counts.total
+            state: reconciledState(
+                for: workout,
+                priorState: nil,
+                now: Date(),
+                restTimerStart: RestTimerStore.shared.restTimerStart,
+                restTimerEnd: RestTimerStore.shared.restTimerEnd
             )
         )
+    }
+
+    /// Rebuilds value snapshots from Core Data so ActivityKit never republishes
+    /// stale set results, ordering, identifiers, or counts.
+    func reconciledState(
+        for workout: Workout,
+        priorState: WorkoutActivityAttributes.ContentState?,
+        now: Date,
+        restTimerStart: Date?,
+        restTimerEnd: Date?
+    ) -> WorkoutActivityAttributes.ContentState {
+        let flattened = flattenedSets(in: workout)
+        let counts = setCounts(in: workout)
+        let anchor = priorState?.displaySet?.setID.flatMap { anchorID in
+            flattened.first { setIdentifier($0.set) == anchorID && $0.set.isCompleted }
+        }
+        let confirmationUntil: Date? = {
+            guard priorState?.phase == .setCompleted,
+                  anchor != nil,
+                  let deadline = priorState?.confirmationUntil,
+                  deadline > now else { return nil }
+            return deadline
+        }()
+
+        let next: (exercise: WorkoutExercise, set: WorkoutSet)?
+        if let anchor,
+           let anchorIndex = flattened.firstIndex(where: { $0.set.objectID == anchor.set.objectID }) {
+            let after = flattened.dropFirst(anchorIndex + 1).first { !$0.set.isCompleted }
+            next = after ?? flattened.first { !$0.set.isCompleted }
+        } else {
+            next = flattened.first { !$0.set.isCompleted }
+        }
+
+        let anchorSnapshot = anchor.map { snapshot(for: $0.set, in: $0.exercise) }
+        let nextSnapshot = next.map { snapshot(for: $0.set, in: $0.exercise) }
+        let fallbackSnapshot = flattened.last.map { snapshot(for: $0.set, in: $0.exercise) }
+        let hasRunningTimer = nextSnapshot != nil
+            && restTimerStart != nil
+            && restTimerEnd.map { $0 > now } == true
+
+        let phase: WorkoutActivityAttributes.Phase
+        if confirmationUntil != nil {
+            phase = .setCompleted
+        } else if flattened.isEmpty {
+            phase = .currentSet
+        } else if nextSnapshot == nil {
+            phase = .finished
+        } else if hasRunningTimer {
+            phase = .resting
+        } else {
+            phase = .currentSet
+        }
+
+        return WorkoutActivityAttributes.ContentState(
+            phase: phase,
+            // Keep the completed anchor across repeated reconciliations. The
+            // widget uses nextSet while resting/current, while displaySet is
+            // the stable basis for finding the next set again after edits.
+            displaySet: anchorSnapshot ?? nextSnapshot ?? fallbackSnapshot,
+            nextSet: nextSnapshot,
+            confirmationUntil: confirmationUntil,
+            restTimerStart: hasRunningTimer ? restTimerStart : nil,
+            restTimerEnd: hasRunningTimer ? restTimerEnd : nil,
+            completedSets: counts.completed,
+            totalSets: counts.total
+        )
+    }
+
+    private func synchronizeConfirmationTransition(
+        for workoutID: String,
+        state: WorkoutActivityAttributes.ContentState
+    ) {
+        guard state.phase == .setCompleted, let confirmationUntil = state.confirmationUntil else {
+            cancelPendingConfirmationTransition(for: workoutID)
+            return
+        }
+        ensureConfirmationTransition(for: workoutID, confirmationUntil: confirmationUntil)
     }
 
     private func publish(
@@ -706,11 +699,16 @@ final class WorkoutLiveActivityManager {
         workout.uuid?.uuidString ?? workout.objectID.uriRepresentation().absoluteString
     }
 
+    private func setIdentifier(_ set: WorkoutSet) -> String {
+        set.uuid?.uuidString ?? set.objectID.uriRepresentation().absoluteString
+    }
+
     private func snapshot(
         for set: WorkoutSet,
         in workoutExercise: WorkoutExercise
     ) -> WorkoutActivityAttributes.SetSnapshot {
-        let sets = workoutExercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+        let sets = workoutExercise.workoutSets?.array.compactMap { $0 as? WorkoutSet }
+            .filter { !$0.isDeleted } ?? []
         let setIndex = sets.firstIndex { $0.objectID == set.objectID } ?? 0
         let exerciseName = workoutExercise.exercise(in: ExerciseStore.shared.exercises)?.title ?? "Exercise"
         return WorkoutActivityAttributes.SetSnapshot(
@@ -741,9 +739,11 @@ final class WorkoutLiveActivityManager {
     private func flattenedSets(
         in workout: Workout
     ) -> [(exercise: WorkoutExercise, set: WorkoutSet)] {
-        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise }
+            .filter { !$0.isDeleted } ?? []
         return exercises.flatMap { exercise in
-            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet }
+                .filter { !$0.isDeleted } ?? []
             return sets.map { (exercise, $0) }
         }
     }
@@ -766,16 +766,10 @@ enum WorkoutLiveActivityIntentHandler {
               !set.isCompleted,
               let context = set.managedObjectContext else { return }
 
-        set.isCompleted = true
-        set.completedAt = Date()
-        workout.start = workout.start ?? Date()
-
-        if SettingsStore.shared.autoStartRestTimer {
-            RestTimerStore.shared.start(duration: restTimerDuration(for: workoutExercise))
-        }
-
         do {
-            try context.save()
+            try persistCompletion(set: set, workout: workout, at: Date()) {
+                try context.save()
+            }
         } catch {
             os_log(
                 "Could not complete workout set from Live Activity: %@",
@@ -786,12 +780,42 @@ enum WorkoutLiveActivityIntentHandler {
             return
         }
 
+        if SettingsStore.shared.autoStartRestTimer {
+            RestTimerStore.shared.start(duration: restTimerDuration(for: workoutExercise))
+        }
         WatchConnectionManager.shared.syncCurrentWorkoutSnapshot()
         WorkoutLiveActivityManager.shared.setCompleted(
             set,
             in: workoutExercise,
             workout: workout
         )
+    }
+
+    /// Mutates and saves only the fields owned by the completion action. A
+    /// failed save restores those fields without rolling back unrelated edits
+    /// already pending in the managed object context.
+    static func persistCompletion(
+        set: WorkoutSet,
+        workout: Workout,
+        at date: Date,
+        save: () throws -> Void
+    ) throws {
+        let previousIsCompleted = set.isCompleted
+        let previousCompletedAt = set.completedAt
+        let previousWorkoutStart = workout.start
+
+        set.isCompleted = true
+        set.completedAt = date
+        workout.start = workout.start ?? date
+
+        do {
+            try save()
+        } catch {
+            set.isCompleted = previousIsCompleted
+            set.completedAt = previousCompletedAt
+            workout.start = previousWorkoutStart
+            throw error
+        }
     }
 
     static func adjustRestTimer(workoutID: String, by interval: TimeInterval) {
@@ -810,9 +834,11 @@ enum WorkoutLiveActivityIntentHandler {
         setID: String,
         in workout: Workout
     ) -> (WorkoutExercise, WorkoutSet)? {
-        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise }
+            .filter { !$0.isDeleted } ?? []
         for exercise in exercises {
-            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet }
+                .filter { !$0.isDeleted } ?? []
             if let set = sets.first(where: {
                 ($0.uuid?.uuidString ?? $0.objectID.uriRepresentation().absoluteString) == setID
             }) {
