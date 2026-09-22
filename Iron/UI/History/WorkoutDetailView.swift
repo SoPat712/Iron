@@ -8,8 +8,27 @@
 
 import SwiftUI
 import AVKit
+import CoreData
 import UIKit
 import WorkoutDataKit
+
+enum HistoryMutationPersistence {
+    static func perform(
+        context: NSManagedObjectContext,
+        save: (() throws -> Void)? = nil,
+        mutation: () throws -> Void,
+        onSuccess: () -> Void = {}
+    ) throws {
+        try context.persistMutation(
+            save: {
+                if let save { try save() }
+                else { try context.save() }
+            },
+            mutation: mutation
+        )
+        onSuccess()
+    }
+}
 
 struct WorkoutDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -29,6 +48,7 @@ struct WorkoutDetailView: View {
     @State private var showingMediaPreview = false
     @State private var healthSyncState = WorkoutHealthSyncState.idle
     @State private var showingShareUnavailable = false
+    @State private var persistenceError: String?
 
     private var workoutExercises: [WorkoutExercise] {
         workout.workoutExercises?.array as? [WorkoutExercise] ?? []
@@ -130,11 +150,20 @@ struct WorkoutDetailView: View {
                     exercises: exerciseStore.shownExercises
                 ),
                 usesModalSurface: true,
+                shouldDismiss: { persistenceError == nil },
                 onAdd: addExercises
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationBackground(IronTheme.modalSurface)
+            .alert("Workout Not Saved", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("OK", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
+            }
         }
         .sheet(isPresented: $showingDetailsEditor) {
             CompletedWorkoutDetailsEditor(
@@ -143,22 +172,39 @@ struct WorkoutDetailView: View {
                 effort: workout.sessionEffortValue,
                 start: workout.safeStart,
                 end: workout.safeEnd,
+                persistenceError: $persistenceError,
                 onCancel: { showingDetailsEditor = false },
                 onSave: { title, comment, effort, start, end in
                     let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
                     let trimmedComment = comment.trimmingCharacters(in: .whitespacesAndNewlines)
-                    workout.title = trimmedTitle.isEmpty ? nil : trimmedTitle
-                    workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
-                    workout.sessionEffortValue = effort
-                    workout.safeStart = start
-                    workout.safeEnd = end
-                    save()
-                    showingDetailsEditor = false
+                    performMutation(
+                        failureMessage: "The workout details were not updated."
+                    ) {
+                        workout.title = trimmedTitle.isEmpty ? nil : trimmedTitle
+                        workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
+                        workout.sessionEffortValue = effort
+                        workout.safeStart = start
+                        workout.safeEnd = end
+                    } onSuccess: {
+                        showingDetailsEditor = false
+                    }
                 }
             )
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
             .presentationBackground(IronTheme.modalSurface)
+        }
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: {
+                persistenceError != nil
+                    && !showingExerciseSelectorSheet
+                    && !showingDetailsEditor
+            },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
         }
         .fullScreenCover(isPresented: $showingMediaPreview) {
             workoutMediaPreview
@@ -193,8 +239,12 @@ struct WorkoutDetailView: View {
             Button("Delete Workout", role: .destructive) {
                 guard let workout = workoutToDelete else { return }
                 workoutToDelete = nil
-                dismiss()
-                workout.deleteOrCrash()
+                do {
+                    try workout.delete()
+                    dismiss()
+                } catch {
+                    persistenceError = "The workout was not deleted. \(error.localizedDescription)"
+                }
             }
             Button("Cancel", role: .cancel) {
                 workoutToDelete = nil
@@ -227,7 +277,7 @@ struct WorkoutDetailView: View {
             .presentationDragIndicator(.visible)
         }
         .ironActivitySheet(activityItems: $activityItems)
-        .onDisappear(perform: save)
+        .onDisappear { _ = save() }
     }
 
     private var summaryCard: some View {
@@ -754,31 +804,58 @@ struct WorkoutDetailView: View {
     }
 
     private func addExercises(_ selection: [Exercise]) {
-        for exercise in selection {
-            let workoutExercise = WorkoutExercise.create(context: managedObjectContext)
-            workout.addToWorkoutExercises(workoutExercise)
-            workoutExercise.exerciseUuid = exercise.uuid
+        performMutation(failureMessage: "The exercises were not added.") {
+            for exercise in selection {
+                let workoutExercise = WorkoutExercise.create(context: managedObjectContext)
+                workout.addToWorkoutExercises(workoutExercise)
+                workoutExercise.exerciseUuid = exercise.uuid
+            }
         }
-        save()
     }
 
     private func delete(_ workoutExercise: WorkoutExercise) {
-        workout.removeFromWorkoutExercises(workoutExercise)
-        managedObjectContext.delete(workoutExercise)
-        save()
+        performMutation(failureMessage: "The exercise was not removed.") {
+            workout.removeFromWorkoutExercises(workoutExercise)
+            managedObjectContext.delete(workoutExercise)
+        }
     }
 
     private func moveExercise(from source: Int, to destination: Int) {
         guard source != destination, workoutExercises.indices.contains(source), workoutExercises.indices.contains(destination) else { return }
-        var reordered = workoutExercises
-        let item = reordered.remove(at: source)
-        reordered.insert(item, at: destination)
-        workout.workoutExercises = NSOrderedSet(array: reordered)
-        save()
+        performMutation(failureMessage: "The exercises were not reordered.") {
+            var reordered = workoutExercises
+            let item = reordered.remove(at: source)
+            reordered.insert(item, at: destination)
+            workout.workoutExercises = NSOrderedSet(array: reordered)
+        }
     }
 
-    private func save() {
-        managedObjectContext.saveOrCrash()
+    @discardableResult
+    private func save() -> Bool {
+        do {
+            try managedObjectContext.save()
+            return true
+        } catch {
+            persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    private func performMutation(
+        failureMessage: String,
+        mutation: () throws -> Void,
+        onSuccess: () -> Void = {}
+    ) {
+        persistenceError = nil
+        do {
+            try HistoryMutationPersistence.perform(
+                context: managedObjectContext,
+                mutation: mutation,
+                onSuccess: onSuccess
+            )
+        } catch {
+            persistenceError = "\(failureMessage) \(error.localizedDescription)"
+        }
     }
 
     private func repeatWorkout(blank: Bool) {
@@ -841,6 +918,7 @@ private struct CompletedWorkoutDetailsEditor: View {
     @State private var start: Date
     @State private var end: Date
     @State private var dateEditor: DateEditor?
+    @Binding private var persistenceError: String?
 
     let onCancel: () -> Void
     let onSave: (String, String, Double?, Date, Date) -> Void
@@ -851,6 +929,7 @@ private struct CompletedWorkoutDetailsEditor: View {
         effort: Double?,
         start: Date,
         end: Date,
+        persistenceError: Binding<String?>,
         onCancel: @escaping () -> Void,
         onSave: @escaping (String, String, Double?, Date, Date) -> Void
     ) {
@@ -859,6 +938,7 @@ private struct CompletedWorkoutDetailsEditor: View {
         _effort = State(initialValue: effort)
         _start = State(initialValue: start)
         _end = State(initialValue: end)
+        _persistenceError = persistenceError
         self.onCancel = onCancel
         self.onSave = onSave
     }
@@ -897,6 +977,14 @@ private struct CompletedWorkoutDetailsEditor: View {
                         .fontWeight(.semibold)
                 }
             }
+        }
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
         }
         .sheet(item: $dateEditor) { editor in
             IronDateTimePickerSheet(

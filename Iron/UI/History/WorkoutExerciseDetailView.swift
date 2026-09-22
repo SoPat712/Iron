@@ -11,6 +11,22 @@ import CoreData
 import UIKit
 import WorkoutDataKit
 
+enum HistorySetTrackingValues {
+    static func copy(from source: WorkoutSet, to destination: WorkoutSet) {
+        destination.durationValue = source.durationValue
+        destination.distanceValue = source.distanceValue
+        if source.durationValue != nil, source.distanceValue == nil {
+            destination.weightValue = 0
+            destination.repetitionsValue = 0
+        } else {
+            destination.weightValue = source.weightValue
+            destination.repetitionsValue = source.repetitionsValue
+        }
+        destination.rpeValue = source.rpeValue
+        destination.tagValue = source.tagValue
+    }
+}
+
 struct WorkoutExerciseDetailView: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -129,7 +145,11 @@ struct WorkoutExerciseDetailView: View {
             }
         }
         .alert("Workout Not Saved", isPresented: Binding(
-            get: { persistenceError != nil },
+            get: {
+                persistenceError != nil
+                    && !showingRestTimerEditor
+                    && plateCalculatorSet == nil
+            },
             set: { if !$0 { persistenceError = nil } }
         )) {
             Button("OK", role: .cancel) { persistenceError = nil }
@@ -161,21 +181,23 @@ struct WorkoutExerciseDetailView: View {
             }
         }
         .sheet(isPresented: $showingRestTimerEditor) {
-            IronDurationPickerSheet(
-                title: "Rest timer",
+            RestTimerConfigurationSheet(
+                title: "Rest Timer",
                 subtitle: "Recovery after each completed set",
-                systemImage: "timer",
                 initialDuration: workoutExercise.restTimerDurationValue ?? restTimerDuration,
-                minimumDuration: 30,
-                maximumDuration: 600,
-                durationStep: 15,
-                presets: [30, 45, 60, 90, 120, 150, 180, 240, 300],
-                secondaryActionTitle: workoutExercise.restTimerDurationValue == nil
-                    ? "Keep workout default · \(restTimerDurationFormatter.string(from: restTimerDuration) ?? "0:00")"
-                    : "Use workout default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")",
+                secondaryActionTitle: "Use Workout Default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")",
                 onSecondaryAction: { setRestTimer(nil) },
+                shouldDismiss: { persistenceError == nil },
                 onApply: { duration in setRestTimer(duration) }
             )
+            .alert("Workout Not Saved", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("OK", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
+            }
         }
         .sheet(item: $plateCalculatorSet) { set in
             IronUtilitySheet(
@@ -188,19 +210,29 @@ struct WorkoutExerciseDetailView: View {
                     unit: settingsStore.weightUnit,
                     initialTarget: max(displayWeight(for: set), settingsStore.weightUnit.barbellWeight),
                     onApply: { value in
-                        set.weightValue = WeightUnit.convert(
-                            weight: value,
-                            from: settingsStore.weightUnit,
-                            to: .metric
-                        )
-                        save()
-                        plateCalculatorSet = nil
+                        performMutation(failureMessage: "The plate-calculator weight was not saved.") {
+                            set.weightValue = WeightUnit.convert(
+                                weight: value,
+                                from: settingsStore.weightUnit,
+                                to: .metric
+                            )
+                        } onSuccess: {
+                            plateCalculatorSet = nil
+                        }
                     }
                 )
             }
             .presentationDetents([.height(680), .large])
             .presentationDragIndicator(.visible)
             .presentationBackground(IronTheme.modalSurface)
+            .alert("Workout Not Saved", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("OK", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
+            }
         }
         .onDisappear { _ = save() }
     }
@@ -590,8 +622,9 @@ struct WorkoutExerciseDetailView: View {
     }
 
     private func setRestTimer(_ duration: TimeInterval?) {
-        workoutExercise.restTimerDurationValue = duration
-        save()
+        performMutation(failureMessage: "The rest-timer setting was not saved.") {
+            workoutExercise.restTimerDurationValue = duration
+        }
     }
 
     private func previousSetTitle(at index: Int) -> String {
@@ -635,75 +668,64 @@ struct WorkoutExerciseDetailView: View {
     }
 
     private func addSet() {
-        let set = WorkoutSet.create(context: managedObjectContext)
-        set.workoutExercise = workoutExercise
+        performMutation(failureMessage: "The set was not added.") {
+            let previous = workoutSets.last
+            let set = WorkoutSet.create(context: managedObjectContext)
+            set.workoutExercise = workoutExercise
 
-        if let previous = workoutSets.dropLast().last {
-            copyTrackingValues(from: previous, to: set)
-        } else if let priorSession = previousSessions.first,
-                  let priorSet = priorSession.workoutSets?.firstObject as? WorkoutSet {
-            copyTrackingValues(from: priorSet, to: set)
-        } else {
-            set.repetitionsValue = 5
-            if exercise?.type == .barbell {
-                set.weightValue = WeightUnit.convert(
-                    weight: settingsStore.weightUnit.barbellWeight,
-                    from: settingsStore.weightUnit,
-                    to: .metric
-                )
+            if let previous {
+                copyTrackingValues(from: previous, to: set)
+            } else if let priorSession = previousSessions.first,
+                      let priorSet = priorSession.workoutSets?.firstObject as? WorkoutSet {
+                copyTrackingValues(from: priorSet, to: set)
+            } else {
+                set.repetitionsValue = 5
+                if exercise?.type == .barbell {
+                    set.weightValue = WeightUnit.convert(
+                        weight: settingsStore.weightUnit.barbellWeight,
+                        from: settingsStore.weightUnit,
+                        to: .metric
+                    )
+                }
+            }
+
+            if !isCurrentWorkout {
+                set.isCompleted = true
+                set.completedAt = workoutExercise.workout?.end
             }
         }
-
-        if !isCurrentWorkout {
-            set.isCompleted = true
-            set.completedAt = workoutExercise.workout?.end
-        }
-        save()
     }
 
     private func copyTrackingValues(from source: WorkoutSet, to destination: WorkoutSet) {
-        if let duration = source.durationValue, source.distanceValue == nil {
-            destination.durationValue = duration
-            destination.weightValue = 0
-            destination.repetitionsValue = 0
-        } else {
-            destination.weightValue = source.weightValue
-            destination.repetitionsValue = source.repetitionsValue
-        }
-        destination.rpeValue = source.rpeValue
-        destination.tagValue = source.tagValue
+        HistorySetTrackingValues.copy(from: source, to: destination)
     }
 
     private func toggleCompleted(_ set: WorkoutSet) {
-        if set.isCompleted {
-            set.isCompleted = false
-            set.completedAt = nil
-        } else {
-            set.isCompleted = true
-            set.completedAt = Date()
-            workoutExercise.workout?.start = workoutExercise.workout?.start ?? Date()
-
-            if isCurrentWorkout {
-                restTimerStore.restTimerDuration = restTimerDuration
-                restTimerStore.restTimerStart = Date()
+        let isCompleting = !set.isCompleted
+        let completionDate = Date()
+        performMutation(failureMessage: "The set completion was not saved.") {
+            if set.isCompleted {
+                set.isCompleted = false
+                set.completedAt = nil
+            } else {
+                set.isCompleted = true
+                set.completedAt = completionDate
+                workoutExercise.workout?.start = workoutExercise.workout?.start ?? completionDate
+            }
+        } onSuccess: {
+            if isCompleting && isCurrentWorkout {
+                restTimerStore.start(duration: restTimerDuration)
                 let feedback = UINotificationFeedbackGenerator()
                 feedback.notificationOccurred(.success)
             }
         }
-        save()
     }
 
     @discardableResult
     private func delete(_ set: WorkoutSet) -> Bool {
-        do {
-            try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
-                workoutExercise.removeFromWorkoutSets(set)
-                managedObjectContext.delete(set)
-            }
-            return true
-        } catch {
-            persistenceError = "The set was not removed. \(error.localizedDescription)"
-            return false
+        performMutation(failureMessage: "The set was not removed.") {
+            workoutExercise.removeFromWorkoutSets(set)
+            managedObjectContext.delete(set)
         }
     }
 
@@ -714,6 +736,26 @@ struct WorkoutExerciseDetailView: View {
             return true
         } catch {
             persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    @discardableResult
+    private func performMutation(
+        failureMessage: String,
+        mutation: () throws -> Void,
+        onSuccess: () -> Void = {}
+    ) -> Bool {
+        persistenceError = nil
+        do {
+            try HistoryMutationPersistence.perform(
+                context: managedObjectContext,
+                mutation: mutation,
+                onSuccess: onSuccess
+            )
+            return true
+        } catch {
+            persistenceError = "\(failureMessage) \(error.localizedDescription)"
             return false
         }
     }

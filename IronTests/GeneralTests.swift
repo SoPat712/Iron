@@ -7,6 +7,7 @@
 //
 
 import XCTest
+import CoreData
 import WorkoutDataKit
 import UserNotifications
 import HealthKit
@@ -798,5 +799,112 @@ final class BodyWeightSampleSelectionTests: XCTestCase {
 
     func testEmptyQueryHasNoClosestSample() {
         XCTAssertNil(BodyWeightFetcher.closestSample(to: referenceDate, in: []))
+    }
+}
+
+final class HistoryMutationPersistenceTests: XCTestCase {
+    private struct SaveFailure: Error {}
+
+    private func makeHistoryGraph(
+        in context: NSManagedObjectContext
+    ) throws -> (Workout, WorkoutExercise, WorkoutSet) {
+        let workout = Workout.create(context: context)
+        workout.title = "Original"
+        workout.start = Date(timeIntervalSinceReferenceDate: 1_000)
+        workout.end = Date(timeIntervalSinceReferenceDate: 2_000)
+        workout.isCurrentWorkout = false
+        let workoutExercise = WorkoutExercise.create(context: context)
+        workout.addToWorkoutExercises(workoutExercise)
+        let set = WorkoutSet.create(context: context)
+        workoutExercise.addToWorkoutSets(set)
+        set.isCompleted = true
+        try context.save()
+        return (workout, workoutExercise, set)
+    }
+
+    func testFailedMutationRollsBackOnlyItsChangesAndSkipsEffects() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let (workout, workoutExercise, set) = try makeHistoryGraph(in: context)
+        workout.comment = "Unrelated pending edit"
+        var effectCount = 0
+
+        XCTAssertThrowsError(try HistoryMutationPersistence.perform(
+            context: context,
+            save: { throw SaveFailure() },
+            mutation: {
+                set.isCompleted = false
+                let inserted = WorkoutSet.create(context: context)
+                workoutExercise.addToWorkoutSets(inserted)
+            },
+            onSuccess: { effectCount += 1 }
+        ))
+
+        XCTAssertTrue(set.isCompleted)
+        XCTAssertEqual(workoutExercise.workoutSets?.count, 1)
+        XCTAssertEqual(workout.comment, "Unrelated pending edit")
+        XCTAssertTrue(context.hasChanges)
+        XCTAssertEqual(effectCount, 0)
+    }
+
+    func testRetryPersistsMutationAndRunsEffectOnce() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let (_, _, set) = try makeHistoryGraph(in: context)
+        var effectCount = 0
+
+        XCTAssertThrowsError(try HistoryMutationPersistence.perform(
+            context: context,
+            save: { throw SaveFailure() },
+            mutation: { set.repetitionsValue = 8 },
+            onSuccess: { effectCount += 1 }
+        ))
+        XCTAssertEqual(set.repetitionsValue, 0)
+
+        try HistoryMutationPersistence.perform(
+            context: context,
+            mutation: { set.repetitionsValue = 8 },
+            onSuccess: { effectCount += 1 }
+        )
+
+        XCTAssertEqual(set.repetitionsValue, 8)
+        XCTAssertFalse(context.hasChanges)
+        XCTAssertEqual(effectCount, 1)
+    }
+
+    func testFailedDeletionRestoresObjectAndRelationship() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let (_, workoutExercise, set) = try makeHistoryGraph(in: context)
+
+        XCTAssertThrowsError(try HistoryMutationPersistence.perform(
+            context: context,
+            save: { throw SaveFailure() }
+        ) {
+            workoutExercise.removeFromWorkoutSets(set)
+            context.delete(set)
+        })
+
+        XCTAssertFalse(set.isDeleted)
+        XCTAssertEqual(workoutExercise.workoutSets?.count, 1)
+        XCTAssertTrue(workoutExercise.workoutSets?.contains(set) == true)
+    }
+
+    func testTrackingCopyPreservesDurationAndDistanceTogether() {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let source = WorkoutSet.create(context: context)
+        source.durationValue = 75
+        source.distanceValue = 400
+        source.weightValue = 20
+        source.repetitionsValue = 6
+        source.rpeValue = 8.5
+        source.tagValue = .dropSet
+        let destination = WorkoutSet.create(context: context)
+
+        HistorySetTrackingValues.copy(from: source, to: destination)
+
+        XCTAssertEqual(destination.durationValue, 75)
+        XCTAssertEqual(destination.distanceValue, 400)
+        XCTAssertEqual(destination.weightValue, 20)
+        XCTAssertEqual(destination.repetitionsValue, 6)
+        XCTAssertEqual(destination.rpeValue, 8.5)
+        XCTAssertEqual(destination.tagValue, .dropSet)
     }
 }
