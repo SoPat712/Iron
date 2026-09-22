@@ -260,8 +260,6 @@ private struct WorkoutSmartStackView: View {
                     HStack(spacing: 6) {
                         workoutRestTimerText(until: end)
                             .font(.title3.weight(.semibold).monospacedDigit())
-                            .contentTransition(.numericText(countsDown: true))
-                            .invalidatableContent()
 
                         Spacer(minLength: 4)
 
@@ -365,7 +363,10 @@ private struct WorkoutLiveActivityLockScreenView: View {
                 if phase == .resting, context.state.isRestPaused {
                     WorkoutPausedRestControls(context: context)
                 } else if phase == .resting, let end = context.state.restTimerEnd {
-                    restControls(until: end)
+                    WorkoutRunningRestControls(
+                        workoutID: context.attributes.workoutID,
+                        end: end
+                    )
                 } else {
                     HStack(spacing: 10) {
                         Text(activityResult(set))
@@ -500,45 +501,6 @@ private struct WorkoutLiveActivityLockScreenView: View {
         }
     }
 
-    private func restControls(until end: Date) -> some View {
-        HStack(spacing: 8) {
-            Button(intent: AdjustWorkoutRestTimerIntent(
-                workoutID: context.attributes.workoutID,
-                seconds: -15
-            )) {
-                Text("−15s")
-            }
-            .buttonStyle(WorkoutActivityControlButtonStyle())
-            .accessibilityLabel("Subtract 15 seconds")
-
-            workoutRestTimerText(until: end)
-                .font(.title2.weight(.semibold).monospacedDigit())
-                .foregroundStyle(WorkoutActivityPalette.onSurface)
-                .contentTransition(.numericText(countsDown: true))
-                .frame(maxWidth: .infinity)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-                .invalidatableContent()
-
-            Button(intent: AdjustWorkoutRestTimerIntent(
-                workoutID: context.attributes.workoutID,
-                seconds: 15
-            )) {
-                Text("+15s")
-            }
-            .buttonStyle(WorkoutActivityControlButtonStyle())
-            .accessibilityLabel("Add 15 seconds")
-
-            Button(intent: SkipWorkoutRestTimerIntent(
-                workoutID: context.attributes.workoutID
-            )) {
-                Text("Skip")
-            }
-            .buttonStyle(WorkoutActivityControlButtonStyle(isProminent: true))
-            .accessibilityLabel("Skip rest timer")
-        }
-    }
-
     private func phaseSystemImage(_ phase: WorkoutActivityAttributes.Phase) -> String {
         switch phase {
         case .currentSet: return "checkmark"
@@ -557,8 +519,60 @@ private struct WorkoutLiveActivityLockScreenView: View {
 
 }
 
+/// Keep Skip anchored at the trailing edge while the three rest controls
+/// share the remaining space equally on both full-size activity surfaces.
+private struct WorkoutRunningRestControls: View {
+    let workoutID: String
+    let end: Date
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button(intent: AdjustWorkoutRestTimerIntent(
+                    workoutID: workoutID,
+                    seconds: -15
+                )) {
+                    Text("−15s")
+                }
+                .buttonStyle(WorkoutActivityControlButtonStyle(fillsWidth: true))
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .accessibilityLabel("Subtract 15 seconds")
+
+                workoutRestTimerText(until: end)
+                    .font((compact ? Font.title3 : Font.title2).weight(.semibold).monospacedDigit())
+                    .foregroundStyle(WorkoutActivityPalette.onSurface)
+                    .multilineTextAlignment(.center)
+                    .frame(minWidth: 0, maxWidth: .infinity)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.68)
+
+                Button(intent: AdjustWorkoutRestTimerIntent(
+                    workoutID: workoutID,
+                    seconds: 15
+                )) {
+                    Text("+15s")
+                }
+                .buttonStyle(WorkoutActivityControlButtonStyle(fillsWidth: true))
+                .frame(minWidth: 0, maxWidth: .infinity)
+                .accessibilityLabel("Add 15 seconds")
+            }
+            .frame(maxWidth: .infinity)
+
+            Button(intent: SkipWorkoutRestTimerIntent(
+                workoutID: workoutID
+            )) {
+                Text("Skip")
+            }
+            .buttonStyle(WorkoutActivityControlButtonStyle(isProminent: true))
+            .accessibilityLabel("Skip rest timer")
+        }
+    }
+}
+
 private struct WorkoutActivityControlButtonStyle: ButtonStyle {
     var isProminent = false
+    var fillsWidth = false
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
@@ -568,7 +582,7 @@ private struct WorkoutActivityControlButtonStyle: ButtonStyle {
                     ? WorkoutActivityPalette.onSuccess
                     : WorkoutActivityPalette.onSurface
             )
-            .frame(minWidth: 52, minHeight: 38)
+            .frame(minWidth: 52, maxWidth: fillsWidth ? .infinity : nil, minHeight: 38)
             .padding(.horizontal, isProminent ? 4 : 0)
             .background(
                 Capsule(style: .continuous)
@@ -682,39 +696,11 @@ private struct WorkoutDynamicIslandBottom: View {
                                 }
                             }
 
-                        HStack(spacing: 7) {
-                            Button(intent: AdjustWorkoutRestTimerIntent(
-                                workoutID: context.attributes.workoutID,
-                                seconds: -15
-                            )) {
-                                Text("−15s")
-                            }
-                            .buttonStyle(WorkoutActivityControlButtonStyle())
-
-                            workoutRestTimerText(until: end)
-                                .font(.title3.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(WorkoutActivityPalette.onSurface)
-                                .contentTransition(.numericText(countsDown: true))
-                                .frame(maxWidth: .infinity)
-                                .lineLimit(1)
-                                .minimumScaleFactor(0.66)
-                                .invalidatableContent()
-
-                            Button(intent: AdjustWorkoutRestTimerIntent(
-                                workoutID: context.attributes.workoutID,
-                                seconds: 15
-                            )) {
-                                Text("+15s")
-                            }
-                            .buttonStyle(WorkoutActivityControlButtonStyle())
-
-                            Button(intent: SkipWorkoutRestTimerIntent(
-                                workoutID: context.attributes.workoutID
-                            )) {
-                                Text("Skip")
-                            }
-                            .buttonStyle(WorkoutActivityControlButtonStyle(isProminent: true))
-                        }
+                        WorkoutRunningRestControls(
+                            workoutID: context.attributes.workoutID,
+                            end: end,
+                            compact: true
+                        )
                     }
                 } else {
                     HStack(spacing: 10) {
@@ -858,7 +844,6 @@ private struct WorkoutDynamicIslandCompactTrailing: View {
                 workoutRestTimerText(until: end)
                     .font(.caption.weight(.bold).monospacedDigit())
                     .foregroundStyle(WorkoutActivityPalette.accent)
-                    .contentTransition(.numericText(countsDown: true))
                     .lineLimit(1)
                     .minimumScaleFactor(0.66)
             } else if phaseIsCompletion(phase) {
@@ -952,6 +937,10 @@ private func workoutRestTimerText(until end: Date) -> some View {
         countsDown: true,
         showsHours: false
     )
+    // The system keeps counting while the intent updates the deadline. Avoid
+    // invalidation shimmer and replacement fades on each ±15-second action.
+    .contentTransition(.identity)
+    .animation(nil, value: end)
 }
 
 private func phaseSystemImage(_ phase: WorkoutActivityAttributes.Phase) -> String {
