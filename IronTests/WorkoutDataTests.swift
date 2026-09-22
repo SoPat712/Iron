@@ -1220,3 +1220,154 @@ final class CurrentWorkoutMutationPersistenceTests: XCTestCase {
         XCTAssertEqual(set.repetitionsValue, originalRepetitions)
     }
 }
+
+final class SavedWorkoutEditorPersistenceTests: XCTestCase {
+    private struct SaveFailure: Error {}
+    private var container: NSPersistentContainer!
+    private var context: NSManagedObjectContext { container.viewContext }
+
+    override func setUp() {
+        super.setUp()
+        container = setUpInMemoryNSPersistentContainer()
+    }
+
+    override func tearDown() {
+        context.reset()
+        container = nil
+        super.tearDown()
+    }
+
+    private func savedRoutine() throws -> WorkoutRoutine {
+        let plan = WorkoutPlan.create(context: context)
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = plan
+        routine.title = "Push"
+        let exercise = WorkoutRoutineExercise.create(context: context)
+        exercise.workoutRoutine = routine
+        exercise.exerciseUuid = UUID()
+        exercise.restTimerDurationValue = 90
+        let set = WorkoutRoutineSet.create(context: context)
+        set.workoutRoutineExercise = exercise
+        set.weightValue = 50
+        set.minRepetitionsValue = 8
+        set.maxRepetitionsValue = 10
+        try context.save()
+        return routine
+    }
+
+    func testFailedEditKeepsDraftAndCanRetryWithoutReplacingHistoryLinks() throws {
+        let routine = try savedRoutine()
+        let originalExercise = try XCTUnwrap(routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let originalSet = try XCTUnwrap(originalExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+        let history = Workout.create(context: context)
+        history.workoutRoutine = routine
+        history.start = Date(timeIntervalSince1970: 1_000)
+        history.end = Date(timeIntervalSince1970: 2_000)
+        try context.save()
+        let session = WorkoutPlanEditorSession(parentContext: context, route: .init(kind: .edit(planID: routine.objectID)))
+        let draftExercise = try XCTUnwrap(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let draftSet = try XCTUnwrap(draftExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)
+        session.routine.title = "Push Updated"
+        draftExercise.restTimerDurationValue = 120
+        draftSet.weightValue = 65
+        history.comment = "Unrelated pending edit"
+
+        XCTAssertThrowsError(try session.commit(save: { throw SaveFailure() }))
+        XCTAssertEqual(routine.title, "Push")
+        XCTAssertEqual(originalSet.weightValue, 50)
+        XCTAssertEqual(history.comment, "Unrelated pending edit")
+        XCTAssertEqual(session.routine.title, "Push Updated")
+        XCTAssertEqual(draftSet.weightValue, 65)
+
+        try session.commit()
+        XCTAssertEqual(routine.title, "Push Updated")
+        XCTAssertEqual(originalSet.weightValue, 65)
+        XCTAssertEqual(originalExercise.restTimerDurationValue, 120)
+        XCTAssertEqual(history.workoutRoutine, routine)
+        XCTAssertEqual((routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)?.objectID, originalExercise.objectID)
+    }
+
+    func testFailedCreationRemovesParentOrphansButRetainsRetryableDraft() throws {
+        let session = WorkoutPlanEditorSession(parentContext: context, route: .init(kind: .create(containerID: nil)))
+        session.routine.title = "New Workout"
+        let draftExercise = WorkoutRoutineExercise.create(context: session.context)
+        draftExercise.workoutRoutine = session.routine
+        let draftSet = WorkoutRoutineSet.create(context: session.context)
+        draftSet.workoutRoutineExercise = draftExercise
+        draftSet.durationValue = 45
+
+        XCTAssertThrowsError(try session.commit(save: { throw SaveFailure() }))
+        XCTAssertEqual(try context.count(for: WorkoutPlan.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineExercise.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 0)
+        XCTAssertEqual(draftSet.durationValue, 45)
+
+        try session.commit()
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+        let result = try XCTUnwrap(context.fetch(WorkoutRoutine.fetchRequest()).first)
+        XCTAssertEqual(result.title, "New Workout")
+        XCTAssertEqual(result.uuid, session.routine.uuid)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 1)
+    }
+
+    func testFailedDuplicateLeavesOriginalUntouchedAndRetriesOnce() throws {
+        let source = try savedRoutine()
+        let session = WorkoutPlanEditorSession(parentContext: context, route: .init(kind: .duplicate(planID: source.objectID)))
+        session.routine.title = "Push Copy Edited"
+
+        XCTAssertThrowsError(try session.commit(save: { throw SaveFailure() }))
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+        XCTAssertEqual(source.title, "Push")
+        XCTAssertEqual(session.routine.title, "Push Copy Edited")
+
+        try session.commit()
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 2)
+        let copy = try XCTUnwrap(context.fetch(WorkoutRoutine.fetchRequest()).first { $0.uuid == session.routine.uuid })
+        XCTAssertNotEqual(copy.uuid, source.uuid)
+        XCTAssertEqual(copy.workoutPlan, source.workoutPlan)
+        XCTAssertEqual(copy.title, "Push Copy Edited")
+    }
+
+    func testFailedRemovalAndInsertionRestoreOriginalTargets() throws {
+        let routine = try savedRoutine()
+        let original = try XCTUnwrap(routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        let session = WorkoutPlanEditorSession(parentContext: context, route: .init(kind: .edit(planID: routine.objectID)))
+        let removed = try XCTUnwrap(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        session.routine.removeFromWorkoutRoutineExercises(removed)
+        session.context.delete(removed)
+        let inserted = WorkoutRoutineExercise.create(context: session.context)
+        inserted.workoutRoutine = session.routine
+        inserted.comment = "Replacement"
+        let target = WorkoutRoutineSet.create(context: session.context)
+        target.workoutRoutineExercise = inserted
+        target.tagValue = .warmUp
+        target.weightValue = 20
+
+        XCTAssertThrowsError(try session.commit(save: { throw SaveFailure() }))
+        XCTAssertFalse(original.isDeleted)
+        XCTAssertEqual(routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise, original)
+        XCTAssertEqual(session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise, inserted)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 1)
+
+        try session.commit()
+        let replacement = try XCTUnwrap(routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise)
+        XCTAssertEqual(replacement.uuid, inserted.uuid)
+        XCTAssertEqual(replacement.comment, "Replacement")
+        XCTAssertEqual((replacement.workoutRoutineSets?.firstObject as? WorkoutRoutineSet)?.tagValue, .warmUp)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineExercise.fetchRequest()), 1)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 1)
+    }
+
+    func testCancellingDraftDoesNotChangeSavedTargets() throws {
+        let routine = try savedRoutine()
+        let session = WorkoutPlanEditorSession(parentContext: context, route: .init(kind: .edit(planID: routine.objectID)))
+        session.routine.title = "Cancelled"
+        session.routine.comment = "Do not save"
+        session.cancel()
+
+        XCTAssertEqual(routine.title, "Push")
+        XCTAssertNil(routine.comment)
+        XCTAssertFalse(context.hasChanges)
+    }
+}

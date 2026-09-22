@@ -10,7 +10,7 @@ import SwiftUI
 import CoreData
 import WorkoutDataKit
 
-private struct WorkoutPlanEditorRoute: Identifiable {
+struct WorkoutPlanEditorRoute: Identifiable {
     enum Kind {
         case create(containerID: NSManagedObjectID?)
         case edit(planID: NSManagedObjectID)
@@ -24,15 +24,17 @@ private struct WorkoutPlanEditorRoute: Identifiable {
 /// Keeps plan edits isolated until the user explicitly taps Create or Update.
 /// A child context gives Cancel real meaning without rolling back unrelated
 /// workout changes in the app's shared view context.
-private final class WorkoutPlanEditorSession: ObservableObject {
+final class WorkoutPlanEditorSession: ObservableObject {
     let context: NSManagedObjectContext
     let routine: WorkoutRoutine
     let isNew: Bool
 
     private let parentContext: NSManagedObjectContext
+    private let route: WorkoutPlanEditorRoute
 
     init(parentContext: NSManagedObjectContext, route: WorkoutPlanEditorRoute) {
         self.parentContext = parentContext
+        self.route = route
 
         let context = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
         context.parent = parentContext
@@ -70,9 +72,37 @@ private final class WorkoutPlanEditorSession: ObservableObject {
         }
     }
 
-    func commit() {
-        context.saveOrCrash()
-        parentContext.saveOrCrash()
+    func commit(save: (() throws -> Void)? = nil) throws {
+        // Do not save the child into its parent: a failed parent save would
+        // leave the child clean and unable to retry its draft. Copy the draft
+        // into one reversible parent mutation instead.
+        let draft = SavedWorkoutDraft(routine)
+        try parentContext.persistMutation(save: { try save?() ?? parentContext.save() }) {
+            let target: WorkoutRoutine
+            switch route.kind {
+            case .edit(let planID):
+                guard let existing = try parentContext.existingObject(with: planID) as? WorkoutRoutine,
+                      !existing.isDeleted else { throw SavedWorkoutDraftError.missingWorkout }
+                target = existing
+            case .create(let containerID):
+                let container: WorkoutPlan
+                if let containerID {
+                    guard let existing = try parentContext.existingObject(with: containerID) as? WorkoutPlan,
+                          !existing.isDeleted else { throw SavedWorkoutDraftError.missingWorkout }
+                    container = existing
+                } else {
+                    container = WorkoutPlan.create(context: parentContext)
+                }
+                target = WorkoutRoutine.create(context: parentContext)
+                target.workoutPlan = container
+            case .duplicate(let planID):
+                guard let source = try parentContext.existingObject(with: planID) as? WorkoutRoutine,
+                      !source.isDeleted else { throw SavedWorkoutDraftError.missingWorkout }
+                target = WorkoutRoutine.create(context: parentContext)
+                target.workoutPlan = source.workoutPlan
+            }
+            draft.apply(to: target, in: parentContext)
+        }
     }
 
     func cancel() {
@@ -80,8 +110,69 @@ private final class WorkoutPlanEditorSession: ObservableObject {
     }
 }
 
+private enum SavedWorkoutDraftError: LocalizedError {
+    case missingWorkout
+
+    var errorDescription: String? {
+        "The saved workout is no longer available. Your draft is still open."
+    }
+}
+
+/// Copies only the editable plan graph. Existing object identities, the folder,
+/// and links from completed workouts are retained when editing a saved workout.
+private struct SavedWorkoutDraft {
+    private struct Record {
+        let objectID: NSManagedObjectID
+        let attributes: [String: Any]
+
+        init(_ object: NSManagedObject) {
+            objectID = object.objectID
+            let keys = object.entity.attributesByName.filter { !$0.value.isTransient }.map(\.key)
+            attributes = object.dictionaryWithValues(forKeys: keys)
+        }
+    }
+
+    private struct ExerciseDraft {
+        let record: Record
+        let sets: [Record]
+    }
+
+    private let record: Record
+    private let exercises: [ExerciseDraft]
+
+    init(_ routine: WorkoutRoutine) {
+        record = Record(routine)
+        exercises = (routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []).map {
+            ExerciseDraft(record: Record($0), sets: ($0.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []).map(Record.init))
+        }
+    }
+
+    func apply(to routine: WorkoutRoutine, in context: NSManagedObjectContext) {
+        routine.setValuesForKeys(record.attributes)
+        let previousExercises = routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
+        let updatedExercises = exercises.map { draft -> WorkoutRoutineExercise in
+            let exercise = previousExercises.first { $0.objectID == draft.record.objectID }
+                ?? WorkoutRoutineExercise.create(context: context)
+            exercise.setValuesForKeys(draft.record.attributes)
+            let previousSets = exercise.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+            let updatedSets = draft.sets.map { setDraft -> WorkoutRoutineSet in
+                let set = previousSets.first { $0.objectID == setDraft.objectID }
+                    ?? WorkoutRoutineSet.create(context: context)
+                set.setValuesForKeys(setDraft.attributes)
+                return set
+            }
+            exercise.workoutRoutineSets = NSOrderedSet(array: updatedSets)
+            for set in previousSets where !updatedSets.contains(set) { context.delete(set) }
+            return exercise
+        }
+        routine.workoutRoutineExercises = NSOrderedSet(array: updatedExercises)
+        for exercise in previousExercises where !updatedExercises.contains(exercise) { context.delete(exercise) }
+    }
+}
+
 private struct WorkoutPlanEditorHost: View {
     @StateObject private var session: WorkoutPlanEditorSession
+    @State private var persistenceError: String?
 
     let onDismiss: () -> Void
 
@@ -107,11 +198,23 @@ private struct WorkoutPlanEditorHost: View {
                     onDismiss()
                 },
                 onCommit: {
-                    session.commit()
-                    onDismiss()
+                    do {
+                        try session.commit()
+                        onDismiss()
+                    } catch {
+                        persistenceError = "Your workout could not be saved. Try again. \(error.localizedDescription)"
+                    }
                 }
             )
             .environment(\.managedObjectContext, session.context)
+            .alert("Workout Not Saved", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("OK", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
+            }
         }
     }
 }
