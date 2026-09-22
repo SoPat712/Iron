@@ -137,6 +137,92 @@ extension HealthManager {
 }
 
 extension HealthManager {
+    enum ReplacementIntent {
+        case replace
+        case delete
+    }
+
+    /// Save immutable replacements before deleting the exact old objects
+    /// returned by the preceding query. Empty replacements are safe no-ops
+    /// unless the caller explicitly requests deletion.
+    static func coordinateReplacement<Old, New>(
+        oldObjects: [Old],
+        replacements: [New],
+        intent: ReplacementIntent,
+        save: @escaping ([New], @escaping (Result<Void, Error>) -> Void) -> Void,
+        delete: @escaping ([Old], @escaping (Result<Void, Error>) -> Void) -> Void,
+        completion: @escaping (Result<Void, Error>) -> Void
+    ) {
+        func deleteOldObjects() {
+            guard !oldObjects.isEmpty else {
+                completion(.success(()))
+                return
+            }
+            delete(oldObjects, completion)
+        }
+
+        switch intent {
+        case .delete:
+            deleteOldObjects()
+        case .replace:
+            guard !replacements.isEmpty else {
+                completion(.success(()))
+                return
+            }
+            save(replacements) { result in
+                switch result {
+                case .success:
+                    deleteOldObjects()
+                case .failure:
+                    completion(result)
+                }
+            }
+        }
+    }
+
+    static func replacementMetadata(
+        copying priorMetadata: [String: Any]?,
+        externalUUID: String,
+        title: String?
+    ) -> [String: Any] {
+        var metadata = priorMetadata ?? [:]
+        // This is a new independent sample, not a HealthKit sync-version update.
+        // Reusing the old sync identity/version can cause HealthKit to ignore it.
+        metadata.removeValue(forKey: HKMetadataKeySyncIdentifier)
+        metadata.removeValue(forKey: HKMetadataKeySyncVersion)
+        metadata[HKMetadataKeyExternalUUID] = externalUUID
+        if let title {
+            metadata[HKMetadataKeyWorkoutBrandName] = title
+        } else {
+            metadata.removeValue(forKey: HKMetadataKeyWorkoutBrandName)
+        }
+        return metadata
+    }
+
+    static func isValidWorkoutInterval(start: Date, end: Date, duration: TimeInterval) -> Bool {
+        start.timeIntervalSinceReferenceDate.isFinite
+            && end.timeIntervalSinceReferenceDate.isFinite
+            && duration.isFinite
+            && end >= start
+            && duration >= 0
+    }
+
+    static func workoutFieldsMatch(
+        existingStart: Date,
+        existingEnd: Date,
+        existingDuration: TimeInterval,
+        existingTitle: String?,
+        desiredStart: Date,
+        desiredEnd: Date,
+        desiredDuration: TimeInterval,
+        desiredTitle: String?
+    ) -> Bool {
+        abs(existingStart.timeIntervalSince(desiredStart)) < 1
+            && abs(existingEnd.timeIntervalSince(desiredEnd)) < 1
+            && abs(existingDuration - desiredDuration) < 1
+            && existingTitle == desiredTitle
+    }
+
     enum WorkoutSyncOutcome {
         case saved
         case updated
@@ -185,7 +271,8 @@ extension HealthManager {
                 guard let uuid = workout.uuid,
                       let start = workout.start,
                       let end = workout.end,
-                      let duration = workout.duration else {
+                      let duration = workout.duration,
+                      Self.isValidWorkoutInterval(start: start, end: end, duration: duration) else {
                     completion(.failure(WorkoutSyncError.missingWorkoutData))
                     return
                 }
@@ -195,8 +282,6 @@ extension HealthManager {
                 if let workoutTitle {
                     metadata[HKMetadataKeyWorkoutBrandName] = workoutTitle
                 }
-                let hkWorkout = HKWorkout(activityType: self.workoutConfiguration.activityType, start: start, end: end, duration: duration, totalEnergyBurned: nil, totalDistance: nil, device: .local(), metadata: metadata)
-
                 let uuidPredicate = HKQuery.predicateForObjects(
                     withMetadataKey: HKMetadataKeyExternalUUID,
                     allowedValues: [uuid.uuidString]
@@ -222,41 +307,54 @@ extension HealthManager {
                             existingSamples[0],
                             matchesStart: start,
                             end: end,
+                            duration: duration,
                             title: workoutTitle
                        ) {
                         DispatchQueue.main.async { completion(.success(.alreadyPresent)) }
                         return
                     }
 
-                    let saveReconciledWorkout: (WorkoutSyncOutcome) -> Void = { outcome in
-                        self.healthStore.save(hkWorkout) { success, error in
+                    let prior = existingSamples.first
+                    let replacementMetadata = Self.replacementMetadata(
+                        copying: prior?.metadata ?? metadata,
+                        externalUUID: uuid.uuidString,
+                        title: workoutTitle
+                    )
+                    let reconciledWorkout = HKWorkout(
+                        activityType: self.workoutConfiguration.activityType,
+                        start: start,
+                        end: end,
+                        duration: duration,
+                        totalEnergyBurned: prior?.totalEnergyBurned,
+                        totalDistance: prior?.totalDistance,
+                        device: prior?.device ?? .local(),
+                        metadata: replacementMetadata
+                    )
+                    let outcome: WorkoutSyncOutcome = existingSamples.isEmpty ? .saved : .updated
+                    Self.coordinateReplacement(
+                        oldObjects: existingSamples,
+                        replacements: [reconciledWorkout],
+                        intent: .replace,
+                        save: { replacements, saved in
+                            self.healthStore.save(replacements) { success, error in
+                                saved(success
+                                    ? .success(())
+                                    : .failure(error ?? AuthorizationError.denied))
+                            }
+                        },
+                        delete: { oldObjects, deleted in
+                            self.healthStore.delete(oldObjects) { success, error in
+                                deleted(success
+                                    ? .success(())
+                                    : .failure(error ?? AuthorizationError.denied))
+                            }
+                        },
+                        completion: { result in
                             DispatchQueue.main.async {
-                                if success {
-                                    completion(.success(outcome))
-                                } else {
-                                    completion(.failure(error ?? AuthorizationError.denied))
-                                }
+                                completion(result.map { outcome })
                             }
                         }
-                    }
-
-                    guard !existingSamples.isEmpty else {
-                        saveReconciledWorkout(.saved)
-                        return
-                    }
-
-                    // HealthKit samples are immutable. Remove every prior Iron-owned
-                    // match first, then save one canonical replacement. This also
-                    // repairs duplicates created by older Iron builds.
-                    self.healthStore.delete(existingSamples) { success, error in
-                        guard success else {
-                            DispatchQueue.main.async {
-                                completion(.failure(error ?? AuthorizationError.denied))
-                            }
-                            return
-                        }
-                        saveReconciledWorkout(.updated)
-                    }
+                    )
                 }
                 self.healthStore.execute(query)
             }
@@ -267,18 +365,31 @@ extension HealthManager {
         _ sample: HKWorkout,
         matchesStart start: Date,
         end: Date,
+        duration: TimeInterval,
         title: String?
     ) -> Bool {
         let sampleTitle = sample.metadata?[HKMetadataKeyWorkoutBrandName] as? String
         return sample.workoutActivityType == workoutConfiguration.activityType
-            && approximatelyEqual(date1: sample.startDate, date2: start)
-            && approximatelyEqual(date1: sample.endDate, date2: end)
-            && sampleTitle == title
+            && Self.workoutFieldsMatch(
+                existingStart: sample.startDate,
+                existingEnd: sample.endDate,
+                existingDuration: sample.duration,
+                existingTitle: sampleTitle,
+                desiredStart: start,
+                desiredEnd: end,
+                desiredDuration: duration,
+                desiredTitle: title
+            )
     }
     
     func deleteWorkout(workout: Workout) {
         guard let uuid = workout.uuid else { return }
-        
+        deleteWorkout(uuid: uuid)
+    }
+
+    /// Value-only deletion entry point for callers that have already durably
+    /// removed the Core Data workout.
+    func deleteWorkout(uuid: UUID) {
         let uuidPredicate = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID, allowedValues: [uuid.uuidString])
         let sourcePredicate = HKQuery.predicateForObjects(from: .default())
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [uuidPredicate, sourcePredicate])
@@ -287,18 +398,19 @@ extension HealthManager {
         let query = HKSampleQuery(
             sampleType: .workoutType(),
             predicate: predicate,
-            limit: 1,
+            limit: HKObjectQueryNoLimit,
             sortDescriptors: nil) { (query, samples, error) in
                 if let error = error {
                     os_log("Could not query HealthKit workout with uuid=%@: %@", log: .health, type: .fault, uuid as NSUUID, error.localizedDescription)
                     return
                 }
-                guard let workoutSample = samples?.first as? HKWorkout else {
+                let workoutSamples = (samples as? [HKWorkout]) ?? []
+                guard !workoutSamples.isEmpty else {
                     os_log("No HealthKit workout with uuid=%@", log: .health, type: .fault, uuid as NSUUID)
                     return
                 }
                 
-                self.healthStore.delete(workoutSample) { success, error in
+                self.healthStore.delete(workoutSamples) { success, error in
                     guard success else {
                         os_log("Could not delete HealthKit workout with uuid=%@: %@", log: .health, type: .fault, uuid as NSUUID, error?.localizedDescription ?? "nil")
                         return
@@ -322,6 +434,14 @@ extension HealthManager {
         reconcileBodyMeasurements(entry, shouldSaveCurrentValues: false)
     }
 
+    private struct BodyReplacementPlan {
+        let identifier: HKQuantityTypeIdentifier
+        let type: HKQuantityType
+        let externalIdentifier: String
+        let replacement: HKQuantitySample?
+        let intent: ReplacementIntent
+    }
+
     private func reconcileBodyMeasurements(
         _ entry: BodyMeasurementEntry,
         shouldSaveCurrentValues: Bool
@@ -340,65 +460,132 @@ extension HealthManager {
                 (.bodyFatPercentage, entry[.bodyFat].map { $0 / 100 }, .percent()),
                 (.waistCircumference, entry[.waist].map { $0 / 100 }, .meter())
             ]
-            let samples = supportedValues.compactMap { identifier, value, unit in
-                self.bodySample(
-                    identifier: identifier,
-                    value: value,
-                    unit: unit,
-                    date: entry.date,
-                    externalIdentifier: self.bodyMeasurementExternalIdentifier(
-                        entryID: entry.id,
-                        quantityIdentifier: identifier
-                    )
-                )
-            }
-
-            let deletionGroup = DispatchGroup()
-            let resultLock = NSLock()
-            var deletionFailed = false
-
-            for (identifier, _, _) in supportedValues {
-                guard let type = HKObjectType.quantityType(forIdentifier: identifier) else { continue }
+            let plans: [BodyReplacementPlan] = supportedValues.compactMap { identifier, value, unit in
+                guard let type = HKObjectType.quantityType(forIdentifier: identifier) else { return nil }
                 let externalIdentifier = self.bodyMeasurementExternalIdentifier(
                     entryID: entry.id,
                     quantityIdentifier: identifier
                 )
-                let predicate = HKQuery.predicateForObjects(
-                    withMetadataKey: HKMetadataKeyExternalUUID,
-                    allowedValues: [externalIdentifier]
-                )
-
-                deletionGroup.enter()
-                self.healthStore.deleteObjects(of: type, predicate: predicate) { success, _, error in
-                    if !success {
-                        resultLock.lock()
-                        deletionFailed = true
-                        resultLock.unlock()
-                        os_log(
-                            "Could not replace Iron body measurement %@ in HealthKit: %@",
-                            log: .health,
-                            type: .error,
-                            identifier.rawValue,
-                            error?.localizedDescription ?? "unknown error"
-                        )
-                    }
-                    deletionGroup.leave()
+                if !shouldSaveCurrentValues || value == nil {
+                    return BodyReplacementPlan(
+                        identifier: identifier,
+                        type: type,
+                        externalIdentifier: externalIdentifier,
+                        replacement: nil,
+                        intent: .delete
+                    )
                 }
+                guard let replacement = self.bodySample(
+                    identifier: identifier,
+                    value: value,
+                    unit: unit,
+                    date: entry.date,
+                    externalIdentifier: externalIdentifier
+                ) else {
+                    // A present but invalid value is a construction failure,
+                    // not an instruction to erase the previous Health sample.
+                    return nil
+                }
+                return BodyReplacementPlan(
+                    identifier: identifier,
+                    type: type,
+                    externalIdentifier: externalIdentifier,
+                    replacement: replacement,
+                    intent: .replace
+                )
             }
 
-            deletionGroup.notify(queue: .global(qos: .utility)) {
+            let queryGroup = DispatchGroup()
+            let resultLock = NSLock()
+            var oldSamplesByIdentifier: [String: [HKQuantitySample]] = [:]
+            var queryError: Error?
+
+            for plan in plans {
+                let identifierPredicate = HKQuery.predicateForObjects(
+                    withMetadataKey: HKMetadataKeyExternalUUID,
+                    allowedValues: [plan.externalIdentifier]
+                )
+                let sourcePredicate = HKQuery.predicateForObjects(from: .default())
+                let predicate = NSCompoundPredicate(
+                    andPredicateWithSubpredicates: [identifierPredicate, sourcePredicate]
+                )
+                queryGroup.enter()
+                let query = HKSampleQuery(
+                    sampleType: plan.type,
+                    predicate: predicate,
+                    limit: HKObjectQueryNoLimit,
+                    sortDescriptors: nil
+                ) { _, samples, error in
+                    resultLock.lock()
+                    if let error {
+                        if queryError == nil { queryError = error }
+                    } else {
+                        oldSamplesByIdentifier[plan.externalIdentifier] =
+                            (samples as? [HKQuantitySample]) ?? []
+                    }
+                    resultLock.unlock()
+                    queryGroup.leave()
+                }
+                self.healthStore.execute(query)
+            }
+
+            queryGroup.notify(queue: .global(qos: .utility)) {
                 resultLock.lock()
-                let canContinue = !deletionFailed
+                let capturedError = queryError
+                let capturedOldSamples = oldSamplesByIdentifier
                 resultLock.unlock()
 
-                guard canContinue, shouldSaveCurrentValues, !samples.isEmpty else { return }
-                self.healthStore.save(samples) { success, error in
-                    if !success {
+                guard capturedError == nil else {
+                    os_log(
+                        "Could not query prior Iron body measurements in HealthKit: %@",
+                        log: .health,
+                        type: .error,
+                        capturedError?.localizedDescription ?? "unknown error"
+                    )
+                    return
+                }
+
+                let replacementGroup = DispatchGroup()
+                for plan in plans {
+                    replacementGroup.enter()
+                    Self.coordinateReplacement(
+                        oldObjects: capturedOldSamples[plan.externalIdentifier] ?? [],
+                        replacements: plan.replacement.map { [$0] } ?? [],
+                        intent: plan.intent,
+                        save: { replacements, saved in
+                            self.healthStore.save(replacements) { success, error in
+                                saved(success
+                                    ? .success(())
+                                    : .failure(error ?? AuthorizationError.denied))
+                            }
+                        },
+                        delete: { oldObjects, deleted in
+                            self.healthStore.delete(oldObjects) { success, error in
+                                deleted(success
+                                    ? .success(())
+                                    : .failure(error ?? AuthorizationError.denied))
+                            }
+                        },
+                        completion: { result in
+                            if case .failure(let error) = result {
+                                os_log(
+                                    "Could not reconcile Iron body measurement %@ in HealthKit: %@",
+                                    log: .health,
+                                    type: .error,
+                                    plan.identifier.rawValue,
+                                    error.localizedDescription
+                                )
+                            }
+                            replacementGroup.leave()
+                        }
+                    )
+                }
+                replacementGroup.notify(queue: .global(qos: .utility)) {
+                    if plans.isEmpty {
                         os_log(
-                            "Could not save body measurements to HealthKit: %@",
+                            "No supported body measurement values to reconcile",
                             log: .health,
-                            type: .error,
-                            error?.localizedDescription ?? "unknown error"
+                            type: .info
                         )
                     }
                 }
@@ -421,7 +608,9 @@ extension HealthManager {
         externalIdentifier: String
     ) -> HKQuantitySample? {
         guard let value = value,
+              value.isFinite,
               value > 0,
+              date.timeIntervalSinceReferenceDate.isFinite,
               let type = HKObjectType.quantityType(forIdentifier: identifier) else { return nil }
         let metadata: [String: Any] = [
             HKMetadataKeyWasUserEntered: true,
@@ -538,9 +727,9 @@ extension HealthManager {
                         backgroundContext.perform {
                             do {
                                 let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-                                request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
                                 request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-                                let workouts = try backgroundContext.fetch(request)
+                                let allLocalWorkouts = try backgroundContext.fetch(request)
+                                let workouts = allLocalWorkouts.filter { !$0.isCurrentWorkout }
                                 
                                 let group = DispatchGroup()
                                 var _success = true
@@ -555,11 +744,14 @@ extension HealthManager {
                                     resultLock.unlock()
                                 }
                                 
-                                // delete HealthKit workout samples that are not in the database
+                                // An unfinished phone workout may already have a Watch
+                                // Health sample. It is not an orphan to remove during sync.
+                                let localWorkoutIDs = Set(allLocalWorkouts.compactMap(\.uuid))
+                                // Delete only Iron samples with a valid external ID whose
+                                // local workout no longer exists. Never claim unpaired data.
                                 let workoutSamplesToDelete = workoutSamples.filter { workoutSample in
-                                    guard let externalUuid = workoutSample.externalUuid else { return true } // if the uuid is missing --> delete
-                                    // if there is no workout for this uuid --> delete
-                                    return !workouts.contains { $0.uuid == externalUuid }
+                                    guard let externalUuid = workoutSample.externalUuid else { return false }
+                                    return !localWorkoutIDs.contains(externalUuid)
                                 }
                                 os_log("Deleting HealthKit workouts: %@", log: .health, type: .info, workoutSamplesToDelete)
                                 if !workoutSamplesToDelete.isEmpty {
@@ -571,19 +763,61 @@ extension HealthManager {
                                 }
                                 let deletedCount = workoutSamplesToDelete.count
                                 
-                                // save workouts that are missing from HealthKit
-                                let workoutSamplesToSave: [HKWorkout] = workouts.filter { workout in
-                                    guard let uuid = workout.uuid else { return false } // if the uuid is missing (should never happen) --> don't save
-                                    // if there is no workout sample for this uuid --> save
-                                    return !workoutSamples.contains { $0.externalUuid == uuid }
-                                }
-                                .compactMap { workout in
-                                    guard let uuid = workout.uuid, let start = workout.start, let end = workout.end, let duration = workout.duration else { return nil } // should never fail
-                                    var metadata: [String : Any] = [HKMetadataKeyExternalUUID : uuid.uuidString]
-                                    if let title = workout.optionalDisplayTitle(in: exerciseStore.exercises) {
-                                        metadata[HKMetadataKeyWorkoutBrandName] = title
+                                let samplesByID = Dictionary(grouping: workoutSamples.compactMap { sample in
+                                    sample.externalUuid.map { ($0, sample) }
+                                }, by: { $0.0 }).mapValues { $0.map(\.1) }
+                                var workoutSamplesToSave: [HKWorkout] = []
+                                var workoutReplacementPlans: [(old: [HKWorkout], new: HKWorkout)] = []
+
+                                for workout in workouts {
+                                    guard let uuid = workout.uuid,
+                                          let start = workout.start,
+                                          let end = workout.end,
+                                          let duration = workout.duration,
+                                          Self.isValidWorkoutInterval(
+                                            start: start,
+                                            end: end,
+                                            duration: duration
+                                          ) else {
+                                        // Invalid local data must not delete a valid old sample.
+                                        continue
                                     }
-                                    return HKWorkout(activityType: .traditionalStrengthTraining, start: start, end: end, duration: duration, totalEnergyBurned: nil, totalDistance: nil, device: .local(), metadata: metadata)
+                                    let existing = samplesByID[uuid] ?? []
+                                    let title = workout.optionalDisplayTitle(in: exerciseStore.exercises)
+                                    if existing.count == 1,
+                                       self.healthWorkout(
+                                        existing[0],
+                                        matchesStart: start,
+                                        end: end,
+                                        duration: duration,
+                                        title: title
+                                       ) {
+                                        continue
+                                    }
+
+                                    let prior = existing.first
+                                    let metadata = Self.replacementMetadata(
+                                        copying: prior?.metadata,
+                                        externalUUID: uuid.uuidString,
+                                        title: title
+                                    )
+                                    let replacement = HKWorkout(
+                                        activityType: prior?.workoutActivityType ?? .traditionalStrengthTraining,
+                                        start: start,
+                                        end: end,
+                                        duration: duration,
+                                        totalEnergyBurned: prior?.totalEnergyBurned,
+                                        totalDistance: prior?.totalDistance,
+                                        device: prior?.device ?? .local(),
+                                        metadata: metadata
+                                    )
+                                    if existing.isEmpty {
+                                        workoutSamplesToSave.append(replacement)
+                                    } else {
+                                        // Replace every duplicate old object only after the
+                                        // canonical replacement has saved successfully.
+                                        workoutReplacementPlans.append((existing, replacement))
+                                    }
                                 }
                                 os_log("Saving HealthKit workouts %@", log: .health, type: .info, workoutSamplesToSave)
                                 if !workoutSamplesToSave.isEmpty {
@@ -594,50 +828,39 @@ extension HealthManager {
                                     }
                                 }
                                 let createdCount = workoutSamplesToSave.count
-                                
-                                // update start / end times
-                                let workoutSamplesToModify: [(HKWorkout, Workout)] = workouts.compactMap { workout in
-                                    guard let uuid = workout.uuid else { return nil }
-                                    guard let workoutSample = workoutSamples.first(where: { $0.externalUuid == uuid }) else { return nil }
-                                    return (workoutSample, workout)
-                                }
-                                .filter {
-                                    let currentTitle = $0.0.metadata?[HKMetadataKeyWorkoutBrandName] as? String
-                                    let desiredTitle = $0.1.optionalDisplayTitle(in: exerciseStore.exercises)
-                                    return !self.approximatelyEqual(date1: $0.0.startDate, date2: $0.1.safeStart)
-                                        || !self.approximatelyEqual(date1: $0.0.endDate, date2: $0.1.safeEnd)
-                                        || currentTitle != desiredTitle
-                                }
-                                os_log("Modifying HealthKit workouts %@", log: .health, type: .info, workoutSamplesToModify)
-                                var modifiedCount = 0
-                                if !workoutSamplesToModify.isEmpty {
-                                    let modifiedWorkoutSamples = workoutSamplesToModify.compactMap { workoutSample, workout -> HKWorkout? in
-                                        guard let start = workout.start, let end = workout.end, let duration = workout.duration else { return nil }
-                                        
-                                        var metadata = workoutSample.metadata ?? [:]
-                                        if let title = workout.optionalDisplayTitle(in: exerciseStore.exercises) {
-                                            metadata[HKMetadataKeyWorkoutBrandName] = title
-                                        } else {
-                                            metadata.removeValue(forKey: HKMetadataKeyWorkoutBrandName)
-                                        }
-                                        
-                                        return HKWorkout(activityType: workoutSample.workoutActivityType, start: start, end: end, duration: duration, totalEnergyBurned: workoutSample.totalEnergyBurned, totalDistance: workoutSample.totalDistance, device: workoutSample.device, metadata: metadata)
-                                    }
-                                    
+                                os_log("Modifying HealthKit workouts %@", log: .health, type: .info, workoutReplacementPlans.map(\.new))
+                                for plan in workoutReplacementPlans {
                                     group.enter()
-                                    self.healthStore.delete(workoutSamplesToModify.map { $0.0 }) { success, error in
-                                        recordResult(success: success, error: error)
-                                        guard success else {
+                                    Self.coordinateReplacement(
+                                        oldObjects: plan.old,
+                                        replacements: [plan.new],
+                                        intent: .replace,
+                                        save: { replacements, saved in
+                                            self.healthStore.save(replacements) { success, error in
+                                                saved(success
+                                                    ? .success(())
+                                                    : .failure(error ?? AuthorizationError.denied))
+                                            }
+                                        },
+                                        delete: { oldObjects, deleted in
+                                            self.healthStore.delete(oldObjects) { success, error in
+                                                deleted(success
+                                                    ? .success(())
+                                                    : .failure(error ?? AuthorizationError.denied))
+                                            }
+                                        },
+                                        completion: { result in
+                                            switch result {
+                                            case .success:
+                                                recordResult(success: true, error: nil)
+                                            case .failure(let error):
+                                                recordResult(success: false, error: error)
+                                            }
                                             group.leave()
-                                            return
                                         }
-                                        self.healthStore.save(modifiedWorkoutSamples) { success, error in
-                                            recordResult(success: success, error: error)
-                                            group.leave()
-                                        }
-                                    }
-                                    modifiedCount = modifiedWorkoutSamples.count
+                                    )
                                 }
+                                let modifiedCount = workoutReplacementPlans.count
                                 
                                 group.wait()
                                 resultLock.lock()

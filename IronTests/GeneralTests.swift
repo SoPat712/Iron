@@ -9,6 +9,7 @@
 import XCTest
 import WorkoutDataKit
 import UserNotifications
+import HealthKit
 @testable import Iron
 
 class GeneralTests: XCTestCase {
@@ -269,6 +270,207 @@ final class RestTimerStoreTests: XCTestCase {
         XCTAssertFalse(NotificationManager.shouldPlayRestTimerSound(
             appSoundsEnabled: true,
             systemSoundSetting: .disabled
+        ))
+    }
+}
+
+final class HealthReplacementCoordinatorTests: XCTestCase {
+    private enum ExpectedError: Error, Equatable {
+        case save
+        case cleanup
+    }
+
+    func testReplacementSavesNewObjectsBeforeDeletingExactOldObjects() {
+        var operations: [String] = []
+        var savedObjects: [Int] = []
+        var deletedObjects: [Int] = []
+        var result: Result<Void, Error>?
+
+        HealthManager.coordinateReplacement(
+            oldObjects: [11, 12],
+            replacements: [21],
+            intent: .replace,
+            save: { objects, completion in
+                operations.append("save")
+                savedObjects = objects
+                completion(.success(()))
+            },
+            delete: { objects, completion in
+                operations.append("delete")
+                deletedObjects = objects
+                completion(.success(()))
+            },
+            completion: { result = $0 }
+        )
+
+        XCTAssertEqual(operations, ["save", "delete"])
+        XCTAssertEqual(savedObjects, [21])
+        XCTAssertEqual(deletedObjects, [11, 12])
+        XCTAssertNoThrow(try result?.get())
+    }
+
+    func testFailedReplacementSaveKeepsOldObjects() {
+        var deleted = false
+        var capturedError: ExpectedError?
+
+        HealthManager.coordinateReplacement(
+            oldObjects: [11],
+            replacements: [21],
+            intent: .replace,
+            save: { _, completion in completion(.failure(ExpectedError.save)) },
+            delete: { _, _ in deleted = true },
+            completion: { result in
+                if case .failure(let error) = result {
+                    capturedError = error as? ExpectedError
+                }
+            }
+        )
+
+        XCTAssertFalse(deleted)
+        XCTAssertEqual(capturedError, .save)
+    }
+
+    func testCleanupFailureIsReportedAfterSuccessfulSave() {
+        var operations: [String] = []
+        var capturedError: ExpectedError?
+
+        HealthManager.coordinateReplacement(
+            oldObjects: [11],
+            replacements: [21],
+            intent: .replace,
+            save: { _, completion in
+                operations.append("save")
+                completion(.success(()))
+            },
+            delete: { _, completion in
+                operations.append("delete")
+                completion(.failure(ExpectedError.cleanup))
+            },
+            completion: { result in
+                if case .failure(let error) = result {
+                    capturedError = error as? ExpectedError
+                }
+            }
+        )
+
+        XCTAssertEqual(operations, ["save", "delete"])
+        XCTAssertEqual(capturedError, .cleanup)
+    }
+
+    func testEmptyReplacementIsNoOpWithoutExplicitDeleteIntent() {
+        var operations: [String] = []
+        var succeeded = false
+
+        HealthManager.coordinateReplacement(
+            oldObjects: [11],
+            replacements: [Int](),
+            intent: .replace,
+            save: { _, _ in operations.append("save") },
+            delete: { _, _ in operations.append("delete") },
+            completion: { result in
+                if case .success = result { succeeded = true }
+            }
+        )
+
+        XCTAssertTrue(succeeded)
+        XCTAssertTrue(operations.isEmpty)
+    }
+
+    func testExplicitDeleteRemovesCapturedOldObjectsWithoutSaving() {
+        var saved = false
+        var deletedObjects: [Int] = []
+        var succeeded = false
+
+        HealthManager.coordinateReplacement(
+            oldObjects: [11, 12],
+            replacements: [Int](),
+            intent: .delete,
+            save: { _, _ in saved = true },
+            delete: { objects, completion in
+                deletedObjects = objects
+                completion(.success(()))
+            },
+            completion: { result in
+                if case .success = result { succeeded = true }
+            }
+        )
+
+        XCTAssertFalse(saved)
+        XCTAssertEqual(deletedObjects, [11, 12])
+        XCTAssertTrue(succeeded)
+    }
+
+    func testReplacementMetadataStripsHealthSyncIdentityAndPreservesOtherMetadata() {
+        let metadata: [String: Any] = [
+            HKMetadataKeySyncIdentifier: "old-sync-id",
+            HKMetadataKeySyncVersion: 7,
+            HKMetadataKeyExternalUUID: "old-external-id",
+            HKMetadataKeyIndoorWorkout: true,
+            HKMetadataKeyWorkoutBrandName: "Old title"
+        ]
+
+        let replacement = HealthManager.replacementMetadata(
+            copying: metadata,
+            externalUUID: "new-external-id",
+            title: "New title"
+        )
+
+        XCTAssertNil(replacement[HKMetadataKeySyncIdentifier])
+        XCTAssertNil(replacement[HKMetadataKeySyncVersion])
+        XCTAssertEqual(replacement[HKMetadataKeyExternalUUID] as? String, "new-external-id")
+        XCTAssertEqual(replacement[HKMetadataKeyIndoorWorkout] as? Bool, true)
+        XCTAssertEqual(replacement[HKMetadataKeyWorkoutBrandName] as? String, "New title")
+    }
+
+    func testWorkoutFieldMatchingIncludesDuration() {
+        let start = Date(timeIntervalSinceReferenceDate: 10_000)
+        let end = start.addingTimeInterval(60)
+
+        XCTAssertTrue(HealthManager.workoutFieldsMatch(
+            existingStart: start,
+            existingEnd: end,
+            existingDuration: 60,
+            existingTitle: "Workout",
+            desiredStart: start,
+            desiredEnd: end,
+            desiredDuration: 60,
+            desiredTitle: "Workout"
+        ))
+        XCTAssertFalse(HealthManager.workoutFieldsMatch(
+            existingStart: start,
+            existingEnd: end,
+            existingDuration: 30,
+            existingTitle: "Workout",
+            desiredStart: start,
+            desiredEnd: end,
+            desiredDuration: 60,
+            desiredTitle: "Workout"
+        ))
+    }
+
+    func testWorkoutIntervalValidationRejectsInvalidDatesAndDurations() {
+        let start = Date(timeIntervalSinceReferenceDate: 10_000)
+        let end = start.addingTimeInterval(60)
+
+        XCTAssertTrue(HealthManager.isValidWorkoutInterval(
+            start: start,
+            end: end,
+            duration: 60
+        ))
+        XCTAssertFalse(HealthManager.isValidWorkoutInterval(
+            start: end,
+            end: start,
+            duration: 60
+        ))
+        XCTAssertFalse(HealthManager.isValidWorkoutInterval(
+            start: start,
+            end: end,
+            duration: .nan
+        ))
+        XCTAssertFalse(HealthManager.isValidWorkoutInterval(
+            start: Date(timeIntervalSinceReferenceDate: .infinity),
+            end: end,
+            duration: 60
         ))
     }
 }
