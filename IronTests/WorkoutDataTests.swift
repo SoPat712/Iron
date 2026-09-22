@@ -976,3 +976,63 @@ final class WatchEventPersistenceTests: XCTestCase {
         XCTAssertTrue(sets.allSatisfy { !$0.isDeleted })
     }
 }
+
+@available(iOS 17.0, *)
+final class WorkoutPausedLiveActivityTests: XCTestCase {
+    private var next: WorkoutActivityAttributes.SetSnapshot {
+        .init(setID: "next", exerciseName: "Bench Press", setNumber: 2, setCount: 3, result: "100 lb × 8")
+    }
+
+    private func state(phase: WorkoutActivityAttributes.Phase = .resting) -> WorkoutActivityAttributes.ContentState {
+        .init(phase: phase, displaySet: next, nextSet: next,
+              confirmationUntil: Date(timeIntervalSince1970: 1_010),
+              restTimerStart: nil, restTimerEnd: nil, completedSets: 1, totalSets: 3,
+              pausedRestRemaining: 45)
+    }
+
+    func testPausedRestDoesNotAdvanceWithWallClockTime() {
+        let paused = state()
+        XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 9_000)), .resting)
+        XCTAssertEqual(paused.visibleSet(at: Date()), next)
+        XCTAssertNil(paused.restProgress(at: Date()))
+        XCTAssertEqual(paused.pausedRestRemaining, 45)
+    }
+
+    func testCompletionTransitionsToPausedRestRatherThanCurrentSet() {
+        let paused = state(phase: .setCompleted)
+        XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 1_005)), .setCompleted)
+        XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 1_020)), .resting)
+    }
+
+    func testOlderActivityPayloadStillDecodesWithoutPauseField() throws {
+        let encoded = try JSONEncoder().encode(state())
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        object.removeValue(forKey: "pausedRestRemaining")
+        let legacyData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(WorkoutActivityAttributes.ContentState.self, from: legacyData)
+        XCTAssertNil(decoded.pausedRestRemaining)
+        XCTAssertFalse(decoded.isRestPaused)
+        XCTAssertEqual(decoded.resolvedPhase(at: Date()), .currentSet)
+    }
+
+    func testReconciliationRetainsPausedRestAndClearsItAfterLastSet() {
+        let container = setUpInMemoryNSPersistentContainer()
+        let workout = Workout.create(context: container.viewContext)
+        let exercise = WorkoutExercise.create(context: container.viewContext)
+        exercise.workout = workout
+        let set = WorkoutSet.create(context: container.viewContext)
+        set.workoutExercise = exercise
+        let reconcile = {
+            WorkoutLiveActivityManager.shared.reconciledState(
+                for: workout, priorState: nil, now: Date(), restTimerStart: nil,
+                restTimerEnd: nil, pausedRestRemaining: 45
+            )
+        }
+        let paused = reconcile()
+        XCTAssertEqual(paused.phase, .resting)
+        XCTAssertEqual(paused.pausedRestRemaining, 45)
+        set.isCompleted = true
+        XCTAssertEqual(reconcile().phase, .finished)
+        XCTAssertNil(reconcile().pausedRestRemaining)
+    }
+}

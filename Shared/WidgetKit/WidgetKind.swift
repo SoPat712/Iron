@@ -48,6 +48,12 @@ struct WorkoutActivityAttributes: ActivityAttributes {
         let restTimerEnd: Date?
         let completedSets: Int
         let totalSets: Int
+        // Optional for activities encoded by app versions without pause support.
+        var pausedRestRemaining: TimeInterval? = nil
+
+        var isRestPaused: Bool {
+            pausedRestRemaining.map { $0.isFinite && $0 > 0 } == true
+        }
 
         /// Resolve time-driven presentation locally so the Live Activity can advance while
         /// the containing app is suspended. App-side ActivityKit updates still reconcile state.
@@ -58,13 +64,13 @@ struct WorkoutActivityAttributes: ActivityAttributes {
                     return .setCompleted
                 }
                 guard nextSet != nil else { return .finished }
-                if let restTimerEnd, date < restTimerEnd {
+                if isRestPaused || restTimerEnd.map({ date < $0 }) == true {
                     return .resting
                 }
                 return .currentSet
             case .resting:
                 guard nextSet != nil else { return .finished }
-                if let restTimerEnd, date < restTimerEnd {
+                if isRestPaused || restTimerEnd.map({ date < $0 }) == true {
                     return .resting
                 }
                 return .currentSet
@@ -85,6 +91,7 @@ struct WorkoutActivityAttributes: ActivityAttributes {
         }
 
         func restProgress(at date: Date) -> Double? {
+            guard !isRestPaused else { return nil }
             guard let restTimerStart, let restTimerEnd, restTimerEnd > restTimerStart else {
                 return nil
             }
@@ -167,6 +174,26 @@ struct AdjustWorkoutRestTimerIntent: LiveActivityIntent {
             workoutID: workoutID,
             by: TimeInterval(seconds)
         )
+        #endif
+        return .result()
+    }
+}
+
+@available(iOS 17.0, *)
+struct ResumeWorkoutRestTimerIntent: LiveActivityIntent {
+    static var title: LocalizedStringResource = "Resume Workout Rest Timer"
+    static var openAppWhenRun = false
+    static var isDiscoverable = false
+
+    @Parameter(title: "Workout ID")
+    var workoutID: String
+
+    init() { workoutID = "" }
+    init(workoutID: String) { self.workoutID = workoutID }
+
+    func perform() async throws -> some IntentResult {
+        #if !IRON_WIDGET_EXTENSION
+        await WorkoutLiveActivityIntentHandler.resumeRestTimer(workoutID: workoutID)
         #endif
         return .result()
     }

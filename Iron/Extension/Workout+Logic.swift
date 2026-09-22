@@ -198,7 +198,8 @@ final class WorkoutLiveActivityManager {
             priorState: preservingTransition ? existingActivity?.content.state : nil,
             now: Date(),
             restTimerStart: RestTimerStore.shared.restTimerStart,
-            restTimerEnd: RestTimerStore.shared.restTimerEnd
+            restTimerEnd: RestTimerStore.shared.restTimerEnd,
+            pausedRestRemaining: pausedRestRemaining
         )
         synchronizeConfirmationTransition(for: workoutID, state: state)
         publish(
@@ -229,7 +230,8 @@ final class WorkoutLiveActivityManager {
             restTimerStart: restTimerStart,
             restTimerEnd: restTimerEnd,
             completedSets: counts.completed,
-            totalSets: counts.total
+            totalSets: counts.total,
+            pausedRestRemaining: pausedRestRemaining
         )
 
         let transitionToken = replacePendingConfirmationTransition(
@@ -311,7 +313,8 @@ final class WorkoutLiveActivityManager {
                 priorState: nil,
                 now: Date(),
                 restTimerStart: RestTimerStore.shared.restTimerStart,
-                restTimerEnd: RestTimerStore.shared.restTimerEnd
+                restTimerEnd: RestTimerStore.shared.restTimerEnd,
+                pausedRestRemaining: pausedRestRemaining
             )
         )
     }
@@ -323,7 +326,8 @@ final class WorkoutLiveActivityManager {
         priorState: WorkoutActivityAttributes.ContentState?,
         now: Date,
         restTimerStart: Date?,
-        restTimerEnd: Date?
+        restTimerEnd: Date?,
+        pausedRestRemaining: TimeInterval? = nil
     ) -> WorkoutActivityAttributes.ContentState {
         let flattened = flattenedSets(in: workout)
         let counts = setCounts(in: workout)
@@ -353,6 +357,9 @@ final class WorkoutLiveActivityManager {
         let hasRunningTimer = nextSnapshot != nil
             && restTimerStart != nil
             && restTimerEnd.map { $0 > now } == true
+        let pausedRemaining = pausedRestRemaining.flatMap {
+            nextSnapshot != nil && $0.isFinite && $0 > 0 ? $0 : nil
+        }
 
         let phase: WorkoutActivityAttributes.Phase
         if confirmationUntil != nil {
@@ -361,7 +368,7 @@ final class WorkoutLiveActivityManager {
             phase = .currentSet
         } else if nextSnapshot == nil {
             phase = .finished
-        } else if hasRunningTimer {
+        } else if hasRunningTimer || pausedRemaining != nil {
             phase = .resting
         } else {
             phase = .currentSet
@@ -378,8 +385,13 @@ final class WorkoutLiveActivityManager {
             restTimerStart: hasRunningTimer ? restTimerStart : nil,
             restTimerEnd: hasRunningTimer ? restTimerEnd : nil,
             completedSets: counts.completed,
-            totalSets: counts.total
+            totalSets: counts.total,
+            pausedRestRemaining: pausedRemaining
         )
+    }
+
+    private var pausedRestRemaining: TimeInterval? {
+        RestTimerStore.shared.isPaused ? RestTimerStore.shared.restTimerRemainingTime : nil
     }
 
     private func synchronizeConfirmationTransition(
@@ -523,7 +535,7 @@ final class WorkoutLiveActivityManager {
             let phase: WorkoutActivityAttributes.Phase
             if existing.nextSet == nil {
                 phase = .finished
-            } else if let restTimerEnd = existing.restTimerEnd, now < restTimerEnd {
+            } else if existing.isRestPaused || existing.restTimerEnd.map({ now < $0 }) == true {
                 phase = .resting
             } else {
                 phase = .currentSet
@@ -537,7 +549,8 @@ final class WorkoutLiveActivityManager {
                 restTimerStart: phase == .finished ? nil : existing.restTimerStart,
                 restTimerEnd: phase == .finished ? nil : existing.restTimerEnd,
                 completedSets: existing.completedSets,
-                totalSets: existing.totalSets
+                totalSets: existing.totalSets,
+                pausedRestRemaining: phase == .finished ? nil : existing.pausedRestRemaining
             )
             await activity.update(
                 ActivityContent(
@@ -847,6 +860,13 @@ enum WorkoutLiveActivityIntentHandler {
     static func skipRestTimer(workoutID: String) {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID) else { return }
         RestTimerStore.shared.cancel()
+        WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+    }
+
+    static func resumeRestTimer(workoutID: String) {
+        guard let workout = matchingCurrentWorkout(workoutID: workoutID),
+              RestTimerStore.shared.isPaused else { return }
+        RestTimerStore.shared.resume()
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
     }
 

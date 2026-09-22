@@ -253,7 +253,9 @@ private struct WorkoutSmartStackView: View {
                         .foregroundStyle(.secondary)
                 }
 
-                if phase == .resting, let end = context.state.restTimerEnd {
+                if phase == .resting, context.state.isRestPaused {
+                    WorkoutPausedRestControls(context: context, compact: true)
+                } else if phase == .resting, let end = context.state.restTimerEnd {
                     HStack(spacing: 6) {
                         workoutRestTimerText(until: end)
                             .font(.title3.weight(.semibold).monospacedDigit())
@@ -357,7 +359,9 @@ private struct WorkoutLiveActivityLockScreenView: View {
 
                 activityProgress(phase: phase, date: presentationDate)
 
-                if phase == .resting, let end = context.state.restTimerEnd {
+                if phase == .resting, context.state.isRestPaused {
+                    WorkoutPausedRestControls(context: context)
+                } else if phase == .resting, let end = context.state.restTimerEnd {
                     restControls(until: end)
                 } else {
                     HStack(spacing: 10) {
@@ -658,7 +662,9 @@ private struct WorkoutDynamicIslandBottom: View {
                     Spacer(minLength: 4)
                 }
 
-                if phase == .resting,
+                if phase == .resting, context.state.isRestPaused {
+                    WorkoutPausedRestControls(context: context)
+                } else if phase == .resting,
                    let end = context.state.restTimerEnd,
                    let progress = context.state.restProgress(at: presentationDate) {
                     VStack(spacing: 7) {
@@ -841,7 +847,11 @@ private struct WorkoutDynamicIslandCompactTrailing: View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
             let presentationDate = workoutPresentationDate(context, timeline.date)
             let phase = context.state.resolvedPhase(at: presentationDate)
-            if phase == .resting, let end = context.state.restTimerEnd {
+            if phase == .resting, context.state.isRestPaused {
+                Image(systemName: "pause.fill")
+                    .foregroundStyle(WorkoutActivityPalette.accent)
+                    .accessibilityLabel("Rest timer paused")
+            } else if phase == .resting, let end = context.state.restTimerEnd {
                 workoutRestTimerText(until: end)
                     .font(.caption.weight(.bold).monospacedDigit())
                     .foregroundStyle(WorkoutActivityPalette.accent)
@@ -863,6 +873,43 @@ private struct WorkoutDynamicIslandCompactTrailing: View {
                     .foregroundStyle(WorkoutActivityPalette.success)
             }
         }
+    }
+}
+
+private struct WorkoutPausedRestControls: View {
+    let context: ActivityViewContext<WorkoutActivityAttributes>
+    var compact = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Paused")
+                    .font(.caption2)
+                    .foregroundStyle(WorkoutActivityPalette.secondary)
+                Text(remainingText)
+                    .font(.title3.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(WorkoutActivityPalette.onSurface)
+            }
+            Spacer(minLength: 4)
+            Button(intent: ResumeWorkoutRestTimerIntent(workoutID: context.attributes.workoutID)) {
+                Image(systemName: "play.fill")
+            }
+            .buttonStyle(WorkoutActivityControlButtonStyle(isProminent: true))
+            .accessibilityLabel("Resume rest timer")
+            if !compact {
+                Button(intent: SkipWorkoutRestTimerIntent(workoutID: context.attributes.workoutID)) {
+                    Text("Skip")
+                }
+                .buttonStyle(WorkoutActivityControlButtonStyle())
+                .accessibilityLabel("Skip rest timer")
+            }
+        }
+    }
+
+    private var remainingText: String {
+        let remaining = context.state.pausedRestRemaining ?? 0
+        let seconds = remaining.isFinite ? Int(min(max(remaining.rounded(.up), 0), 86_400)) : 0
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
     }
 }
 
