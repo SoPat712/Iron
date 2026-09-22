@@ -160,6 +160,7 @@ struct WorkoutLiveActivityWidget: Widget {
                     Text(context.attributes.workoutStart, style: .timer)
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(WorkoutActivityPalette.secondary)
+                        .multilineTextAlignment(.trailing)
                 }
 
                 DynamicIslandExpandedRegion(.center) {
@@ -284,6 +285,7 @@ private struct WorkoutSmartStackView: View {
                         Text(context.attributes.workoutStart, style: .timer)
                             .font(.caption2.weight(.semibold).monospacedDigit())
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
                             .lineLimit(1)
 
                         if phase == .currentSet, let set {
@@ -331,6 +333,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
                     Text(context.attributes.workoutStart, style: .timer)
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(WorkoutActivityPalette.onSurface)
+                        .multilineTextAlignment(.trailing)
                         .lineLimit(1)
                         .minimumScaleFactor(0.76)
                 }
