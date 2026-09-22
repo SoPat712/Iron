@@ -21,6 +21,38 @@ struct WorkoutPlanEditorRoute: Identifiable {
     let kind: Kind
 }
 
+/// Portable, versioned representation for one saved workout. The wrapper keeps
+/// shared files self-describing without coupling the import contract to the
+/// Core Data container used by the app.
+struct SavedWorkoutDocument: Codable {
+    static let currentVersion = 1
+
+    let version: Int
+    let workout: WorkoutRoutine
+
+    init(workout: WorkoutRoutine) {
+        version = Self.currentVersion
+        self.workout = workout
+    }
+}
+
+private struct SavedWorkoutImportResult: Identifiable {
+    let id = UUID()
+    let importedTitle: String?
+    let error: Error?
+
+    var alertTitle: String {
+        error == nil ? "Workout imported" : "Could not import workout"
+    }
+
+    var message: String {
+        if let error {
+            return error.localizedDescription
+        }
+        return "\(importedTitle ?? "Saved workout") is now available in the Workout tab."
+    }
+}
+
 /// Keeps plan edits isolated until the user explicitly taps Create or Update.
 /// A child context gives Cancel real meaning without rolling back unrelated
 /// workout changes in the app's shared view context.
@@ -170,6 +202,46 @@ private struct SavedWorkoutDraft {
     }
 }
 
+enum SavedWorkoutImporter {
+    @discardableResult
+    static func importData(
+        _ data: Data,
+        into parentContext: NSManagedObjectContext,
+        save: (() throws -> Void)? = nil
+    ) throws -> String {
+        let importContext = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        importContext.parent = parentContext
+        importContext.mergePolicy = NSMergeByPropertyObjectTrumpMergePolicy
+        defer { importContext.rollback() }
+
+        let decoder = JSONDecoder()
+        if let contextKey = CodingUserInfoKey.managedObjectContextKey {
+            decoder.userInfo[contextKey] = importContext
+        }
+        let document = try decoder.decode(SavedWorkoutDocument.self, from: data)
+        guard document.version == SavedWorkoutDocument.currentVersion else {
+            throw SavedWorkoutImportError.unsupportedVersion(document.version)
+        }
+
+        let importedTitle = document.workout.displayTitle
+        let draft = SavedWorkoutDraft(document.workout)
+        try parentContext.persistMutation(
+            save: {
+                if let save { try save() }
+                else { try parentContext.save() }
+            },
+            mutation: {
+                let container = WorkoutPlan.create(context: parentContext)
+                container.title = "Imported Workouts"
+                let routine = WorkoutRoutine.create(context: parentContext)
+                routine.workoutPlan = container
+                draft.apply(to: routine, in: parentContext)
+            }
+        )
+        return importedTitle
+    }
+}
+
 private struct WorkoutPlanEditorHost: View {
     @StateObject private var session: WorkoutPlanEditorSession
     @State private var persistenceError: String?
@@ -230,6 +302,8 @@ struct StartWorkoutView: View {
 
     @State private var planToDelete: WorkoutRoutine?
     @State private var planEditorRoute: WorkoutPlanEditorRoute?
+    @State private var isShowingWorkoutImporter = false
+    @State private var importResult: SavedWorkoutImportResult?
     @State private var persistenceError: String?
 
     static var fetchRequest: NSFetchRequest<WorkoutPlan> {
@@ -306,11 +380,16 @@ struct StartWorkoutView: View {
             .navigationTitle("Workout")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
-                ToolbarItem(placement: .navigationBarTrailing) {
-                    Button(action: newPlan) {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        Button("New Workout", systemImage: "plus", action: newPlan)
+                        Button("Import Workout", systemImage: "square.and.arrow.down") {
+                            isShowingWorkoutImporter = true
+                        }
+                    } label: {
                         Image(systemName: "plus")
                     }
-                    .accessibilityLabel("New workout")
+                    .accessibilityLabel("Create or import workout")
                 }
             }
             .sheet(item: $planEditorRoute) { route in
@@ -342,6 +421,19 @@ struct StartWorkoutView: View {
             }
         } message: {
             Text("This removes the exercises, targets, and notes saved in this workout. Your completed workout history is not affected.")
+        }
+        .fileImporter(
+            isPresented: $isShowingWorkoutImporter,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false,
+            onCompletion: importWorkout
+        )
+        .alert(item: $importResult) { result in
+            Alert(
+                title: Text(result.alertTitle),
+                message: Text(result.message),
+                dismissButton: .default(Text("OK"))
+            )
         }
         .alert("Workout Not Saved", isPresented: Binding(
             get: { persistenceError != nil },
@@ -434,6 +526,44 @@ struct StartWorkoutView: View {
             }
         } catch {
             persistenceError = "The saved workout was not deleted. \(error.localizedDescription)"
+        }
+    }
+
+    private func importWorkout(_ selection: Result<[URL], Error>) {
+        if case .failure(let error) = selection,
+           (error as NSError).code == NSUserCancelledError {
+            return
+        }
+
+        do {
+            guard let url = try selection.get().first else { return }
+            let isSecurityScoped = url.startAccessingSecurityScopedResource()
+            defer {
+                if isSecurityScoped { url.stopAccessingSecurityScopedResource() }
+            }
+            let data = try Data(contentsOf: url)
+
+            let importedTitle = try SavedWorkoutImporter.importData(
+                data,
+                into: managedObjectContext
+            )
+            importResult = SavedWorkoutImportResult(
+                importedTitle: importedTitle,
+                error: nil
+            )
+        } catch {
+            importResult = SavedWorkoutImportResult(importedTitle: nil, error: error)
+        }
+    }
+}
+
+enum SavedWorkoutImportError: LocalizedError {
+    case unsupportedVersion(Int)
+
+    var errorDescription: String? {
+        switch self {
+        case .unsupportedVersion(let version):
+            return "This Iron workout file uses version \(version), which this build cannot import yet."
         }
     }
 }

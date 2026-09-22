@@ -1593,3 +1593,133 @@ final class SupersetDuplicationTests: XCTestCase {
         )
     }
 }
+
+final class SavedWorkoutImportPersistenceTests: XCTestCase {
+    private struct SaveFailure: Error {}
+
+    private let firstExerciseID = UUID(uuidString: "11111111-1111-1111-1111-111111111111")!
+    private let secondExerciseID = UUID(uuidString: "22222222-2222-2222-2222-222222222222")!
+    private let supersetID = UUID(uuidString: "33333333-3333-3333-3333-333333333333")!
+
+    private func savedWorkoutData() throws -> Data {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let routine = WorkoutRoutine.create(context: context)
+        routine.title = "Imported Push"
+        routine.comment = "Keep exercise order"
+
+        let firstExercise = WorkoutRoutineExercise.create(context: context)
+        firstExercise.exerciseUuid = firstExerciseID
+        firstExercise.comment = "First"
+        firstExercise.restTimerDurationValue = 90
+        firstExercise.supersetUuid = supersetID
+        let firstSet = WorkoutRoutineSet.create(context: context)
+        firstSet.minRepetitionsValue = 5
+        firstSet.maxRepetitionsValue = 8
+        firstSet.weightValue = 100
+        firstExercise.workoutRoutineSets = NSOrderedSet(array: [firstSet])
+
+        let secondExercise = WorkoutRoutineExercise.create(context: context)
+        secondExercise.exerciseUuid = secondExerciseID
+        secondExercise.comment = "Second"
+        secondExercise.restTimerDurationValue = 120
+        secondExercise.supersetUuid = supersetID
+        let secondSet = WorkoutRoutineSet.create(context: context)
+        secondSet.durationValue = 45
+        secondExercise.workoutRoutineSets = NSOrderedSet(array: [secondSet])
+        routine.workoutRoutineExercises = NSOrderedSet(array: [firstExercise, secondExercise])
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return try encoder.encode(SavedWorkoutDocument(workout: routine))
+    }
+
+    func testFailedParentSaveRemovesImportedGraphAndRetryImportsExactlyOnce() throws {
+        let data = try savedWorkoutData()
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        let existingPlan = WorkoutPlan.create(context: context)
+        existingPlan.title = "Existing"
+        try context.save()
+        existingPlan.title = "Unrelated pending edit"
+        var saveInvoked = false
+
+        XCTAssertThrowsError(try SavedWorkoutImporter.importData(
+            data,
+            into: context,
+            save: {
+                saveInvoked = true
+                throw SaveFailure()
+            }
+        ))
+
+        XCTAssertTrue(saveInvoked)
+        XCTAssertEqual(try context.count(for: WorkoutPlan.fetchRequest()), 1)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineExercise.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 0)
+        XCTAssertEqual(existingPlan.title, "Unrelated pending edit")
+        XCTAssertTrue(context.hasChanges)
+
+        // An unrelated later save must not resurrect the failed import.
+        try context.save()
+        let reader = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        reader.persistentStoreCoordinator = context.persistentStoreCoordinator
+        XCTAssertEqual(try reader.count(for: WorkoutPlan.fetchRequest()), 1)
+        XCTAssertEqual(try reader.count(for: WorkoutRoutine.fetchRequest()), 0)
+        XCTAssertEqual(try reader.count(for: WorkoutRoutineExercise.fetchRequest()), 0)
+        XCTAssertEqual(try reader.count(for: WorkoutRoutineSet.fetchRequest()), 0)
+
+        let importedTitle = try SavedWorkoutImporter.importData(data, into: context)
+
+        XCTAssertEqual(importedTitle, "Imported Push")
+        XCTAssertEqual(try context.count(for: WorkoutPlan.fetchRequest()), 2)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 1)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineExercise.fetchRequest()), 2)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 2)
+        let routine = try XCTUnwrap(context.fetch(WorkoutRoutine.fetchRequest()).first)
+        let exercises = try XCTUnwrap(routine.workoutRoutineExercises?.array as? [WorkoutRoutineExercise])
+        guard exercises.count == 2 else {
+            return XCTFail("Expected both imported exercises")
+        }
+        XCTAssertEqual(exercises.map(\.exerciseUuid), [firstExerciseID, secondExerciseID])
+        XCTAssertEqual(exercises.map(\.supersetUuid), [supersetID, supersetID])
+        XCTAssertEqual(exercises.map(\.restTimerDurationValue), [90, 120])
+        XCTAssertEqual((exercises[0].workoutRoutineSets?.firstObject as? WorkoutRoutineSet)?.weightValue, 100)
+        XCTAssertEqual((exercises[1].workoutRoutineSets?.firstObject as? WorkoutRoutineSet)?.durationValue, 45)
+        XCTAssertEqual(existingPlan.title, "Unrelated pending edit")
+    }
+
+    func testMalformedAndUnsupportedDocumentsDoNotMutateParent() throws {
+        let context = setUpInMemoryNSPersistentContainer().viewContext
+        var saveInvoked = false
+
+        XCTAssertThrowsError(try SavedWorkoutImporter.importData(
+            Data("not-json".utf8),
+            into: context,
+            save: { saveInvoked = true }
+        ))
+
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: savedWorkoutData()) as? [String: Any]
+        )
+        object["version"] = SavedWorkoutDocument.currentVersion + 1
+        let unsupportedData = try JSONSerialization.data(withJSONObject: object)
+        XCTAssertThrowsError(try SavedWorkoutImporter.importData(
+            unsupportedData,
+            into: context,
+            save: { saveInvoked = true }
+        )) { error in
+            guard let importError = error as? SavedWorkoutImportError,
+                  case .unsupportedVersion = importError else {
+                XCTFail("Expected unsupported-version error, got \(error)")
+                return
+            }
+        }
+
+        XCTAssertFalse(saveInvoked)
+        XCTAssertEqual(try context.count(for: WorkoutPlan.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineExercise.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 0)
+        XCTAssertFalse(context.hasChanges)
+    }
+}
