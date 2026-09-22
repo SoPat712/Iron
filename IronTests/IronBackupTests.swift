@@ -455,6 +455,189 @@ class IronBackupTests: XCTestCase {
         XCTAssertTrue(context.deletedObjects.isEmpty)
     }
 
+    func testRestoreRetainsCustomDefinitionReferencedByCurrentWorkout() throws {
+        let context = persistenContainer.viewContext
+        let unreferenced = try exerciseStore.createCustomExercise(
+            title: "Old unreferenced definition",
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let retained = try exerciseStore.createCustomExercise(
+            title: "Active custom exercise",
+            description: "Used by the active workout",
+            primaryMuscle: ["back"],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let currentWorkout = createTestCurrentWorkout(context: context)
+        let currentExercise = try XCTUnwrap(
+            currentWorkout.workoutExercises?.firstObject as? WorkoutExercise
+        )
+        currentExercise.exerciseUuid = retained.uuid
+        try context.save()
+        let (data, archived) = try backupWithSingleCustomExercise(title: "Archived exercise")
+
+        try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertEqual(exerciseStore.customExercises.map(\.uuid), [archived.uuid, retained.uuid])
+        XCTAssertEqual(currentExercise.exerciseUuid, retained.uuid)
+        let reloaded = ExerciseStore(customExercisesURL: customExercisesURL)
+        XCTAssertEqual(reloaded.customExercises.map(\.uuid), [archived.uuid, retained.uuid])
+        XCTAssertEqual(reloaded.find(with: retained.uuid), retained)
+        XCTAssertNil(reloaded.find(with: unreferenced.uuid))
+    }
+
+    func testRestoreDeduplicatesIdenticalCurrentCustomDefinition() throws {
+        let context = persistenContainer.viewContext
+        let retained = try exerciseStore.createCustomExercise(
+            title: "Shared active definition",
+            description: "Identical in backup",
+            primaryMuscle: ["quadriceps"],
+            secondaryMuscle: ["glutes"],
+            type: .dumbbell
+        )
+        let currentWorkout = createTestCurrentWorkout(context: context)
+        let currentExercise = try XCTUnwrap(
+            currentWorkout.workoutExercises?.firstObject as? WorkoutExercise
+        )
+        currentExercise.exerciseUuid = retained.uuid
+        try context.save()
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertEqual(exerciseStore.customExercises, [retained])
+        XCTAssertEqual(ExerciseStore(customExercisesURL: customExercisesURL).customExercises, [retained])
+    }
+
+    func testRestoreRejectsConflictingCurrentCustomDefinitionBeforeAnyWrite() throws {
+        let context = persistenContainer.viewContext
+        let retained = try exerciseStore.createCustomExercise(
+            title: "Original active definition",
+            description: "Must not change",
+            primaryMuscle: ["chest"],
+            secondaryMuscle: [],
+            type: .barbell
+        )
+        let currentWorkout = createTestCurrentWorkout(context: context)
+        let currentExercise = try XCTUnwrap(
+            currentWorkout.workoutExercises?.firstObject as? WorkoutExercise
+        )
+        currentExercise.exerciseUuid = retained.uuid
+        let oldWorkout = Workout.create(context: context)
+        oldWorkout.title = "Existing history"
+        oldWorkout.start = Date(timeIntervalSinceReferenceDate: 1_000)
+        oldWorkout.end = Date(timeIntervalSinceReferenceDate: 2_000)
+        oldWorkout.isCurrentWorkout = false
+        try context.save()
+        let originalCustomFile = try Data(contentsOf: customExercisesURL)
+        let originalMeasurements = try JSONEncoder().encode([
+            BodyMeasurementEntry(
+                date: Date(timeIntervalSince1970: 1_720_000_000),
+                values: [BodyMeasurementKind.bodyWeight.rawValue: 82.4]
+            )
+        ])
+        userDefaults.set(originalMeasurements, forKey: IronBackup.bodyMeasurementsStorageKey)
+        var data = try IronBackup.createBackupData(
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var customExercises = try XCTUnwrap(object["customExercises"] as? [[String: Any]])
+        guard customExercises.count == 1 else {
+            return XCTFail("Expected exactly one archived custom definition")
+        }
+        customExercises[0]["title"] = "Conflicting archived definition"
+        object["customExercises"] = customExercises
+        data = try JSONSerialization.data(withJSONObject: object)
+        currentWorkout.title = "Unrelated pending edit"
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )) { error in
+            guard let validationError = error as? IronBackup.RestoreValidationError,
+                  case .conflictingRetainedCustomExercise(let identifier) = validationError else {
+                XCTFail("Expected retained custom-exercise conflict, got \(error)")
+                return
+            }
+            XCTAssertEqual(identifier, retained.uuid)
+        }
+
+        XCTAssertEqual(try Data(contentsOf: customExercisesURL), originalCustomFile)
+        XCTAssertEqual(exerciseStore.customExercises, [retained])
+        XCTAssertEqual(userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey), originalMeasurements)
+        XCTAssertEqual(currentWorkout.title, "Unrelated pending edit")
+        XCTAssertFalse(oldWorkout.isDeleted)
+        XCTAssertEqual(oldWorkout.title, "Existing history")
+        XCTAssertTrue(context.hasChanges)
+        XCTAssertTrue(context.insertedObjects.isEmpty)
+        XCTAssertTrue(context.deletedObjects.isEmpty)
+    }
+
+    func testRestoreWithoutCurrentWorkoutStillReplacesOldCustomDefinitions() throws {
+        let old = try exerciseStore.createCustomExercise(
+            title: "Old unreferenced exercise",
+            description: nil,
+            primaryMuscle: ["back"],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let (data, archived) = try backupWithSingleCustomExercise(title: "Archived replacement")
+
+        try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertEqual(exerciseStore.customExercises, [archived])
+        XCTAssertNil(exerciseStore.find(with: old.uuid))
+        XCTAssertEqual(ExerciseStore(customExercisesURL: customExercisesURL).customExercises, [archived])
+    }
+
+    private func backupWithSingleCustomExercise(title: String) throws -> (Data, Exercise) {
+        let sourceContainer = setUpInMemoryNSPersistentContainer()
+        let folder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backup-custom-source-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let store = ExerciseStore(customExercisesURL: folder.appendingPathComponent("custom.json"))
+        let exercise = try store.createCustomExercise(
+            title: title,
+            description: "Archived definition",
+            primaryMuscle: ["shoulders"],
+            secondaryMuscle: [],
+            type: .dumbbell
+        )
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: sourceContainer.viewContext,
+            exerciseStore: store,
+            userDefaults: userDefaults
+        )
+        return (data, exercise)
+    }
+
     private func modifiedBackupData(
         _ mutation: (inout [String: Any]) throws -> Void
     ) throws -> Data {

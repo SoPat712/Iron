@@ -20,6 +20,7 @@ enum IronBackup {
         case invalidBodyMeasurements
         case duplicateIdentifier(UUID)
         case missingIdentifier
+        case conflictingRetainedCustomExercise(UUID)
 
         var errorDescription: String? {
             switch self {
@@ -31,6 +32,8 @@ enum IronBackup {
                 return "The backup contains the duplicate identifier \(identifier.uuidString)."
             case .missingIdentifier:
                 return "The backup contains an object without an identifier."
+            case .conflictingRetainedCustomExercise(let identifier):
+                return "The backup defines custom exercise \(identifier.uuidString) differently from the active workout."
             }
         }
     }
@@ -186,9 +189,14 @@ enum IronBackup {
         decoder.userInfo[managedObjectContextKey] = context
         let workoutDataBackup = try decoder.decode(IronBackup.self, from: data) // this already inserts the workout into the context
         try validate(workoutDataBackup)
-        try managedObjectContext.performAndWait {
+        let customExercisesToRestore = try managedObjectContext.performAndWait {
             try validateNoCollisionWithCurrentWorkout(
                 workoutDataBackup,
+                in: managedObjectContext
+            )
+            return try reconciledCustomExercises(
+                archived: workoutDataBackup.customExercises,
+                retaining: previousCustomExercises,
                 in: managedObjectContext
             )
         }
@@ -197,7 +205,7 @@ enum IronBackup {
         // failure leaves the parent untouched. The defer restores these if the
         // subsequent parent save fails.
         os_log("Restoring custom exercises", log: .backup, type: .default)
-        try exerciseStore.replaceCustomExercises(with: workoutDataBackup.customExercises)
+        try exerciseStore.replaceCustomExercises(with: customExercisesToRestore)
         changedCustomExercises = true
 
         // The child save is inside the parent's scoped undo transaction so a
@@ -292,6 +300,36 @@ enum IronBackup {
                 throw RestoreValidationError.duplicateIdentifier(collision)
             }
         }
+    }
+
+    private static func reconciledCustomExercises(
+        archived: [Exercise],
+        retaining existingCustomExercises: [Exercise],
+        in context: NSManagedObjectContext
+    ) throws -> [Exercise] {
+        let retainedWorkouts = try context.fetch(Workout.currentWorkoutFetchRequest)
+        let referencedIdentifiers = Set(retainedWorkouts.flatMap { workout in
+            (workout.workoutExercises?.array as? [WorkoutExercise] ?? [])
+                .compactMap(\.exerciseUuid)
+        })
+        let retainedDefinitions = existingCustomExercises.filter {
+            referencedIdentifiers.contains($0.uuid)
+        }
+        guard !retainedDefinitions.isEmpty else { return archived }
+
+        var archivedByIdentifier = Dictionary(uniqueKeysWithValues: archived.map { ($0.uuid, $0) })
+        var reconciled = archived
+        for retained in retainedDefinitions {
+            if let archivedDefinition = archivedByIdentifier[retained.uuid] {
+                guard archivedDefinition == retained else {
+                    throw RestoreValidationError.conflictingRetainedCustomExercise(retained.uuid)
+                }
+            } else {
+                reconciled.append(retained)
+                archivedByIdentifier[retained.uuid] = retained
+            }
+        }
+        return reconciled
     }
 
     private static func appendWorkoutIdentifiers(
