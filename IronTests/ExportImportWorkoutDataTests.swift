@@ -146,6 +146,52 @@ class ExportImportWorkoutDataTests: XCTestCase {
         XCTAssertEqual(reparsed.records[1].rpe, 7.5)
     }
 
+    func testHevyCSVSkipsNonfiniteAndOverflowingNumbersWithoutCrashing() throws {
+        let header = "title,start_time,end_time,exercise_title,set_index,weight_kg,reps,distance_km,duration_seconds,rpe"
+        let prefix = "Push,2026-08-17T08:16:00Z,2026-08-17T08:35:00Z,Bench Press,"
+        let invalidFields = [
+            "0,100,NaN,,,", "0,100,inf,,,", "0,100,1e100,,,",
+            "1e100,100,8,,,", "NaN,100,8,,,", "0,NaN,8,,,",
+            "0,100,8,1e308,,", "0,100,8,,inf,", "0,100,8,,,NaN"
+        ]
+        let rows = invalidFields.map { prefix + $0 }
+            + [prefix + "0,100,8,,60,8"]
+        let data = Data(([header] + rows).joined(separator: "\n").utf8)
+
+        let document = try HevyCSV.parse(data: data)
+
+        XCTAssertEqual(document.skippedRows, invalidFields.count)
+        XCTAssertEqual(document.records.count, 1)
+        XCTAssertEqual(document.records.first?.repetitions, 8)
+        XCTAssertEqual(document.records.first?.weightKilograms, 100)
+    }
+
+    func testHevyMeasurementImportSkipsNonfiniteAndOverflowingValues() throws {
+        let suiteName = "HevyInvalidMeasurements.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let data = Data("""
+        date,weight_kg,height_in
+        2026-08-17T08:00:00Z,NaN,
+        2026-08-18T08:00:00Z,inf,
+        2026-08-19T08:00:00Z,80,1e308
+        2026-08-20T08:00:00Z,80,70
+        """.utf8)
+
+        let result = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+
+        XCTAssertEqual(result.skippedRows, 3)
+        XCTAssertEqual(result.importedMeasurements, 1)
+        XCTAssertEqual(store.entries.first?[.bodyWeight], 80)
+        XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, store.entries)
+    }
+
     func testHevyCSVBatchPreflightsEveryFileBeforeWriting() throws {
         let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
         let exerciseTitle = exercise.title.replacingOccurrences(of: "\"", with: "\"\"")

@@ -520,10 +520,13 @@ enum HevyCSV {
             distanceMeters = nil
         }
 
-        let repetitions = Int(try parseNumber(values["reps"]) ?? 0)
-        let setIndex = try parseNumber(values["set_index"]).map(Int.init)
+        let repetitions = try parseInteger(values["reps"]) ?? 0
+        let setIndex = try parseInteger(values["set_index"])
         let duration = try parseNumber(values["duration_seconds"])
         let rpe = try parseNumber(values["rpe"])
+        guard [weightKilograms, distanceMeters].compactMap({ $0 }).allSatisfy(\.isFinite) else {
+            throw HevyCSVError.noWorkoutRows
+        }
 
         return HevyCSVRecord(
             sourceRow: sourceRow,
@@ -672,7 +675,8 @@ enum HevyCSV {
                             .converted(to: .centimeters).value
                     }
                 }
-                guard !measurementValues.isEmpty else {
+                guard !measurementValues.isEmpty,
+                      measurementValues.values.allSatisfy(\.isFinite) else {
                     skippedRows += 1
                     continue
                 }
@@ -877,8 +881,18 @@ enum HevyCSV {
 
     private static func parseNumber(_ value: String?) throws -> Double? {
         guard let value = nonempty(value) else { return nil }
-        guard let number = Double(value) else { throw HevyCSVError.noWorkoutRows }
+        guard let number = Double(value), number.isFinite else { throw HevyCSVError.noWorkoutRows }
         return number
+    }
+
+    private static func parseInteger(_ value: String?) throws -> Int? {
+        guard let number = try parseNumber(value) else { return nil }
+        // Preserve the CSV importer's truncation of fractional counts without
+        // trapping when an external file contains an out-of-range integer.
+        guard let integer = Int(exactly: number.rounded(.towardZero)) else {
+            throw HevyCSVError.noWorkoutRows
+        }
+        return integer
     }
 
     private static func parseDate(_ value: String) -> Date? {
