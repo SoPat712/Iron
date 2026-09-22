@@ -1284,6 +1284,7 @@ struct BodyMeasurementsView: View {
     @State private var progressPhotoData: Data?
     @State private var isLoadingProgressPhoto = false
     @State private var progressPhotoError: String?
+    @State private var measurementSaveFailed = false
     @State private var isEditingFields = true
 
     let initialEntryID: UUID?
@@ -1357,8 +1358,7 @@ struct BodyMeasurementsView: View {
     private func isInvalidInput(_ kind: BodyMeasurementKind) -> Bool {
         guard let raw = inputs[kind.rawValue]?.trimmingCharacters(in: .whitespacesAndNewlines),
               !raw.isEmpty else { return false }
-        guard let value = Double(raw.replacingOccurrences(of: ",", with: ".")) else { return true }
-        return value <= 0
+        return kind.validatedCanonicalValue(from: raw, weightUnit: settingsStore.weightUnit) == nil
     }
 
     private var hasInvalidInputs: Bool {
@@ -1506,12 +1506,8 @@ struct BodyMeasurementsView: View {
 
             guard let raw = inputs[kind.rawValue]?.trimmingCharacters(in: .whitespacesAndNewlines),
                   !raw.isEmpty,
-                  let displayValue = Double(raw.replacingOccurrences(of: ",", with: ".")),
-                  displayValue > 0 else { continue }
-            values[kind.rawValue] = kind.canonicalValue(
-                from: displayValue,
-                weightUnit: settingsStore.weightUnit
-            )
+                  let canonical = kind.validatedCanonicalValue(from: raw, weightUnit: settingsStore.weightUnit) else { continue }
+            values[kind.rawValue] = canonical
         }
         return values
     }
@@ -1522,8 +1518,8 @@ struct BodyMeasurementsView: View {
 
     private func save() {
         let values = parsedValues
-        guard !values.isEmpty || progressPhotoData != nil else { return }
-        store.save(
+        guard canSave else { return }
+        let saved = store.save(
             BodyMeasurementEntry(
                 id: editingEntryID ?? UUID(),
                 date: date,
@@ -1532,7 +1528,11 @@ struct BodyMeasurementsView: View {
             ),
             exportToHealth: !values.isEmpty
         )
-        dismiss()
+        if saved {
+            dismiss()
+        } else {
+            measurementSaveFailed = true
+        }
     }
 
     @MainActor
@@ -1712,6 +1712,11 @@ struct BodyMeasurementsView: View {
         }
         .toolbar(.hidden, for: .tabBar)
         .onAppear(perform: loadInitialValuesIfNeeded)
+        .alert("Measurements Not Saved", isPresented: $measurementSaveFailed) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Iron could not save these measurements. Your previous entries are unchanged. Check the values and try again.")
+        }
         .onChange(of: progressPhotoItem) { _, item in
             Task { await importProgressPhoto(item) }
         }

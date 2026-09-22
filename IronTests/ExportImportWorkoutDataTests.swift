@@ -166,6 +166,29 @@ class ExportImportWorkoutDataTests: XCTestCase {
         XCTAssertEqual(document.records.first?.weightKilograms, 100)
     }
 
+    func testMeasurementInputRejectsNonfiniteAndConvertedOverflow() {
+        for raw in ["NaN", "inf", "-1", "0", "1e309", "1e308"] {
+            XCTAssertNil(BodyMeasurementKind.height.validatedCanonicalValue(from: raw, weightUnit: .imperial))
+        }
+        XCTAssertEqual(BodyMeasurementKind.bodyWeight.validatedCanonicalValue(from: "82,5", weightUnit: .metric), 82.5)
+    }
+
+    func testInvalidMeasurementDoesNotReplacePersistedEntry() throws {
+        let suiteName = "InvalidMeasurementSave.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let original = BodyMeasurementEntry(values: [BodyMeasurementKind.bodyWeight.rawValue: 80])
+        XCTAssertTrue(store.save(original, exportToHealth: false))
+        for invalid in [Double.nan, Double.infinity, -1, 0] {
+            var edited = original
+            edited[.bodyWeight] = invalid
+            XCTAssertFalse(store.save(edited, exportToHealth: false))
+            XCTAssertEqual(store.entries, [original])
+            XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, [original])
+        }
+    }
+
     func testHevyMeasurementImportSkipsNonfiniteAndOverflowingValues() throws {
         let suiteName = "HevyInvalidMeasurements.\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))

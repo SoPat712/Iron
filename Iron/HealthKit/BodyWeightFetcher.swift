@@ -8,6 +8,7 @@
 
 import Combine
 import HealthKit
+import os.log
 
 // MARK: - Local body measurements
 
@@ -92,6 +93,13 @@ enum BodyMeasurementKind: String, Codable, CaseIterable, Identifiable {
             return weightUnit == .metric ? displayValue : Measurement(value: displayValue, unit: UnitLength.inches).converted(to: .centimeters).value
         }
     }
+
+    func validatedCanonicalValue(from input: String, weightUnit: WeightUnit) -> Double? {
+        guard let value = Double(input.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: ",", with: ".")), value.isFinite, value > 0 else { return nil }
+        let canonical = canonicalValue(from: value, weightUnit: weightUnit)
+        return canonical.isFinite && canonical > 0 ? canonical : nil
+    }
 }
 
 struct BodyMeasurementEntry: Codable, Identifiable, Equatable {
@@ -154,29 +162,30 @@ final class BodyMetricsStore: ObservableObject {
         entries.first { $0[kind] != nil }?[kind]
     }
 
-    func save(_ entry: BodyMeasurementEntry, exportToHealth: Bool = true) {
-        entries.removeAll { $0.id == entry.id }
-        entries.append(entry)
-        entries.sort { $0.date > $1.date }
-        persist()
+    @discardableResult
+    func save(_ entry: BodyMeasurementEntry, exportToHealth: Bool = true) -> Bool {
+        guard entry.date.timeIntervalSinceReferenceDate.isFinite,
+              entry.values.values.allSatisfy({ $0.isFinite && $0 > 0 }) else { return false }
+        var updated = entries.filter { $0.id != entry.id }
+        updated.append(entry)
+        updated.sort { $0.date > $1.date }
+        guard persist(updated) else { return false }
         if exportToHealth {
             HealthManager.shared.saveBodyMeasurements(entry)
         }
+        return true
     }
 
     func delete(at offsets: IndexSet) {
-        var removedEntries: [BodyMeasurementEntry] = []
-        for index in offsets.sorted().reversed() where entries.indices.contains(index) {
-            removedEntries.append(entries.remove(at: index))
-        }
-        persist()
+        let removedEntries = offsets.filter { entries.indices.contains($0) }.map { entries[$0] }
+        let removedIDs = Set(removedEntries.map(\.id))
+        guard persist(entries.filter { !removedIDs.contains($0.id) }) else { return }
         removedEntries.forEach(HealthManager.shared.deleteBodyMeasurements)
     }
 
     func delete(id: UUID) {
         let removedEntries = entries.filter { $0.id == id }
-        entries.removeAll { $0.id == id }
-        persist()
+        guard persist(entries.filter { $0.id != id }) else { return }
         removedEntries.forEach(HealthManager.shared.deleteBodyMeasurements)
     }
 
@@ -187,9 +196,16 @@ final class BodyMetricsStore: ObservableObject {
         save(BodyMeasurementEntry(date: date, values: dictionary), exportToHealth: false)
     }
 
-    private func persist() {
-        guard let data = try? JSONEncoder().encode(entries) else { return }
-        userDefaults.set(data, forKey: storageKey)
+    private func persist(_ updated: [BodyMeasurementEntry]) -> Bool {
+        do {
+            let data = try JSONEncoder().encode(updated)
+            userDefaults.set(data, forKey: storageKey)
+            entries = updated
+            return true
+        } catch {
+            os_log("Could not encode body measurements: %@", log: .health, type: .error, error.localizedDescription)
+            return false
+        }
     }
 }
 
