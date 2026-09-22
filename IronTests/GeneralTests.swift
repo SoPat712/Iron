@@ -474,3 +474,98 @@ final class HealthReplacementCoordinatorTests: XCTestCase {
         ))
     }
 }
+
+final class HealthMutationCoordinatorTests: XCTestCase {
+    func testSecondQueryWaitsForFirstCleanup() throws {
+        let coordinator = HealthManager.MutationCoordinator()
+        var operations: [String] = []
+        var finishFirst: (() -> Void)?
+
+        coordinator.enqueue { finish in
+            operations.append("first query")
+            operations.append("first save")
+            finishFirst = {
+                operations.append("first cleanup")
+                finish()
+            }
+        }
+        coordinator.enqueue { finish in
+            operations.append("second query")
+            finish()
+        }
+
+        XCTAssertEqual(operations, ["first query", "first save"])
+        try XCTUnwrap(finishFirst)()
+        XCTAssertEqual(
+            operations,
+            ["first query", "first save", "first cleanup", "second query"]
+        )
+    }
+
+    func testQueuedSaveThenDeleteEndsDeleted() throws {
+        let coordinator = HealthManager.MutationCoordinator()
+        var sampleExists = false
+        var finishSave: (() -> Void)?
+
+        coordinator.enqueue { finish in
+            sampleExists = true
+            finishSave = finish
+        }
+        coordinator.enqueue { finish in
+            XCTAssertTrue(sampleExists)
+            sampleExists = false
+            finish()
+        }
+
+        XCTAssertTrue(sampleExists)
+        try XCTUnwrap(finishSave)()
+        XCTAssertFalse(sampleExists)
+    }
+
+    func testFailedJobReleasesNextMutation() throws {
+        let coordinator = HealthManager.MutationCoordinator()
+        var operations: [String] = []
+        var failFirst: (() -> Void)?
+
+        coordinator.enqueue { finish in
+            operations.append("first failed")
+            failFirst = finish
+        }
+        coordinator.enqueue { finish in
+            operations.append("second started")
+            finish()
+        }
+
+        XCTAssertEqual(operations, ["first failed"])
+        try XCTUnwrap(failFirst)()
+        XCTAssertEqual(operations, ["first failed", "second started"])
+    }
+
+    func testDuplicateFinishCannotAdvanceQueueTwice() throws {
+        let coordinator = HealthManager.MutationCoordinator()
+        var operations: [String] = []
+        var finishFirst: (() -> Void)?
+        var finishSecond: (() -> Void)?
+
+        coordinator.enqueue { finish in
+            operations.append("first")
+            finishFirst = finish
+        }
+        coordinator.enqueue { finish in
+            operations.append("second")
+            finishSecond = finish
+        }
+        coordinator.enqueue { finish in
+            operations.append("third")
+            finish()
+        }
+
+        let firstCompletion = try XCTUnwrap(finishFirst)
+        firstCompletion()
+        firstCompletion()
+        XCTAssertEqual(operations, ["first", "second"])
+
+        try XCTUnwrap(finishSecond)()
+        XCTAssertEqual(operations, ["first", "second", "third"])
+    }
+}

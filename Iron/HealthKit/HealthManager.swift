@@ -13,8 +13,54 @@ import os.log
 
 class HealthManager {
     static let shared = HealthManager()
+
+    final class MutationCoordinator {
+        typealias Mutation = (@escaping () -> Void) -> Void
+
+        private let lock = NSLock()
+        private var pending: [Mutation] = []
+        private var isRunning = false
+
+        func enqueue(_ mutation: @escaping Mutation) {
+            lock.lock()
+            pending.append(mutation)
+            let next = takeNextIfIdleLocked()
+            lock.unlock()
+            if let next { run(next) }
+        }
+
+        private func takeNextIfIdleLocked() -> Mutation? {
+            guard !isRunning, !pending.isEmpty else { return nil }
+            isRunning = true
+            return pending.removeFirst()
+        }
+
+        private func run(_ mutation: @escaping Mutation) {
+            let finishLock = NSLock()
+            var didFinish = false
+            mutation { [weak self] in
+                finishLock.lock()
+                guard !didFinish else {
+                    finishLock.unlock()
+                    return
+                }
+                didFinish = true
+                finishLock.unlock()
+                self?.mutationFinished()
+            }
+        }
+
+        private func mutationFinished() {
+            lock.lock()
+            isRunning = false
+            let next = takeNextIfIdleLocked()
+            lock.unlock()
+            if let next { run(next) }
+        }
+    }
     
     let healthStore: HKHealthStore
+    private let mutationCoordinator = MutationCoordinator()
     
     private init() {
         self.healthStore = HKHealthStore()
@@ -259,16 +305,47 @@ extension HealthManager {
         exerciseStore: ExerciseStore,
         completion: @escaping (Result<WorkoutSyncOutcome, Error>) -> Void
     ) {
+        let context = workout.managedObjectContext
+        let workoutID = workout.objectID
+        mutationCoordinator.enqueue { finish in
+            guard let context else {
+                finish()
+                DispatchQueue.main.async {
+                    completion(.failure(WorkoutSyncError.missingWorkoutData))
+                }
+                return
+            }
+            self.performSyncWorkoutIfNeeded(
+                workoutID: workoutID,
+                context: context,
+                exerciseStore: exerciseStore
+            ) { result in
+                finish()
+                DispatchQueue.main.async { completion(result) }
+            }
+        }
+    }
+
+    private func performSyncWorkoutIfNeeded(
+        workoutID: NSManagedObjectID,
+        context: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        completion: @escaping (Result<WorkoutSyncOutcome, Error>) -> Void
+    ) {
         requestShareWorkoutPermission { authorization in
             guard case .success = authorization else {
                 if case .failure(let error) = authorization {
-                    DispatchQueue.main.async { completion(.failure(error)) }
+                    completion(.failure(error))
                 }
                 return
             }
 
-            DispatchQueue.main.async {
-                guard let uuid = workout.uuid,
+            context.perform {
+                guard !workoutID.isTemporaryID,
+                      let workout = (try? context.existingObject(with: workoutID)) as? Workout,
+                      !workout.isDeleted,
+                      !workout.isCurrentWorkout,
+                      let uuid = workout.uuid,
                       let start = workout.start,
                       let end = workout.end,
                       let duration = workout.duration,
@@ -297,7 +374,7 @@ extension HealthManager {
                     sortDescriptors: nil
                 ) { _, samples, error in
                     if let error {
-                        DispatchQueue.main.async { completion(.failure(error)) }
+                        completion(.failure(error))
                         return
                     }
 
@@ -310,7 +387,7 @@ extension HealthManager {
                             duration: duration,
                             title: workoutTitle
                        ) {
-                        DispatchQueue.main.async { completion(.success(.alreadyPresent)) }
+                        completion(.success(.alreadyPresent))
                         return
                     }
 
@@ -350,9 +427,7 @@ extension HealthManager {
                             }
                         },
                         completion: { result in
-                            DispatchQueue.main.async {
-                                completion(result.map { outcome })
-                            }
+                            completion(result.map { outcome })
                         }
                     )
                 }
@@ -390,6 +465,12 @@ extension HealthManager {
     /// Value-only deletion entry point for callers that have already durably
     /// removed the Core Data workout.
     func deleteWorkout(uuid: UUID) {
+        mutationCoordinator.enqueue { finish in
+            self.performDeleteWorkout(uuid: uuid, completion: finish)
+        }
+    }
+
+    private func performDeleteWorkout(uuid: UUID, completion: @escaping () -> Void) {
         let uuidPredicate = HKQuery.predicateForObjects(withMetadataKey: HKMetadataKeyExternalUUID, allowedValues: [uuid.uuidString])
         let sourcePredicate = HKQuery.predicateForObjects(from: .default())
         let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [uuidPredicate, sourcePredicate])
@@ -402,20 +483,24 @@ extension HealthManager {
             sortDescriptors: nil) { (query, samples, error) in
                 if let error = error {
                     os_log("Could not query HealthKit workout with uuid=%@: %@", log: .health, type: .fault, uuid as NSUUID, error.localizedDescription)
+                    completion()
                     return
                 }
                 let workoutSamples = (samples as? [HKWorkout]) ?? []
                 guard !workoutSamples.isEmpty else {
                     os_log("No HealthKit workout with uuid=%@", log: .health, type: .fault, uuid as NSUUID)
+                    completion()
                     return
                 }
                 
                 self.healthStore.delete(workoutSamples) { success, error in
                     guard success else {
                         os_log("Could not delete HealthKit workout with uuid=%@: %@", log: .health, type: .fault, uuid as NSUUID, error?.localizedDescription ?? "nil")
+                        completion()
                         return
                     }
                     os_log("Successfully deleted HealthKit workout with uuid=%@", log: .health, type: .info, uuid as NSUUID)
+                    completion()
                 }
         }
         healthStore.execute(query)
@@ -446,11 +531,26 @@ extension HealthManager {
         _ entry: BodyMeasurementEntry,
         shouldSaveCurrentValues: Bool
     ) {
+        mutationCoordinator.enqueue { finish in
+            self.performReconcileBodyMeasurements(
+                entry,
+                shouldSaveCurrentValues: shouldSaveCurrentValues,
+                completion: finish
+            )
+        }
+    }
+
+    private func performReconcileBodyMeasurements(
+        _ entry: BodyMeasurementEntry,
+        shouldSaveCurrentValues: Bool,
+        completion: @escaping () -> Void
+    ) {
         requestBodyMeasurementPermission { authorization in
             guard case .success = authorization else {
                 if case .failure(let error) = authorization {
                     os_log("Could not authorize body measurement sync: %@", log: .health, type: .error, error.localizedDescription)
                 }
+                completion()
                 return
             }
 
@@ -542,6 +642,7 @@ extension HealthManager {
                         type: .error,
                         capturedError?.localizedDescription ?? "unknown error"
                     )
+                    completion()
                     return
                 }
 
@@ -588,6 +689,7 @@ extension HealthManager {
                             type: .info
                         )
                     }
+                    completion()
                 }
             }
         }
@@ -690,6 +792,22 @@ extension HealthManager {
     }
     
     func updateHealthWorkouts(managedObjectContext: NSManagedObjectContext, exerciseStore: ExerciseStore, completion: @escaping (Result<WorkoutUpdates, Error>) -> Void) {
+        mutationCoordinator.enqueue { finish in
+            self.performUpdateHealthWorkouts(
+                managedObjectContext: managedObjectContext,
+                exerciseStore: exerciseStore
+            ) { result in
+                completion(result)
+                finish()
+            }
+        }
+    }
+
+    private func performUpdateHealthWorkouts(
+        managedObjectContext: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        completion: @escaping (Result<WorkoutUpdates, Error>) -> Void
+    ) {
         os_log("Updating HealthKit workouts", log: .health, type: .default)
         
         self.requestShareWorkoutPermission { authorization in
@@ -862,20 +980,21 @@ extension HealthManager {
                                 }
                                 let modifiedCount = workoutReplacementPlans.count
                                 
-                                group.wait()
-                                resultLock.lock()
-                                let succeeded = _success
-                                let recordedError = _error
-                                resultLock.unlock()
-                                if succeeded {
-                                    os_log("Successfully updated HealthKit workouts", log: .health, type: .default)
-                                    completion(.success((WorkoutUpdates(created: createdCount, deleted: deletedCount, modified: modifiedCount))))
-                                } else if let error = recordedError {
-                                    os_log("Could not update HealthKit workouts: %@", log: .health, type: .error, error.localizedDescription)
-                                    completion(.failure(error))
-                                } else {
-                                    os_log("Could not update HealthKit workouts", log: .health, type: .error)
-                                    completion(.failure(UpdateError.noSuccess))
+                                group.notify(queue: .global(qos: .background)) {
+                                    resultLock.lock()
+                                    let succeeded = _success
+                                    let recordedError = _error
+                                    resultLock.unlock()
+                                    if succeeded {
+                                        os_log("Successfully updated HealthKit workouts", log: .health, type: .default)
+                                        completion(.success((WorkoutUpdates(created: createdCount, deleted: deletedCount, modified: modifiedCount))))
+                                    } else if let error = recordedError {
+                                        os_log("Could not update HealthKit workouts: %@", log: .health, type: .error, error.localizedDescription)
+                                        completion(.failure(error))
+                                    } else {
+                                        os_log("Could not update HealthKit workouts", log: .health, type: .error)
+                                        completion(.failure(UpdateError.noSuccess))
+                                    }
                                 }
                             } catch {
                                 os_log("Could not update HealthKit workouts: %@", log: .health, type: .error, error.localizedDescription)
