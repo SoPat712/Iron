@@ -16,6 +16,7 @@ class NotificationManager: NSObject {
         label: "com.iron.notifications.operations",
         qos: .utility
     )
+    private var restTimerNotificationGeneration: UInt = 0
     
     init(notificationCenter: UNUserNotificationCenter) {
         self.notificationCenter = notificationCenter
@@ -46,8 +47,12 @@ class NotificationManager: NSObject {
     
     func removePendingNotificationRequests(withIdentifiers: [NotificationIdentifier]) {
         let identifiers = withIdentifiers.map { $0.rawValue }
-        notificationOperationQueue.async { [notificationCenter] in
-            notificationCenter.removePendingNotificationRequests(withIdentifiers: identifiers)
+        notificationOperationQueue.async { [weak self] in
+            guard let self else { return }
+            if withIdentifiers.contains(.restTimerUp) {
+                self.restTimerNotificationGeneration &+= 1
+            }
+            self.notificationCenter.removePendingNotificationRequests(withIdentifiers: identifiers)
         }
     }
     
@@ -87,39 +92,73 @@ class NotificationManager: NSObject {
         }
     }
     
-    func updateRestTimerUpNotificationRequest(remainingTime: TimeInterval?, totalTime: TimeInterval? = nil) {
-        notificationCenter.getNotificationSettings { settings in
-            guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else { return }
-            
-            guard let remainingTime = remainingTime, remainingTime > 0 else {
-                self.removePendingNotificationRequests(withIdentifiers: [.restTimerUp])
-                return
-            }
-            
-            let content = UNMutableNotificationContent()
-            content.title = "You've rested enough!"
-            if let totalTime = totalTime, let totalTimeString = restTimerDurationFormatter.string(from: totalTime) {
-                content.title += " (\(totalTimeString))"
-            }
-            content.body = "Back to work 💪"
-            if settings.soundSetting == .enabled {
-                content.sound = UNNotificationSound.default
-            }
-            content.categoryIdentifier = NotificationCategoryIdentifier.restTimerUp.rawValue
-            if #available(iOS 15.0, *) {
-                content.interruptionLevel = .timeSensitive
-            }
-            
-            let trigger = UNTimeIntervalNotificationTrigger(timeInterval: remainingTime, repeats: false)
-            
-            let request = UNNotificationRequest(identifier: NotificationIdentifier.restTimerUp.rawValue, content: content, trigger: trigger)
-            
-            self.notificationCenter.add(request) { (error) in
-                if let error = error {
-                    print("error \(String(describing: error))")
+    /// Atomically replaces the rest timer alert. A generation check prevents a
+    /// slow settings callback from resurrecting a request cancelled meanwhile.
+    func updateRestTimerUpNotificationRequest(
+        deadline: Date?,
+        totalTime: TimeInterval? = nil,
+        playsSound: Bool
+    ) {
+        notificationOperationQueue.async { [weak self] in
+            guard let self else { return }
+            self.restTimerNotificationGeneration &+= 1
+            let generation = self.restTimerNotificationGeneration
+            self.notificationCenter.removePendingNotificationRequests(
+                withIdentifiers: [NotificationIdentifier.restTimerUp.rawValue]
+            )
+
+            guard let deadline else { return }
+            self.notificationCenter.getNotificationSettings { [weak self] settings in
+                guard let self else { return }
+                self.notificationOperationQueue.async {
+                    guard generation == self.restTimerNotificationGeneration,
+                          [.authorized, .provisional].contains(settings.authorizationStatus) else { return }
+
+                    let remainingTime = deadline.timeIntervalSinceNow
+                    guard remainingTime > 0 else { return }
+
+                    let content = UNMutableNotificationContent()
+                    content.title = "You've rested enough!"
+                    if let totalTime,
+                       let totalTimeString = restTimerDurationFormatter.string(from: totalTime) {
+                        content.title += " (\(totalTimeString))"
+                    }
+                    content.body = "Back to work 💪"
+                    if Self.shouldPlayRestTimerSound(
+                        appSoundsEnabled: playsSound,
+                        systemSoundSetting: settings.soundSetting
+                    ) {
+                        content.sound = UNNotificationSound.default
+                    }
+                    content.categoryIdentifier = NotificationCategoryIdentifier.restTimerUp.rawValue
+                    if #available(iOS 15.0, *) {
+                        content.interruptionLevel = .timeSensitive
+                    }
+
+                    let trigger = UNTimeIntervalNotificationTrigger(
+                        timeInterval: remainingTime,
+                        repeats: false
+                    )
+                    let request = UNNotificationRequest(
+                        identifier: NotificationIdentifier.restTimerUp.rawValue,
+                        content: content,
+                        trigger: trigger
+                    )
+                    self.notificationCenter.add(request) { error in
+                        if let error {
+                            print("error \(String(describing: error))")
+                        }
+                    }
                 }
             }
         }
+    }
+
+    static func shouldPlayRestTimerSound(
+        appSoundsEnabled: Bool,
+        systemSoundSetting: UNNotificationSetting
+    ) -> Bool {
+        appSoundsEnabled && systemSoundSetting == .enabled
     }
     
     func requestStartedWorkoutFromBackgroundNotification() {
@@ -163,23 +202,38 @@ class NotificationManager: NSObject {
 
 extension NotificationManager: UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .list, .sound])
+        if notification.request.content.categoryIdentifier == NotificationCategoryIdentifier.restTimerUp.rawValue {
+            // RestTimerStore owns the foreground chime and haptic.
+            completionHandler([.banner, .list])
+        } else {
+            completionHandler([.banner, .list, .sound])
+        }
     }
     
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse, withCompletionHandler completionHandler: @escaping () -> Void) {
-        defer { completionHandler() }
-        
-        guard let duration = RestTimerStore.shared.restTimerDuration else { return}
-        
-        guard let actionIdentifier = NotificationActionIdentifier(rawValue: response.actionIdentifier) else { return }
-        
+        guard response.notification.request.content.categoryIdentifier == NotificationCategoryIdentifier.restTimerUp.rawValue,
+              let actionIdentifier = NotificationActionIdentifier(rawValue: response.actionIdentifier) else {
+            completionHandler()
+            return
+        }
+
+        let interval: TimeInterval
         switch actionIdentifier {
-        case .restTimerAdd30:
-            RestTimerStore.shared.restTimerDuration = duration + 30
-        case .restTimerAdd60:
-            RestTimerStore.shared.restTimerDuration = duration + 60
-        case .restTimerAdd90:
-            RestTimerStore.shared.restTimerDuration = duration + 90
+        case .restTimerAdd30: interval = 30
+        case .restTimerAdd60: interval = 60
+        case .restTimerAdd90: interval = 90
+        }
+
+        DispatchQueue.main.async {
+            guard RestTimerStore.shared.restTimerDuration != nil else {
+                completionHandler()
+                return
+            }
+            RestTimerStore.shared.adjust(by: interval)
+            if #available(iOS 16.1, *) {
+                WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
+            }
+            completionHandler()
         }
     }
 }

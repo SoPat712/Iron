@@ -11,7 +11,6 @@ import Combine
 import UIKit
 import AudioToolbox
 
-// to be used in other places
 let restTimerDurationFormatter: DateComponentsFormatter = {
     let formatter = DateComponentsFormatter()
     formatter.unitsStyle = .positional
@@ -25,103 +24,167 @@ let restTimerCustomTimes: [TimeInterval] = {
 }()
 
 final class RestTimerStore: ObservableObject {
-    static let shared = RestTimerStore() // singleton
+    static let shared = RestTimerStore(userDefaults: .standard)
+
+    typealias ExpiryCancellation = () -> Void
+    typealias ExpiryScheduler = (_ deadline: Date, _ handler: @escaping () -> Void) -> ExpiryCancellation
 
     let objectWillChange = ObservableObjectPublisher()
-    
-    private var userDefaults: UserDefaults
-    private var isApplyingWatchUpdate = false
-    private var expiryWorkItem: DispatchWorkItem?
-    
-    private init(userDefaults: UserDefaults) {
+
+    private let userDefaults: UserDefaults
+    private let now: () -> Date
+    private let keepRunning: () -> Bool
+    private let notificationUpdater: (_ deadline: Date?, _ totalTime: TimeInterval?) -> Void
+    private let watchUpdater: (_ end: Date?) -> Void
+    private let expiryScheduler: ExpiryScheduler
+    private let expiryAnnouncement: (() -> Void)?
+    private let isAppActive: () -> Bool
+    private var cancelScheduledExpiry: ExpiryCancellation?
+    private var expiryGeneration: UInt = 0
+
+    init(
+        userDefaults: UserDefaults,
+        now: @escaping () -> Date = Date.init,
+        keepRunning: @escaping () -> Bool = { SettingsStore.shared.keepRestTimerRunning },
+        notificationUpdater: @escaping (Date?, TimeInterval?) -> Void = { deadline, totalTime in
+            NotificationManager.shared.updateRestTimerUpNotificationRequest(
+                deadline: deadline,
+                totalTime: totalTime,
+                playsSound: SettingsStore.shared.workoutSounds
+            )
+        },
+        watchUpdater: @escaping (Date?) -> Void = { end in
+            guard let uuid = WatchConnectionManager.shared.currentWatchWorkoutUuid else { return }
+            WatchConnectionManager.shared.updateWatchWorkoutRestTimer(
+                end: end,
+                keepRunning: SettingsStore.shared.keepRestTimerRunning,
+                uuid: uuid
+            )
+        },
+        expiryScheduler: @escaping ExpiryScheduler = { deadline, handler in
+            let workItem = DispatchWorkItem(block: handler)
+            DispatchQueue.main.asyncAfter(
+                deadline: .now() + max(deadline.timeIntervalSinceNow, 0),
+                execute: workItem
+            )
+            return { workItem.cancel() }
+        },
+        expiryAnnouncement: (() -> Void)? = nil,
+        isAppActive: @escaping () -> Bool = { UIApplication.shared.applicationState == .active }
+    ) {
         self.userDefaults = userDefaults
+        self.now = now
+        self.keepRunning = keepRunning
+        self.notificationUpdater = notificationUpdater
+        self.watchUpdater = watchUpdater
+        self.expiryScheduler = expiryScheduler
+        self.expiryAnnouncement = expiryAnnouncement
+        self.isAppActive = isAppActive
+        restorePersistedExpiry()
     }
-    
-    private convenience init() {
-        self.init(userDefaults: UserDefaults.standard)
-    }
-    
+
     var restTimerStart: Date? {
-        get {
-            userDefaults.restTimerStart
-        }
+        get { userDefaults.restTimerStart }
         set {
-            self.objectWillChange.send()
-            userDefaults.restTimerStart = newValue
-            updateNotification()
-            updateWatch()
-            scheduleExpiryAnnouncement()
+            transition(
+                start: newValue,
+                duration: restTimerDuration,
+                pausedRemaining: newValue == nil ? userDefaults.restTimerPausedRemaining : nil
+            )
         }
     }
-    
+
     var restTimerDuration: TimeInterval? {
-        get {
-            userDefaults.restTimerDuration
-        }
+        get { userDefaults.restTimerDuration }
         set {
-            self.objectWillChange.send()
-            userDefaults.restTimerDuration = newValue
-            updateNotification()
-            updateWatch()
-            scheduleExpiryAnnouncement()
+            let duration = Self.validDuration(newValue)
+            transition(
+                start: duration == nil ? nil : restTimerStart,
+                duration: duration,
+                pausedRemaining: duration == nil ? nil : userDefaults.restTimerPausedRemaining
+            )
         }
     }
-    
+
     var recentRestTimes: [TimeInterval] {
-        get {
-            userDefaults.recentRestTimes
-        }
+        get { userDefaults.recentRestTimes }
         set {
-            self.objectWillChange.send()
+            objectWillChange.send()
             userDefaults.recentRestTimes = newValue
         }
     }
 
-    /// True when the rest countdown is intentionally frozen by the user.
-    var isPaused: Bool {
-        userDefaults.restTimerPausedRemaining != nil
-    }
-    
-    func notifyKeepRestTimerRunningChanged() { // TODO in future somehow subscribe to SettingsStore.shared.keepRestTimerRunning changes
-        self.objectWillChange.send()
+    var isPaused: Bool { userDefaults.restTimerPausedRemaining != nil }
+
+    func notifyKeepRestTimerRunningChanged() {
+        objectWillChange.send()
         updateWatch()
     }
-    
-    private func updateNotification() {
-        NotificationManager.shared.updateRestTimerUpNotificationRequest(remainingTime: self.restTimerRemainingTime, totalTime: self.restTimerDuration)
+
+    private static func validDuration(_ duration: TimeInterval?) -> TimeInterval? {
+        guard let duration, duration.isFinite, duration > 0 else { return nil }
+        return duration
     }
-    
+
+    /// Persist a complete snapshot before publishing any timer effects.
+    private func transition(
+        start: Date?,
+        duration: TimeInterval?,
+        pausedRemaining: TimeInterval?,
+        updateWatch shouldUpdateWatch: Bool = true
+    ) {
+        let duration = Self.validDuration(duration)
+        let pausedRemaining = Self.validDuration(pausedRemaining)
+        let start = duration == nil || pausedRemaining != nil ? nil : start
+
+        expiryGeneration &+= 1
+        cancelScheduledExpiry?()
+        cancelScheduledExpiry = nil
+
+        userDefaults.restTimerStart = start
+        userDefaults.restTimerDuration = duration
+        userDefaults.restTimerPausedRemaining = pausedRemaining
+        objectWillChange.send()
+
+        let deadline = start.flatMap { start in
+            duration.map { start.addingTimeInterval($0) }
+        }
+        notificationUpdater(deadline, duration)
+        if shouldUpdateWatch { updateWatch() }
+        scheduleExpiryAnnouncement(deadline: deadline)
+    }
+
     private func updateWatch() {
-        guard !isApplyingWatchUpdate else { return }
-        if let uuid = WatchConnectionManager.shared.currentWatchWorkoutUuid {
-            WatchConnectionManager.shared.updateWatchWorkoutRestTimer(end: restTimerEnd, keepRunning: SettingsStore.shared.keepRestTimerRunning, uuid: uuid)
+        watchUpdater(restTimerEnd)
+    }
+
+    private func scheduleExpiryAnnouncement(deadline: Date?) {
+        guard let deadline, deadline.timeIntervalSince(now()) > 0.05 else { return }
+        let generation = expiryGeneration
+        cancelScheduledExpiry = expiryScheduler(deadline) { [weak self] in
+            guard let self, self.expiryGeneration == generation else { return }
+            self.cancelScheduledExpiry = nil
+            self.announceExpiry()
         }
     }
 
-    /// Local chime when rest ends, even if the app is open and a notification
-    /// would be silent or cancelled by overtime.
-    private func scheduleExpiryAnnouncement() {
-        expiryWorkItem?.cancel()
-        expiryWorkItem = nil
-        guard let remaining = restTimerRemainingTime, remaining > 0.05 else { return }
-        let work = DispatchWorkItem { [weak self] in
-            self?.announceExpiry()
-        }
-        expiryWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + remaining, execute: work)
+    private func restorePersistedExpiry() {
+        guard userDefaults.restTimerPausedRemaining == nil else { return }
+        scheduleExpiryAnnouncement(deadline: restTimerEnd)
     }
 
     private func announceExpiry() {
-        // The work item is cancelled on skip/adjust, so reaching here means
-        // rest actually ended. Do not re-check remaining — overtime and the
-        // keep-running preference both make remaining nil or negative.
-        if SettingsStore.shared.workoutHaptics {
-            let feedback = UINotificationFeedbackGenerator()
-            feedback.prepare()
-            feedback.notificationOccurred(.warning)
-        }
-        if SettingsStore.shared.workoutSounds {
-            AudioServicesPlayAlertSound(1005)
+        if let expiryAnnouncement {
+            expiryAnnouncement()
+        } else if isAppActive() {
+            if SettingsStore.shared.workoutHaptics {
+                let feedback = UINotificationFeedbackGenerator()
+                feedback.prepare()
+                feedback.notificationOccurred(.warning)
+            }
+            if SettingsStore.shared.workoutSounds {
+                AudioServicesPlayAlertSound(1005)
+            }
         }
         objectWillChange.send()
     }
@@ -132,113 +195,106 @@ extension RestTimerStore {
         guard let duration = restTimerDuration else { return nil }
         return restTimerStart?.addingTimeInterval(duration)
     }
-    
+
     var restTimerRemainingTime: TimeInterval? {
-        if let paused = userDefaults.restTimerPausedRemaining {
-            return paused
-        }
-        guard let restTimerEnd = restTimerEnd else { return nil }
-        let remainingTime = restTimerEnd.timeIntervalSince(Date())
-        guard remainingTime >= 0 || SettingsStore.shared.keepRestTimerRunning else { return nil }
+        if let paused = userDefaults.restTimerPausedRemaining { return paused }
+        guard let restTimerEnd else { return nil }
+        let remainingTime = restTimerEnd.timeIntervalSince(now())
+        guard remainingTime >= 0 || keepRunning() else { return nil }
         return max(remainingTime, 0)
     }
 }
 
 extension RestTimerStore {
-    /// Starts a fresh countdown and clears any paused snapshot.
     func start(duration: TimeInterval) {
-        userDefaults.restTimerPausedRemaining = nil
-        restTimerStart = Date()
-        restTimerDuration = max(duration, 1)
-    }
-
-    /// Sets the remaining duration directly from the radial dial. A running
-    /// timer restarts from the selected value; a paused timer stays paused.
-    func setRemaining(_ remaining: TimeInterval) {
-        let adjusted = max(remaining, 1)
-        expiryWorkItem?.cancel()
-
-        if isPaused {
-            userDefaults.restTimerPausedRemaining = adjusted
-            userDefaults.restTimerStart = nil
-        } else {
-            userDefaults.restTimerPausedRemaining = nil
-            userDefaults.restTimerStart = Date()
-        }
-        userDefaults.restTimerDuration = adjusted
-
-        objectWillChange.send()
-        updateNotification()
-        updateWatch()
-        scheduleExpiryAnnouncement()
-    }
-
-    /// Freezes the countdown at its current value without discarding the
-    /// configured duration, so the dial can resume at the same notch.
-    func pause() {
-        guard !isPaused, let remaining = restTimerRemainingTime, remaining > 0 else { return }
-        userDefaults.restTimerPausedRemaining = remaining
-        restTimerStart = nil
-        objectWillChange.send()
-        updateNotification()
-        updateWatch()
-    }
-
-    /// Resumes a paused countdown from its captured remaining value.
-    func resume() {
-        guard let remaining = userDefaults.restTimerPausedRemaining else { return }
-        userDefaults.restTimerPausedRemaining = nil
-        restTimerStart = Date()
-        restTimerDuration = max(restTimerDuration ?? remaining, remaining)
-    }
-
-    func adjust(by interval: TimeInterval) {
-        if let paused = userDefaults.restTimerPausedRemaining {
-            let adjusted = paused + interval
-            guard adjusted > 0 else {
-                announceExpiry()
-                cancel()
-                return
-            }
-            userDefaults.restTimerPausedRemaining = adjusted
-            objectWillChange.send()
-            updateNotification()
-            updateWatch()
-            return
-        }
-        guard let start = restTimerStart, let end = restTimerEnd else { return }
-        let adjustedEnd = end.addingTimeInterval(interval)
-        guard adjustedEnd > Date() else {
-            announceExpiry()
+        guard let duration = Self.validDuration(duration) else {
             cancel()
             return
         }
-        restTimerDuration = max(adjustedEnd.timeIntervalSince(start), 1)
+        transition(start: now(), duration: duration, pausedRemaining: nil)
     }
 
-    /// Applies a timer created on Apple Watch without echoing the same change
-    /// back across WatchConnectivity.
-    func applyWatchUpdate(end: Date?) {
-        isApplyingWatchUpdate = true
-        defer { isApplyingWatchUpdate = false }
-        guard let end = end else {
-            userDefaults.restTimerPausedRemaining = nil
-            restTimerStart = nil
-            restTimerDuration = nil
+    func setRemaining(_ remaining: TimeInterval) {
+        guard let remaining = Self.validDuration(remaining) else {
+            cancel()
             return
         }
-        userDefaults.restTimerPausedRemaining = nil
-        let now = Date()
-        let duration = max(end.timeIntervalSince(now), 1)
-        restTimerStart = end.addingTimeInterval(-duration)
-        restTimerDuration = duration
+        if isPaused {
+            transition(start: nil, duration: remaining, pausedRemaining: remaining)
+        } else {
+            transition(start: now(), duration: remaining, pausedRemaining: nil)
+        }
+    }
+
+    func pause() {
+        guard !isPaused, let remaining = restTimerRemainingTime, remaining > 0 else { return }
+        transition(start: nil, duration: restTimerDuration, pausedRemaining: remaining)
+    }
+
+    func resume() {
+        guard let remaining = userDefaults.restTimerPausedRemaining else { return }
+        let total = max(restTimerDuration ?? remaining, remaining)
+        let resumedAt = now().addingTimeInterval(-(total - remaining))
+        transition(start: resumedAt, duration: total, pausedRemaining: nil)
+    }
+
+    func adjust(by interval: TimeInterval) {
+        guard interval.isFinite else { return }
+
+        if let paused = userDefaults.restTimerPausedRemaining {
+            let adjusted = paused + interval
+            guard adjusted.isFinite, adjusted > 0 else {
+                cancel()
+                announceExpiry()
+                return
+            }
+            let total = max((restTimerDuration ?? paused) + interval, adjusted)
+            transition(start: nil, duration: total, pausedRemaining: adjusted)
+            return
+        }
+
+        guard let end = restTimerEnd else { return }
+
+        let currentTime = now()
+        if end <= currentTime {
+            guard interval > 0 else {
+                cancel()
+                announceExpiry()
+                return
+            }
+            transition(start: currentTime, duration: interval, pausedRemaining: nil)
+            return
+        }
+
+        guard let duration = restTimerDuration,
+              let adjustedDuration = Self.validDuration(duration + interval),
+              end.addingTimeInterval(interval) > currentTime else {
+            cancel()
+            announceExpiry()
+            return
+        }
+        transition(start: restTimerStart, duration: adjustedDuration, pausedRemaining: nil)
+    }
+
+    func applyWatchUpdate(end: Date?) {
+        guard let end else {
+            transition(start: nil, duration: nil, pausedRemaining: nil, updateWatch: false)
+            return
+        }
+        let duration = end.timeIntervalSince(now())
+        guard let duration = Self.validDuration(duration) else {
+            transition(start: nil, duration: nil, pausedRemaining: nil, updateWatch: false)
+            return
+        }
+        transition(
+            start: end.addingTimeInterval(-duration),
+            duration: duration,
+            pausedRemaining: nil,
+            updateWatch: false
+        )
     }
 
     func cancel() {
-        expiryWorkItem?.cancel()
-        expiryWorkItem = nil
-        userDefaults.restTimerPausedRemaining = nil
-        restTimerStart = nil
-        restTimerDuration = nil
+        transition(start: nil, duration: nil, pausedRemaining: nil)
     }
 }
