@@ -24,6 +24,7 @@ struct WorkoutExerciseDetailView: View {
     @State private var showAllExerciseHistory = false
     @State private var showingRestTimerEditor = false
     @State private var plateCalculatorSet: WorkoutSet?
+    @State private var persistenceError: String?
 
     init(workoutExercise: WorkoutExercise) {
         self.workoutExercise = workoutExercise
@@ -127,6 +128,14 @@ struct WorkoutExerciseDetailView: View {
                 }
             }
         }
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
         .navigationDestination(isPresented: $showExerciseInfo) {
             if let exercise {
                 ExerciseDetailView(exercise: exercise)
@@ -193,7 +202,7 @@ struct WorkoutExerciseDetailView: View {
             .presentationDragIndicator(.visible)
             .presentationBackground(IronTheme.modalSurface)
         }
-        .onDisappear(perform: save)
+        .onDisappear { _ = save() }
     }
 
     private var sessionOverviewCard: some View {
@@ -684,14 +693,29 @@ struct WorkoutExerciseDetailView: View {
         save()
     }
 
-    private func delete(_ set: WorkoutSet) {
-        workoutExercise.removeFromWorkoutSets(set)
-        managedObjectContext.delete(set)
-        save()
+    @discardableResult
+    private func delete(_ set: WorkoutSet) -> Bool {
+        do {
+            try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
+                workoutExercise.removeFromWorkoutSets(set)
+                managedObjectContext.delete(set)
+            }
+            return true
+        } catch {
+            persistenceError = "The set was not removed. \(error.localizedDescription)"
+            return false
+        }
     }
 
-    private func save() {
-        managedObjectContext.saveOrCrash()
+    @discardableResult
+    private func save() -> Bool {
+        do {
+            try managedObjectContext.save()
+            return true
+        } catch {
+            persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+            return false
+        }
     }
 }
 

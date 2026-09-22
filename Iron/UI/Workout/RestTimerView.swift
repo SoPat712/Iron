@@ -216,6 +216,7 @@ struct RestTimerConfigurationSheet: View {
     let initialDuration: TimeInterval
     let secondaryActionTitle: String?
     let onSecondaryAction: (() -> Void)?
+    let shouldDismiss: () -> Bool
     let onApply: (TimeInterval) -> Void
 
     @State private var selection: TimeInterval
@@ -231,6 +232,7 @@ struct RestTimerConfigurationSheet: View {
         initialDuration: TimeInterval,
         secondaryActionTitle: String? = nil,
         onSecondaryAction: (() -> Void)? = nil,
+        shouldDismiss: @escaping () -> Bool = { true },
         onApply: @escaping (TimeInterval) -> Void
     ) {
         self.title = title
@@ -238,6 +240,7 @@ struct RestTimerConfigurationSheet: View {
         self.initialDuration = initialDuration
         self.secondaryActionTitle = secondaryActionTitle
         self.onSecondaryAction = onSecondaryAction
+        self.shouldDismiss = shouldDismiss
         self.onApply = onApply
         _selection = State(initialValue: min(max(initialDuration, 30), 600))
     }
@@ -271,7 +274,7 @@ struct RestTimerConfigurationSheet: View {
 
                 Button {
                     onApply(selection)
-                    dismiss()
+                    if shouldDismiss() { dismiss() }
                 } label: {
                     Text("Use \(timeTitle(selection))")
                         .frame(maxWidth: .infinity)
@@ -284,7 +287,7 @@ struct RestTimerConfigurationSheet: View {
                 if let secondaryActionTitle, let onSecondaryAction {
                     Button {
                         onSecondaryAction()
-                        dismiss()
+                        if shouldDismiss() { dismiss() }
                     } label: {
                         Text(secondaryActionTitle)
                             .frame(maxWidth: .infinity)

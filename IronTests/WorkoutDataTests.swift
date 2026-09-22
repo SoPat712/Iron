@@ -1105,3 +1105,118 @@ final class WorkoutLifecyclePersistenceTests: XCTestCase {
         XCTAssertEqual(workout.start, originalStart)
     }
 }
+
+final class CurrentWorkoutMutationPersistenceTests: XCTestCase {
+    private enum Failure: Error { case save }
+    private var container: NSPersistentContainer!
+    private var workout: Workout!
+    private var exercises: [WorkoutExercise]!
+
+    override func setUpWithError() throws {
+        container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        workout = Workout.create(context: context)
+        workout.isCurrentWorkout = true
+        workout.start = Date(timeIntervalSince1970: 1_000)
+        exercises = (0..<2).map { index in
+            let exercise = WorkoutExercise.create(context: context)
+            exercise.uuid = UUID()
+            exercise.exerciseUuid = UUID()
+            exercise.comment = "Exercise \(index)"
+            workout.addToWorkoutExercises(exercise)
+
+            let set = WorkoutSet.create(context: context)
+            set.uuid = UUID()
+            set.weightValue = Double(40 + index)
+            set.repetitionsValue = 5
+            exercise.addToWorkoutSets(set)
+            return exercise
+        }
+        try context.save()
+    }
+
+    override func tearDown() {
+        container.viewContext.reset()
+        container = nil
+        workout = nil
+        exercises = nil
+    }
+
+    func testFailedExerciseInsertionRemovesInsertedGraphAndPreservesPendingEdit() {
+        let context = container.viewContext
+        workout.title = "Pending title"
+
+        XCTAssertThrowsError(try CurrentWorkoutPersistence.perform(
+            in: context,
+            save: { throw Failure.save }
+        ) {
+            let exercise = WorkoutExercise.create(context: context)
+            workout.addToWorkoutExercises(exercise)
+            let set = WorkoutSet.create(context: context)
+            exercise.addToWorkoutSets(set)
+        })
+
+        XCTAssertEqual(workout.workoutExercises?.count, 2)
+        XCTAssertTrue(context.insertedObjects.isEmpty)
+        XCTAssertEqual(workout.title, "Pending title")
+        XCTAssertTrue(context.hasChanges)
+    }
+
+    func testFailedSetDeletionRestoresObjectAndRelationship() throws {
+        let context = container.viewContext
+        let exercise = try XCTUnwrap(exercises.first)
+        let set = try XCTUnwrap(exercise.workoutSets?.firstObject as? WorkoutSet)
+
+        XCTAssertThrowsError(try CurrentWorkoutPersistence.perform(
+            in: context,
+            save: { throw Failure.save }
+        ) {
+            exercise.removeFromWorkoutSets(set)
+            context.delete(set)
+        })
+
+        XCTAssertFalse(set.isDeleted)
+        XCTAssertEqual(set.workoutExercise, exercise)
+        XCTAssertEqual(exercise.workoutSets?.count, 1)
+        XCTAssertTrue(context.deletedObjects.isEmpty)
+    }
+
+    func testFailedExerciseReorderRestoresOriginalOrder() {
+        let context = container.viewContext
+        let originalIDs = exercises.map(\.objectID)
+
+        XCTAssertThrowsError(try CurrentWorkoutPersistence.perform(
+            in: context,
+            save: { throw Failure.save }
+        ) {
+            workout.workoutExercises = NSOrderedSet(array: Array(exercises.reversed()))
+        })
+
+        let restoredIDs = workout.workoutExercises?.array
+            .compactMap { ($0 as? WorkoutExercise)?.objectID }
+        XCTAssertEqual(restoredIDs, originalIDs)
+    }
+
+    func testFailedConfigurationMutationRestoresAllSetFields() throws {
+        let context = container.viewContext
+        let exercise = try XCTUnwrap(exercises.first)
+        let set = try XCTUnwrap(exercise.workoutSets?.firstObject as? WorkoutSet)
+        let originalWeight = set.weightValue
+        let originalRepetitions = set.repetitionsValue
+
+        XCTAssertThrowsError(try CurrentWorkoutPersistence.perform(
+            in: context,
+            save: { throw Failure.save }
+        ) {
+            exercise.restTimerDurationValue = 90
+            set.durationValue = 60
+            set.weightValue = 0
+            set.repetitionsValue = 0
+        })
+
+        XCTAssertNil(exercise.restTimerDurationValue)
+        XCTAssertNil(set.durationValue)
+        XCTAssertEqual(set.weightValue, originalWeight)
+        XCTAssertEqual(set.repetitionsValue, originalRepetitions)
+    }
+}

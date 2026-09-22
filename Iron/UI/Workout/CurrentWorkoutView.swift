@@ -243,7 +243,7 @@ struct CurrentWorkoutView: View {
             }
         }
         .sheet(isPresented: $showingExerciseSelector) {
-            AddExercisesSheet(
+            persistenceAlert(AddExercisesSheet(
                 exercises: exerciseStore.shownExercises,
                 recentExercises: AddExercisesSheet.loadRecentExercises(
                     context: managedObjectContext,
@@ -253,11 +253,13 @@ struct CurrentWorkoutView: View {
                 actionTitle: exercisePendingReplacement == nil ? "Add" : "Replace",
                 maximumSelectionCount: exercisePendingReplacement == nil ? nil : 1,
                 onDismiss: {
+                    guard persistenceError == nil else { return }
                     showingExerciseSelector = false
                     exercisePendingReplacement = nil
                 },
-                onAdd: applyExerciseSelection
-            )
+                shouldDismiss: { persistenceError == nil },
+                onAdd: { _ = applyExerciseSelection($0) }
+            ))
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)        }
         .sheet(isPresented: $showingFinishEditor) {
@@ -266,11 +268,11 @@ struct CurrentWorkoutView: View {
                 .presentationDragIndicator(.visible)                .interactiveDismissDisabled(isLoadingFinishMedia || isFinishingWorkout)
         }
         .sheet(item: $activeSheet) { sheet in
-            sheetView(sheet)
+            persistenceAlert(sheetView(sheet))
         }
         .sheet(item: $restTimerEditorExercise) { workoutExercise in
             let inheritedDuration = workoutDefaultRestTimerDuration(for: workoutExercise)
-            RestTimerConfigurationSheet(
+            persistenceAlert(RestTimerConfigurationSheet(
                 title: "Rest timer",
                 subtitle: "Recovery after each completed set",
                 initialDuration: workoutExercise.restTimerDurationValue ?? inheritedDuration,
@@ -280,10 +282,11 @@ struct CurrentWorkoutView: View {
                 onSecondaryAction: {
                     setRestTimer(nil, for: workoutExercise)
                 },
+                shouldDismiss: { persistenceError == nil },
                 onApply: { duration in
                     setRestTimer(duration, for: workoutExercise)
                 }
-            )
+            ))
         }
         // An alert, not a confirmation dialog: this is irreversible, so it should
         // dim the log behind it and demand an explicit choice.
@@ -299,7 +302,13 @@ struct CurrentWorkoutView: View {
             Text("The workout, its notes, and every logged set will be permanently deleted.")
         }
         .alert("Workout Not Saved", isPresented: Binding(
-            get: { persistenceError != nil && !showingFinishEditor },
+            get: {
+                persistenceError != nil
+                    && !showingFinishEditor
+                    && !showingExerciseSelector
+                    && activeSheet == nil
+                    && restTimerEditorExercise == nil
+            },
             set: { if !$0 { persistenceError = nil } }
         )) {
             Button("OK", role: .cancel) { persistenceError = nil }
@@ -337,15 +346,17 @@ struct CurrentWorkoutView: View {
             if let source = supersetExercise {
                 ForEach(workoutExercises.filter { $0.objectID != source.objectID }) { candidate in
                     Button(supersetCandidateTitle(candidate)) {
-                        assignSuperset(between: source, and: candidate)
-                        supersetExercise = nil
+                        if assignSuperset(between: source, and: candidate) {
+                            supersetExercise = nil
+                        }
                     }
                 }
 
                 if source.supersetUuid != nil {
                     Button("Remove from Superset", role: .destructive) {
-                        removeFromSuperset(source)
-                        supersetExercise = nil
+                        if removeFromSuperset(source) {
+                            supersetExercise = nil
+                        }
                     }
                 }
             }
@@ -383,6 +394,17 @@ struct CurrentWorkoutView: View {
         UIApplication.shared.isIdleTimerDisabled = settingsStore.keepScreenAwakeDuringWorkout
     }
 
+    private func persistenceAlert<Content: View>(_ content: Content) -> some View {
+        content.alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
+    }
+
     @ViewBuilder
     private func sheetView(_ sheet: SheetType) -> some View {
         switch sheet {
@@ -394,8 +416,7 @@ struct CurrentWorkoutView: View {
                 detents: [.large]
             ) {
                 EditCurrentWorkoutTimeView(workout: workout) {
-                    save()
-                    activeSheet = nil
+                    if save() { activeSheet = nil }
                 }
             }
 
@@ -444,16 +465,19 @@ struct CurrentWorkoutView: View {
                             from: settingsStore.weightUnit,
                             to: .metric
                         )
-                        if let workoutExercise = set.workoutExercise {
-                            workoutSets(for: workoutExercise).forEach { workoutSet in
-                                workoutSet.weightValue = metricWeight
+                        let saved = persistMutation {
+                            if let workoutExercise = set.workoutExercise {
+                                workoutSets(for: workoutExercise).forEach { workoutSet in
+                                    workoutSet.weightValue = metricWeight
+                                }
+                            } else {
+                                set.weightValue = metricWeight
                             }
-                        } else {
-                            set.weightValue = metricWeight
                         }
-                        save()
-                        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-                        activeSheet = nil
+                        if saved {
+                            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+                            activeSheet = nil
+                        }
                     }
                 )
             }
@@ -1000,10 +1024,11 @@ struct CurrentWorkoutView: View {
                     onToggleCompleted: { toggleCompleted(set, in: workoutExercise) },
                     onDelete: { deleteSet(set, from: workoutExercise) },
                     onChanged: {
-                        save()
-                        if !set.isCompleted {
+                        let saved = save()
+                        if saved {
                             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
                         }
+                        return saved
                     },
                     allowsSwipeToDelete: true
                 )
@@ -1054,8 +1079,7 @@ struct CurrentWorkoutView: View {
                       $0.objectID.uriRepresentation().absoluteString == payload
                   }),
                   source != index else { return false }
-            moveWorkoutExercise(from: source, to: index)
-            return true
+            return moveWorkoutExercise(from: source, to: index)
         }
     }
 
@@ -1619,65 +1643,86 @@ struct CurrentWorkoutView: View {
         )
     }
 
-    private func addExercises(_ selection: [Exercise]) {
-        for exercise in selection {
-            let workoutExercise = WorkoutExercise.create(context: managedObjectContext)
-            workout.addToWorkoutExercises(workoutExercise)
-            workoutExercise.exerciseUuid = exercise.uuid
-            workoutExercise.addToWorkoutSets(createDefaultWorkoutSets(for: workoutExercise, exercise: exercise))
+    @discardableResult
+    private func addExercises(_ selection: [Exercise]) -> Bool {
+        let saved = persistMutation {
+            for exercise in selection {
+                let workoutExercise = WorkoutExercise.create(context: managedObjectContext)
+                workout.addToWorkoutExercises(workoutExercise)
+                workoutExercise.exerciseUuid = exercise.uuid
+                workoutExercise.addToWorkoutSets(createDefaultWorkoutSets(for: workoutExercise, exercise: exercise))
+            }
         }
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        if saved {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        }
+        return saved
     }
 
-    private func applyExerciseSelection(_ selection: [Exercise]) {
+    @discardableResult
+    private func applyExerciseSelection(_ selection: [Exercise]) -> Bool {
+        let saved: Bool
         if let target = exercisePendingReplacement, let replacement = selection.first {
-            target.exerciseUuid = replacement.uuid
-            exercisePendingReplacement = nil
-            save()
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            saved = persistMutation {
+                target.exerciseUuid = replacement.uuid
+            }
+            if saved {
+                exercisePendingReplacement = nil
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
         } else {
-            addExercises(selection)
+            saved = addExercises(selection)
         }
-        showingExerciseSelector = false
+        if saved {
+            showingExerciseSelector = false
+        }
+        return saved
     }
 
     private func supersetCandidateTitle(_ workoutExercise: WorkoutExercise) -> String {
         workoutExercise.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise"
     }
 
-    private func assignSuperset(between source: WorkoutExercise, and candidate: WorkoutExercise) {
+    @discardableResult
+    private func assignSuperset(between source: WorkoutExercise, and candidate: WorkoutExercise) -> Bool {
         let existingIDs = Set([source.supersetUuid, candidate.supersetUuid].compactMap { $0 })
         let supersetID = source.supersetUuid ?? candidate.supersetUuid ?? UUID()
 
-        for workoutExercise in workoutExercises {
-            let belongsToExistingGroup = workoutExercise.supersetUuid.map(existingIDs.contains) ?? false
-            if workoutExercise.objectID == source.objectID
-                || workoutExercise.objectID == candidate.objectID
-                || belongsToExistingGroup {
-                workoutExercise.supersetUuid = supersetID
+        let saved = persistMutation {
+            for workoutExercise in workoutExercises {
+                let belongsToExistingGroup = workoutExercise.supersetUuid.map(existingIDs.contains) ?? false
+                if workoutExercise.objectID == source.objectID
+                    || workoutExercise.objectID == candidate.objectID
+                    || belongsToExistingGroup {
+                    workoutExercise.supersetUuid = supersetID
+                }
             }
         }
-
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-        UISelectionFeedbackGenerator().selectionChanged()
+        if saved {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        return saved
     }
 
-    private func removeFromSuperset(_ source: WorkoutExercise) {
+    @discardableResult
+    private func removeFromSuperset(_ source: WorkoutExercise) -> Bool {
         let previousID = source.supersetUuid
-        source.supersetUuid = nil
+        let saved = persistMutation {
+            source.supersetUuid = nil
 
-        if let previousID {
-            let remaining = workoutExercises.filter { $0.supersetUuid == previousID }
-            if remaining.count < 2 {
-                remaining.forEach { $0.supersetUuid = nil }
+            if let previousID {
+                let remaining = workoutExercises.filter { $0.supersetUuid == previousID }
+                if remaining.count < 2 {
+                    remaining.forEach { $0.supersetUuid = nil }
+                }
             }
         }
-
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-        UISelectionFeedbackGenerator().selectionChanged()
+        if saved {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        return saved
     }
 
     private func createDefaultWorkoutSets(for workoutExercise: WorkoutExercise, exercise: Exercise) -> NSOrderedSet {
@@ -1717,57 +1762,73 @@ struct CurrentWorkoutView: View {
         return NSOrderedSet(array: sets)
     }
 
-    private func addSet(to workoutExercise: WorkoutExercise) {
+    @discardableResult
+    private func addSet(to workoutExercise: WorkoutExercise) -> Bool {
+        var saved = false
         withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-            let existingSets = workoutSets(for: workoutExercise)
-            let set = WorkoutSet.create(context: managedObjectContext)
-            set.workoutExercise = workoutExercise
+            saved = persistMutation {
+                let existingSets = workoutSets(for: workoutExercise)
+                let set = WorkoutSet.create(context: managedObjectContext)
+                set.workoutExercise = workoutExercise
 
-            if let source = existingSets.last ?? latestHistorySet(for: workoutExercise, at: existingSets.count) {
-                if let duration = source.durationValue, source.distanceValue == nil {
-                    set.durationValue = duration
+                if let source = existingSets.last ?? latestHistorySet(for: workoutExercise, at: existingSets.count) {
+                    if let duration = source.durationValue, source.distanceValue == nil {
+                        set.durationValue = duration
+                    } else {
+                        set.weightValue = source.weightValue
+                        set.repetitionsValue = source.repetitionsValue
+                    }
+                    set.rpeValue = source.rpeValue
+                    set.tagValue = source.tagValue
                 } else {
-                    set.weightValue = source.weightValue
-                    set.repetitionsValue = source.repetitionsValue
+                    set.repetitionsValue = 5
                 }
-                set.rpeValue = source.rpeValue
-                set.tagValue = source.tagValue
-            } else {
-                set.repetitionsValue = 5
+                set.isCompleted = false
             }
-            set.isCompleted = false
-            save()
         }
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        return saved
     }
 
-    private func deleteSet(_ set: WorkoutSet, from workoutExercise: WorkoutExercise) {
+    @discardableResult
+    private func deleteSet(_ set: WorkoutSet, from workoutExercise: WorkoutExercise) -> Bool {
+        var saved = false
         withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-            workoutExercise.removeFromWorkoutSets(set)
-            managedObjectContext.delete(set)
-            save()
+            saved = persistMutation {
+                workoutExercise.removeFromWorkoutSets(set)
+                managedObjectContext.delete(set)
+            }
         }
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        return saved
     }
 
-    private func deleteWorkoutExercise(_ workoutExercise: WorkoutExercise) {
-        workout.removeFromWorkoutExercises(workoutExercise)
-        managedObjectContext.delete(workoutExercise)
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+    @discardableResult
+    private func deleteWorkoutExercise(_ workoutExercise: WorkoutExercise) -> Bool {
+        let saved = persistMutation {
+            workout.removeFromWorkoutExercises(workoutExercise)
+            managedObjectContext.delete(workoutExercise)
+        }
+        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        return saved
     }
 
-    private func moveWorkoutExercise(from source: Int, to destination: Int) {
+    @discardableResult
+    private func moveWorkoutExercise(from source: Int, to destination: Int) -> Bool {
         guard source != destination,
               workoutExercises.indices.contains(source),
-              workoutExercises.indices.contains(destination) else { return }
-        var exercises = workoutExercises
-        let exercise = exercises.remove(at: source)
-        exercises.insert(exercise, at: destination)
-        workout.workoutExercises = NSOrderedSet(array: exercises)
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-        UISelectionFeedbackGenerator().selectionChanged()
+              workoutExercises.indices.contains(destination) else { return false }
+        let saved = persistMutation {
+            var exercises = workoutExercises
+            let exercise = exercises.remove(at: source)
+            exercises.insert(exercise, at: destination)
+            workout.workoutExercises = NSOrderedSet(array: exercises)
+        }
+        if saved {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            UISelectionFeedbackGenerator().selectionChanged()
+        }
+        return saved
     }
 
     private func toggleCompleted(_ set: WorkoutSet, in workoutExercise: WorkoutExercise) {
@@ -1850,31 +1911,36 @@ struct CurrentWorkoutView: View {
         scrollTarget = next.id
     }
 
-    private func setRestTimer(_ duration: TimeInterval?, for workoutExercise: WorkoutExercise) {
-        workoutExercise.restTimerDurationValue = duration
-        save()
+    @discardableResult
+    private func setRestTimer(_ duration: TimeInterval?, for workoutExercise: WorkoutExercise) -> Bool {
+        persistMutation {
+            workoutExercise.restTimerDurationValue = duration
+        }
     }
 
-    private func setTrackingMode(usesDuration: Bool, for workoutExercise: WorkoutExercise) {
+    @discardableResult
+    private func setTrackingMode(usesDuration: Bool, for workoutExercise: WorkoutExercise) -> Bool {
         let sets = workoutSets(for: workoutExercise)
-        guard !sets.contains(where: \.isCompleted) else { return }
+        guard !sets.contains(where: \.isCompleted) else { return false }
 
-        for set in sets {
-            if usesDuration {
-                set.durationValue = set.durationValue ?? 60
-                set.distanceValue = nil
-                set.weightValue = 0
-                set.repetitionsValue = 0
-            } else {
-                set.durationValue = nil
-                set.distanceValue = nil
-                if set.repetitionsValue == 0 {
-                    set.repetitionsValue = 5
+        let saved = persistMutation {
+            for set in sets {
+                if usesDuration {
+                    set.durationValue = set.durationValue ?? 60
+                    set.distanceValue = nil
+                    set.weightValue = 0
+                    set.repetitionsValue = 0
+                } else {
+                    set.durationValue = nil
+                    set.distanceValue = nil
+                    if set.repetitionsValue == 0 {
+                        set.repetitionsValue = 5
+                    }
                 }
             }
         }
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        return saved
     }
 
     private func restTimerDuration(for workoutExercise: WorkoutExercise) -> TimeInterval {
@@ -1911,28 +1977,33 @@ struct CurrentWorkoutView: View {
         WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
     }
 
-    private func addWarmupSets(_ recommendations: [WarmupRecommendation], before workingSet: WorkoutSet) {
+    @discardableResult
+    private func addWarmupSets(_ recommendations: [WarmupRecommendation], before workingSet: WorkoutSet) -> Bool {
         guard let workoutExercise = workingSet.workoutExercise,
               let index = workoutExercise.workoutSets?.index(of: workingSet),
-              index != NSNotFound else { return }
+              index != NSNotFound else { return false }
 
-        var insertionIndex = index
-        for recommendation in recommendations {
-            let set = WorkoutSet.create(context: managedObjectContext)
-            set.tagValue = .warmUp
-            set.weightValue = WeightUnit.convert(
-                weight: recommendation.weight,
-                from: settingsStore.weightUnit,
-                to: .metric
-            )
-            set.repetitionsValue = Int16(recommendation.repetitions)
-            set.isCompleted = false
-            workoutExercise.insertIntoWorkoutSets(set, at: insertionIndex)
-            insertionIndex += 1
+        let saved = persistMutation {
+            var insertionIndex = index
+            for recommendation in recommendations {
+                let set = WorkoutSet.create(context: managedObjectContext)
+                set.tagValue = .warmUp
+                set.weightValue = WeightUnit.convert(
+                    weight: recommendation.weight,
+                    from: settingsStore.weightUnit,
+                    to: .metric
+                )
+                set.repetitionsValue = Int16(recommendation.repetitions)
+                set.isCompleted = false
+                workoutExercise.insertIntoWorkoutSets(set, at: insertionIndex)
+                insertionIndex += 1
+            }
         }
-        save()
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
-        activeSheet = nil
+        if saved {
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            activeSheet = nil
+        }
+        return saved
     }
 
     private func prepareFinishEditor() {
@@ -2107,13 +2178,44 @@ struct CurrentWorkoutView: View {
         feedback.notificationOccurred(.warning)
     }
 
-    private func save() {
-        guard managedObjectContext.hasChanges else { return }
+    @discardableResult
+    private func persistMutation(_ mutation: () -> Void) -> Bool {
         do {
-            try managedObjectContext.save()
+            try CurrentWorkoutPersistence.perform(
+                in: managedObjectContext,
+                save: { try managedObjectContext.save() },
+                mutation: mutation
+            )
+            return true
         } catch {
             persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+            return false
         }
+    }
+
+    /// Inline controls update their managed values before invoking `onChanged`.
+    /// Keep those edits available for retry, but suppress downstream effects
+    /// until the context is durably saved.
+    @discardableResult
+    private func save() -> Bool {
+        guard managedObjectContext.hasChanges else { return true }
+        do {
+            try managedObjectContext.save()
+            return true
+        } catch {
+            persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
+            return false
+        }
+    }
+}
+
+enum CurrentWorkoutPersistence {
+    static func perform(
+        in context: NSManagedObjectContext,
+        save: () throws -> Void,
+        mutation: () -> Void
+    ) throws {
+        try context.persistMutation(save: save, mutation: mutation)
     }
 }
 
@@ -2240,8 +2342,8 @@ struct InlineWorkoutSetRow: View {
     let previousTitle: String
     let onOpenPlateCalculator: () -> Void
     let onToggleCompleted: () -> Void
-    let onDelete: () -> Void
-    let onChanged: () -> Void
+    let onDelete: () -> Bool
+    let onChanged: () -> Bool
     var allowsSwipeToDelete = false
 
     @State private var showingRPEPicker = false
@@ -2306,7 +2408,7 @@ struct InlineWorkoutSetRow: View {
         if let inlineTimerStart {
             set.durationValue = max(1, (Date().timeIntervalSince(inlineTimerStart)).rounded())
             self.inlineTimerStart = nil
-            onChanged()
+            _ = onChanged()
         } else {
             inlineTimerStart = Date()
         }
@@ -2353,7 +2455,7 @@ struct InlineWorkoutSetRow: View {
                 guard let displayValue = weightFormatter.number(from: sanitizedValue)?.doubleValue else {
                     if sanitizedValue.isEmpty, set.weightValue != 0 {
                         set.weightValue = 0
-                        onChanged()
+                        _ = onChanged()
                     }
                     return
                 }
@@ -2364,7 +2466,7 @@ struct InlineWorkoutSetRow: View {
                 )
                 if abs(set.weightValue - metricValue) > 0.000_001 {
                     set.weightValue = metricValue
-                    onChanged()
+                    _ = onChanged()
                 }
             }
         )
@@ -2384,7 +2486,7 @@ struct InlineWorkoutSetRow: View {
                 )
                 if set.repetitionsValue != Int16(value) {
                     set.repetitionsValue = Int16(value)
-                    onChanged()
+                    _ = onChanged()
                 }
             }
         )
@@ -2587,7 +2689,7 @@ struct InlineWorkoutSetRow: View {
                 set.distanceValue = nil
                 set.weightValue = 0
                 set.repetitionsValue = 0
-                onChanged()
+                _ = onChanged()
             }
         }
     }
@@ -2608,7 +2710,9 @@ struct InlineWorkoutSetRow: View {
         }
 
         Section {
-            Button("Delete Set", systemImage: "trash", role: .destructive, action: onDelete)
+            Button("Delete Set", systemImage: "trash", role: .destructive) {
+                _ = onDelete()
+            }
         }
     }
 
@@ -2617,7 +2721,7 @@ struct InlineWorkoutSetRow: View {
             get: { set.tagValue },
             set: {
                 set.tagValue = $0
-                onChanged()
+                _ = onChanged()
             }
         )
     }
@@ -2819,7 +2923,10 @@ struct InlineWorkoutSetRow: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             withAnimation(.snappy(duration: 0.22)) {
-                onDelete()
+                if !onDelete() {
+                    swipeOffset = 0
+                    isPerformingSwipeDelete = false
+                }
             }
         }
     }
@@ -2828,11 +2935,12 @@ struct InlineWorkoutSetRow: View {
 private struct RPEPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var set: WorkoutSet
-    let onChanged: () -> Void
+    let onChanged: () -> Bool
 
     @State private var selection: Double
+    @State private var showingSaveError = false
 
-    init(set: WorkoutSet, onChanged: @escaping () -> Void) {
+    init(set: WorkoutSet, onChanged: @escaping () -> Bool) {
         self.set = set
         self.onChanged = onChanged
         _selection = State(initialValue: set.rpeValue ?? 7)
@@ -2867,16 +2975,14 @@ private struct RPEPickerSheet: View {
                 Section {
                     Button("Apply RPE \(String(format: "%g", selection))") {
                         set.rpeValue = selection
-                        onChanged()
-                        dismiss()
+                        if onChanged() { dismiss() } else { showingSaveError = true }
                     }
                     .fontWeight(.semibold)
 
                     if set.rpeValue != nil {
                         Button("Clear RPE", role: .destructive) {
                             set.rpeValue = nil
-                            onChanged()
-                            dismiss()
+                            if onChanged() { dismiss() } else { showingSaveError = true }
                         }
                     }
                 }
@@ -2885,6 +2991,11 @@ private struct RPEPickerSheet: View {
         }
         .presentationDetents([.height(430), .large])
         .presentationDragIndicator(.visible)
+        .alert("Effort Not Saved", isPresented: $showingSaveError) {
+            Button("OK", role: .cancel) { }
+        } message: {
+            Text("Your effort change has not been saved. Try applying it again before closing.")
+        }
         .sensoryFeedback(.selection, trigger: selection)
     }
 }

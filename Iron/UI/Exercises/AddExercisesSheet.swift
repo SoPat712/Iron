@@ -22,6 +22,7 @@ struct AddExercisesSheet: View {
     private let maximumSelectionCount: Int?
     let onAdd: ([Exercise]) -> Void
     private let onDismiss: (() -> Void)?
+    private let shouldDismiss: () -> Bool
 
     @State private var exerciseSelectorSelection: [Exercise] = []
     @State private var search = ""
@@ -38,6 +39,7 @@ struct AddExercisesSheet: View {
         actionTitle: String = "Add",
         maximumSelectionCount: Int? = nil,
         onDismiss: (() -> Void)? = nil,
+        shouldDismiss: @escaping () -> Bool = { true },
         onAdd: @escaping ([Exercise]) -> Void
     ) {
         self.exercises = exercises
@@ -47,6 +49,7 @@ struct AddExercisesSheet: View {
         self.actionTitle = actionTitle
         self.maximumSelectionCount = maximumSelectionCount
         self.onDismiss = onDismiss
+        self.shouldDismiss = shouldDismiss
         self.onAdd = onAdd
     }
 
@@ -108,6 +111,7 @@ struct AddExercisesSheet: View {
     }
 
     private func resetAndDismiss() {
+        guard shouldDismiss() else { return }
         if let onDismiss {
             onDismiss()
         } else {
