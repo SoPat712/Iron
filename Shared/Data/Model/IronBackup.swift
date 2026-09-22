@@ -13,6 +13,27 @@ import os.log
 
 enum IronBackup {
     static let bodyMeasurementsStorageKey = "iron.bodyMeasurements.v1"
+    private static let currentVersion = 4
+
+    enum RestoreValidationError: LocalizedError {
+        case unsupportedVersion(Int)
+        case invalidBodyMeasurements
+        case duplicateIdentifier(UUID)
+        case missingIdentifier
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupportedVersion(let version):
+                return "This backup version (\(version)) is not supported."
+            case .invalidBodyMeasurements:
+                return "The backup contains invalid body measurements."
+            case .duplicateIdentifier(let identifier):
+                return "The backup contains the duplicate identifier \(identifier.uuidString)."
+            case .missingIdentifier:
+                return "The backup contains an object without an identifier."
+            }
+        }
+    }
 
     private struct IronBackup: Codable {
         /*
@@ -67,9 +88,6 @@ enum IronBackup {
             // workout plans must be decoded before workouts
             workouts = try container.decode([Workout].self, forKey: .workouts)
             bodyMeasurementsData = try container.decodeIfPresent(Data.self, forKey: .bodyMeasurementsData)
-            /**
-             Note: the UUIDs in the backup are not checked for uniqueness because it would take too much time (10s)
-             */
         }
         
 //        public func encode(to encoder: Encoder) throws {
@@ -119,21 +137,21 @@ enum IronBackup {
         data: Data,
         managedObjectContext: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
-        userDefaults: UserDefaults = .appGroup
+        userDefaults: UserDefaults = .appGroup,
+        saveParent: ((NSManagedObjectContext) throws -> Void)? = nil
     ) throws {
-        // save the current state before we touch anything
         let previousCustomExercises = exerciseStore.customExercises
-        
+        var changedCustomExercises = false
         var success = false
         defer {
             if !success {
-                // if something went wrong, undo all changes
-                os_log("Restoring backup data was unsuccessful, trying to undo changes", log: .backup, type: .default)
-                do {
-                    try exerciseStore.replaceCustomExercises(with: previousCustomExercises)
-                    os_log("Successfully reverted changes to custom exercises", log: .backup, type: .default)
-                } catch {
-                    os_log("Could not revert changes to custom exercises", log: .backup, type: .error)
+                os_log("Restoring backup data was unsuccessful", log: .backup, type: .default)
+                if changedCustomExercises {
+                    do {
+                        try exerciseStore.replaceCustomExercises(with: previousCustomExercises)
+                    } catch {
+                        os_log("Could not restore custom exercises after failed backup restore", log: .backup, type: .error)
+                    }
                 }
             }
             restoringBackupData = false
@@ -167,27 +185,159 @@ enum IronBackup {
         decoder.dateDecodingStrategy = .iso8601
         decoder.userInfo[managedObjectContextKey] = context
         let workoutDataBackup = try decoder.decode(IronBackup.self, from: data) // this already inserts the workout into the context
-        
-        // try to restore the custom exercises
+        try validate(workoutDataBackup)
+        try managedObjectContext.performAndWait {
+            try validateNoCollisionWithCurrentWorkout(
+                workoutDataBackup,
+                in: managedObjectContext
+            )
+        }
+
+        // Persist custom exercises before the Core Data commit so any storage
+        // failure leaves the parent untouched. The defer restores these if the
+        // subsequent parent save fails.
         os_log("Restoring custom exercises", log: .backup, type: .default)
         try exerciseStore.replaceCustomExercises(with: workoutDataBackup.customExercises)
-        
-        // if everything went well, save the changes
-        try context.save()
-        // A child-context save only pushes restored objects into the parent.
-        // Persist the parent before reporting success so a termination right
-        // after the confirmation cannot lose the restored archive.
+        changedCustomExercises = true
+
+        // The child save is inside the parent's scoped undo transaction so a
+        // failed durable save removes only this import from the parent.
         try managedObjectContext.performAndWait {
-            if managedObjectContext.hasChanges {
-                try managedObjectContext.save()
-            }
+            try managedObjectContext.persistMutation(
+                save: {
+                    if let saveParent {
+                        try saveParent(managedObjectContext)
+                    } else if managedObjectContext.hasChanges {
+                        try managedObjectContext.save()
+                    }
+                },
+                mutation: { try context.save() }
+            )
         }
+
         // Older backups intentionally preserve the user's current body data.
         // Version 4+ backups replace it with the data captured in the archive.
-        if let bodyMeasurementsData = workoutDataBackup.bodyMeasurementsData {
-            userDefaults.set(bodyMeasurementsData, forKey: bodyMeasurementsStorageKey)
+        if workoutDataBackup.version >= 4 {
+            if let bodyMeasurementsData = workoutDataBackup.bodyMeasurementsData {
+                userDefaults.set(bodyMeasurementsData, forKey: bodyMeasurementsStorageKey)
+            } else {
+                userDefaults.removeObject(forKey: bodyMeasurementsStorageKey)
+            }
         }
         success = true
         os_log("Successfully restored backup data", log: .backup, type: .info)
+    }
+
+    private static func validate(_ backup: IronBackup) throws {
+        guard (1...currentVersion).contains(backup.version) else {
+            throw RestoreValidationError.unsupportedVersion(backup.version)
+        }
+
+        var identifiers = Set<UUID>()
+        func register(_ identifier: UUID?) throws {
+            guard let identifier else { throw RestoreValidationError.missingIdentifier }
+            guard identifiers.insert(identifier).inserted else {
+                throw RestoreValidationError.duplicateIdentifier(identifier)
+            }
+        }
+
+        for exercise in backup.customExercises {
+            try register(exercise.uuid)
+        }
+        for plan in backup.workoutPlans {
+            try register(plan.uuid)
+            let routines = plan.workoutRoutines?.array.compactMap { $0 as? WorkoutRoutine } ?? []
+            for routine in routines {
+                try register(routine.uuid)
+                let exercises = routine.workoutRoutineExercises?.array
+                    .compactMap { $0 as? WorkoutRoutineExercise } ?? []
+                for exercise in exercises {
+                    try register(exercise.uuid)
+                    let sets = exercise.workoutRoutineSets?.array
+                        .compactMap { $0 as? WorkoutRoutineSet } ?? []
+                    for set in sets { try register(set.uuid) }
+                }
+            }
+        }
+        for workout in backup.workouts {
+            try register(workout.uuid)
+            let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+            for exercise in exercises {
+                try register(exercise.uuid)
+                let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+                for set in sets { try register(set.uuid) }
+            }
+        }
+
+        if backup.version >= 4, let data = backup.bodyMeasurementsData {
+            let measurementIDs = try validatedBodyMeasurementIDs(data)
+            for identifier in measurementIDs { try register(identifier) }
+        }
+    }
+
+    private static func validateNoCollisionWithCurrentWorkout(
+        _ backup: IronBackup,
+        in context: NSManagedObjectContext
+    ) throws {
+        let retainedWorkouts = try context.fetch(Workout.currentWorkoutFetchRequest)
+        var retainedIdentifiers = Set<UUID>()
+        for workout in retainedWorkouts {
+            try appendWorkoutIdentifiers(from: workout, to: &retainedIdentifiers)
+        }
+
+        for workout in backup.workouts {
+            var importedIdentifiers = Set<UUID>()
+            try appendWorkoutIdentifiers(from: workout, to: &importedIdentifiers)
+            if let collision = importedIdentifiers.first(where: retainedIdentifiers.contains) {
+                throw RestoreValidationError.duplicateIdentifier(collision)
+            }
+        }
+    }
+
+    private static func appendWorkoutIdentifiers(
+        from workout: Workout,
+        to identifiers: inout Set<UUID>
+    ) throws {
+        guard let workoutID = workout.uuid else { throw RestoreValidationError.missingIdentifier }
+        identifiers.insert(workoutID)
+        let exercises = workout.workoutExercises?.array.compactMap { $0 as? WorkoutExercise } ?? []
+        for exercise in exercises {
+            guard let exerciseID = exercise.uuid else { throw RestoreValidationError.missingIdentifier }
+            identifiers.insert(exerciseID)
+            let sets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+            for set in sets {
+                guard let setID = set.uuid else { throw RestoreValidationError.missingIdentifier }
+                identifiers.insert(setID)
+            }
+        }
+    }
+
+    private struct BodyMeasurementArchiveEntry: Decodable {
+        let id: UUID
+        let date: Date
+        let values: [String: Double]
+        let progressPhotoData: Data?
+    }
+
+    /// Validate the opaque app payload without introducing app-only model
+    /// dependencies into the Shared target.
+    private static func validatedBodyMeasurementIDs(_ data: Data) throws -> [UUID] {
+        let entries: [BodyMeasurementArchiveEntry]
+        do {
+            entries = try JSONDecoder().decode([BodyMeasurementArchiveEntry].self, from: data)
+        } catch {
+            throw RestoreValidationError.invalidBodyMeasurements
+        }
+        return try entries.map { entry in
+            guard entry.date.timeIntervalSinceReferenceDate.isFinite else {
+                throw RestoreValidationError.invalidBodyMeasurements
+            }
+            for value in entry.values.values {
+                guard value.isFinite, value > 0 else {
+                    throw RestoreValidationError.invalidBodyMeasurements
+                }
+            }
+            return entry.id
+        }
     }
 }

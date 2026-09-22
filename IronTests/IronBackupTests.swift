@@ -186,6 +186,289 @@ class IronBackupTests: XCTestCase {
         }
         XCTAssertTrue(unavailableStore.customExercises.isEmpty)
     }
+
+    func testRejectsFutureBackupVersionBeforeChangingStores() throws {
+        let originalMeasurements = Data("original".utf8)
+        userDefaults.set(originalMeasurements, forKey: IronBackup.bodyMeasurementsStorageKey)
+        let data = try modifiedBackupData { $0["version"] = 999 }
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        ))
+
+        XCTAssertEqual(userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey), originalMeasurements)
+        XCTAssertTrue(exerciseStore.customExercises.isEmpty)
+        XCTAssertFalse(persistenContainer.viewContext.hasChanges)
+    }
+
+    func testRejectsInvalidBodyMeasurementPayload() throws {
+        let invalidMeasurements: [[String: Any]] = [[
+            "id": UUID().uuidString,
+            "date": 1_000.0,
+            "values": ["bodyWeight": -1.0]
+        ]]
+        let measurementData = try JSONSerialization.data(withJSONObject: invalidMeasurements)
+        let data = try modifiedBackupData {
+            $0["bodyMeasurementsData"] = measurementData.base64EncodedString()
+        }
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        ))
+        XCTAssertFalse(persistenContainer.viewContext.hasChanges)
+    }
+
+    func testMeasurementValidationAcceptsNumericOneAndReferenceDateZero() throws {
+        let measurements: [[String: Any]] = [[
+            "id": UUID().uuidString,
+            "date": 0.0,
+            "values": ["bodyWeight": 1.0]
+        ]]
+        let measurementData = try JSONSerialization.data(withJSONObject: measurements)
+        let data = try modifiedBackupData {
+            $0["bodyMeasurementsData"] = measurementData.base64EncodedString()
+        }
+
+        XCTAssertNoThrow(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        ))
+        XCTAssertEqual(
+            userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey),
+            measurementData
+        )
+    }
+
+    func testMeasurementValidationRejectsBooleanDateAndValues() throws {
+        let invalidMeasurements: [[[String: Any]]] = [
+            [[
+                "id": UUID().uuidString,
+                "date": true,
+                "values": ["bodyWeight": 80.0]
+            ]],
+            [[
+                "id": UUID().uuidString,
+                "date": 0.0,
+                "values": ["bodyWeight": true]
+            ]]
+        ]
+
+        for measurements in invalidMeasurements {
+            let measurementData = try JSONSerialization.data(withJSONObject: measurements)
+            let data = try modifiedBackupData {
+                $0["bodyMeasurementsData"] = measurementData.base64EncodedString()
+            }
+            XCTAssertThrowsError(try IronBackup.restoreBackupData(
+                data: data,
+                managedObjectContext: persistenContainer.viewContext,
+                exerciseStore: exerciseStore,
+                userDefaults: userDefaults
+            ))
+            XCTAssertFalse(persistenContainer.viewContext.hasChanges)
+        }
+    }
+
+    func testRejectsDuplicateCustomExerciseIdentifiers() throws {
+        _ = try exerciseStore.createCustomExercise(
+            title: "Duplicate Candidate",
+            description: nil,
+            primaryMuscle: ["quadriceps"],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let data = try modifiedBackupData { object in
+            var exercises = object["customExercises"] as! [[String: Any]]
+            exercises.append(exercises[0])
+            object["customExercises"] = exercises
+        }
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        ))
+        XCTAssertEqual(exerciseStore.customExercises.count, 1)
+        XCTAssertFalse(persistenContainer.viewContext.hasChanges)
+    }
+
+    func testVersionFourWithoutMeasurementsClearsCurrentMeasurements() throws {
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+        userDefaults.set(Data("current".utf8), forKey: IronBackup.bodyMeasurementsStorageKey)
+
+        try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertNil(userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey))
+    }
+
+    func testLegacyBackupWithoutMeasurementsPreservesCurrentMeasurements() throws {
+        let data = try modifiedBackupData {
+            $0["version"] = 3
+            $0.removeValue(forKey: "bodyMeasurementsData")
+        }
+        let currentMeasurements = Data("current".utf8)
+        userDefaults.set(currentMeasurements, forKey: IronBackup.bodyMeasurementsStorageKey)
+
+        try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertEqual(userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey), currentMeasurements)
+    }
+
+    func testRejectsImportedSetIdentifierCollisionWithRetainedCurrentWorkout() throws {
+        let context = persistenContainer.viewContext
+        let currentWorkout = createTestCurrentWorkout(context: context)
+        try context.save()
+        let retainedExercise = try XCTUnwrap(
+            currentWorkout.workoutExercises?.firstObject as? WorkoutExercise
+        )
+        let retainedSet = try XCTUnwrap(retainedExercise.workoutSets?.firstObject as? WorkoutSet)
+        let retainedSetID = try XCTUnwrap(retainedSet.uuid)
+
+        let sourceContainer = setUpInMemoryNSPersistentContainer()
+        createTestWorkoutData(context: sourceContainer.viewContext)
+        let sourceWorkout = try XCTUnwrap(
+            try sourceContainer.viewContext.fetch(Workout.fetchRequest()).first
+        )
+        let sourceExercise = try XCTUnwrap(
+            sourceWorkout.workoutExercises?.firstObject as? WorkoutExercise
+        )
+        let sourceSet = try XCTUnwrap(sourceExercise.workoutSets?.firstObject as? WorkoutSet)
+        sourceSet.uuid = retainedSetID
+        try sourceContainer.viewContext.save()
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: sourceContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        ))
+
+        let fetchedCurrent = try context.fetch(Workout.currentWorkoutFetchRequest)
+        XCTAssertEqual(fetchedCurrent, [currentWorkout])
+        XCTAssertEqual(retainedSet.uuid, retainedSetID)
+        XCTAssertEqual(retainedSet.workoutExercise, retainedExercise)
+        XCTAssertFalse(context.hasChanges)
+    }
+
+    func testFailedParentSaveRestoresImportedGraphAndExternalStoresOnly() throws {
+        struct ExpectedError: Error {}
+        let context = persistenContainer.viewContext
+        createTestWorkoutData(context: context)
+        let currentWorkout = createTestCurrentWorkout(context: context)
+        try context.save()
+        let originalWorkoutCount = try context.count(for: Workout.fetchRequest())
+        let originalExerciseCount = try context.count(for: WorkoutExercise.fetchRequest())
+        currentWorkout.title = "Pending user edit"
+
+        let originalExercise = try exerciseStore.createCustomExercise(
+            title: "Original custom exercise",
+            description: nil,
+            primaryMuscle: ["back"],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let originalMeasurements = Data("original measurements".utf8)
+        userDefaults.set(originalMeasurements, forKey: IronBackup.bodyMeasurementsStorageKey)
+
+        let sourceContainer = setUpInMemoryNSPersistentContainer()
+        createTestWorkoutData(context: sourceContainer.viewContext)
+        try sourceContainer.viewContext.save()
+        let sourceFolder = FileManager.default.temporaryDirectory
+            .appendingPathComponent("backup-source-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: sourceFolder) }
+        let sourceStore = ExerciseStore(
+            customExercisesURL: sourceFolder.appendingPathComponent("custom.json")
+        )
+        _ = try sourceStore.createCustomExercise(
+            title: "Imported custom exercise",
+            description: nil,
+            primaryMuscle: ["chest"],
+            secondaryMuscle: [],
+            type: .other
+        )
+        let sourceDefaultsName = "backup-source-\(UUID().uuidString)"
+        let sourceDefaults = UserDefaults(suiteName: sourceDefaultsName)!
+        defer { sourceDefaults.removePersistentDomain(forName: sourceDefaultsName) }
+        let importedMeasurements: [[String: Any]] = [[
+            "id": UUID().uuidString,
+            "date": 1_000.0,
+            "values": ["bodyWeight": 80.0]
+        ]]
+        sourceDefaults.set(
+            try JSONSerialization.data(withJSONObject: importedMeasurements),
+            forKey: IronBackup.bodyMeasurementsStorageKey
+        )
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: sourceContainer.viewContext,
+            exerciseStore: sourceStore,
+            userDefaults: sourceDefaults
+        )
+
+        var injectedSaveWasCalled = false
+        XCTAssertThrowsError(try IronBackup.restoreBackupData(
+            data: data,
+            managedObjectContext: context,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults,
+            saveParent: { _ in
+                injectedSaveWasCalled = true
+                throw ExpectedError()
+            }
+        ))
+
+        XCTAssertTrue(injectedSaveWasCalled)
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), originalWorkoutCount)
+        XCTAssertEqual(try context.count(for: WorkoutExercise.fetchRequest()), originalExerciseCount)
+        XCTAssertEqual(currentWorkout.title, "Pending user edit")
+        XCTAssertEqual(exerciseStore.customExercises, [originalExercise])
+        XCTAssertEqual(userDefaults.data(forKey: IronBackup.bodyMeasurementsStorageKey), originalMeasurements)
+        XCTAssertTrue(context.hasChanges)
+        XCTAssertTrue(context.insertedObjects.isEmpty)
+        XCTAssertTrue(context.deletedObjects.isEmpty)
+    }
+
+    private func modifiedBackupData(
+        _ mutation: (inout [String: Any]) throws -> Void
+    ) throws -> Data {
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            userDefaults: userDefaults
+        )
+        var object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: data) as? [String: Any]
+        )
+        try mutation(&object)
+        return try JSONSerialization.data(withJSONObject: object)
+    }
 }
 
 final class AutomaticBackupCoordinatorTests: XCTestCase {
