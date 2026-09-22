@@ -569,3 +569,204 @@ final class HealthMutationCoordinatorTests: XCTestCase {
         XCTAssertEqual(operations, ["first", "second", "third"])
     }
 }
+
+final class WatchWorkoutPersistenceTests: XCTestCase {
+    private func snapshot(weight: Double? = 40) -> WatchWorkoutSnapshot {
+        let set = WatchWorkoutSet(order: 1, weight: weight, reps: 5)
+        let exercise = WatchWorkoutExercise(order: 1, name: "Squat", sets: [set])
+        return WatchWorkoutSnapshot(
+            workoutID: UUID(),
+            startDate: Date(timeIntervalSinceReferenceDate: 0),
+            exercises: [exercise],
+            selectedSetID: set.id,
+            revision: 1,
+            updatedAt: Date(timeIntervalSinceReferenceDate: 100)
+        )
+    }
+
+    private func event(
+        workoutID: UUID,
+        sequence: Int64,
+        kind: WatchWorkoutEventKind = .setUpdated
+    ) -> WatchWorkoutEvent {
+        WatchWorkoutEvent(
+            workoutID: workoutID, sequence: sequence, kind: kind,
+            createdAt: Date(timeIntervalSinceReferenceDate: 100)
+        )
+    }
+
+    func testLegacyPersistedStateKeysRemainDecodable() throws {
+        let data = try JSONSerialization.data(withJSONObject: [
+            "snapshot": NSNull(),
+            "outbox": [],
+            "nextSequence": 7
+        ])
+
+        let decoded = try XCTUnwrap(
+            WatchWorkoutWire.decode(WatchWorkoutPersistedState.self, from: data)
+        )
+        XCTAssertNil(decoded.snapshot)
+        XCTAssertTrue(decoded.outbox.isEmpty)
+        XCTAssertEqual(decoded.nextSequence, 7)
+
+        let reencoded = try XCTUnwrap(WatchWorkoutWire.encode(decoded))
+        let object = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: reencoded) as? [String: Any]
+        )
+        XCTAssertEqual(Set(object.keys), ["outbox", "nextSequence"])
+
+        let populated = WatchWorkoutPersistedState(snapshot: snapshot())
+        let populatedData = try XCTUnwrap(WatchWorkoutWire.encode(populated))
+        let populatedObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: populatedData) as? [String: Any]
+        )
+        XCTAssertEqual(
+            Set(populatedObject.keys),
+            ["snapshot", "outbox", "nextSequence"]
+        )
+    }
+
+    func testSnapshotEventAndSequenceArePreparedTogether() throws {
+        let oldSnapshot = snapshot()
+        var newSnapshot = oldSnapshot
+        newSnapshot.revision += 1
+        let current = WatchWorkoutPersistedState(snapshot: oldSnapshot)
+
+        let prepared = try WatchWorkoutPersistence.prepareEvent(
+            current: current,
+            snapshotChange: .replace(newSnapshot)
+        ) { sequence, persistedSnapshot in
+            self.event(
+                workoutID: persistedSnapshot?.workoutID ?? oldSnapshot.workoutID,
+                sequence: sequence
+            )
+        }
+
+        XCTAssertEqual(prepared.state.snapshot, newSnapshot)
+        XCTAssertEqual(prepared.state.nextSequence, 1)
+        XCTAssertEqual(prepared.state.outbox, [prepared.result])
+        XCTAssertEqual(prepared.result.sequence, 1)
+        XCTAssertEqual(
+            WatchWorkoutWire.decode(WatchWorkoutPersistedState.self, from: prepared.data),
+            prepared.state
+        )
+    }
+
+    func testInjectedEncodeFailureLeavesCandidateUnpublished() {
+        let original = WatchWorkoutPersistedState(snapshot: snapshot(), nextSequence: 4)
+
+        XCTAssertThrowsError(try WatchWorkoutPersistence.prepare(
+            current: original,
+            encode: { _ in nil }
+        ) { candidate in
+            candidate.snapshot = nil
+            candidate.nextSequence = 9
+        }) { error in
+            XCTAssertEqual(error as? WatchWorkoutPersistenceError, .encodingFailed)
+        }
+        XCTAssertNotNil(original.snapshot)
+        XCTAssertEqual(original.nextSequence, 4)
+        XCTAssertTrue(original.outbox.isEmpty)
+    }
+
+    func testNonFinitePayloadFailsRealJSONEncoding() {
+        let original = WatchWorkoutPersistedState(snapshot: snapshot())
+        let invalid = snapshot(weight: .nan)
+
+        XCTAssertThrowsError(try WatchWorkoutPersistence.prepare(
+            current: original
+        ) { candidate in
+            candidate.snapshot = invalid
+        }) { error in
+            XCTAssertEqual(error as? WatchWorkoutPersistenceError, .encodingFailed)
+        }
+        XCTAssertEqual(original.snapshot?.exercises.first?.sets.first?.weight, 40)
+    }
+
+    func testDiscardClearsSnapshotAndQueuesEventAtomically() throws {
+        let currentSnapshot = snapshot()
+        let current = WatchWorkoutPersistedState(snapshot: currentSnapshot, nextSequence: 2)
+
+        let prepared = try WatchWorkoutPersistence.prepareEvent(
+            current: current,
+            snapshotChange: .replace(nil)
+        ) { sequence, _ in
+            self.event(
+                workoutID: currentSnapshot.workoutID,
+                sequence: sequence,
+                kind: .workoutDiscarded
+            )
+        }
+
+        XCTAssertNil(prepared.state.snapshot)
+        XCTAssertEqual(prepared.state.nextSequence, 3)
+        XCTAssertEqual(prepared.state.outbox.map(\.kind), [.workoutDiscarded])
+    }
+
+    func testEventOnlyEncodeFailureDoesNotConsumeSequence() {
+        let currentSnapshot = snapshot()
+        let original = WatchWorkoutPersistedState(snapshot: currentSnapshot, nextSequence: 12)
+
+        XCTAssertThrowsError(try WatchWorkoutPersistence.prepareEvent(
+            current: original,
+            snapshotChange: .keep,
+            encode: { _ in nil }
+        ) { sequence, _ in
+            self.event(workoutID: currentSnapshot.workoutID, sequence: sequence)
+        })
+        XCTAssertEqual(original.nextSequence, 12)
+        XCTAssertTrue(original.outbox.isEmpty)
+    }
+
+    func testAcknowledgementFailureRetainsEventsAndSuccessRemovesOnlyRequestedIDs() throws {
+        let workoutID = UUID()
+        let first = event(workoutID: workoutID, sequence: 1)
+        let second = event(workoutID: workoutID, sequence: 2)
+        let original = WatchWorkoutPersistedState(outbox: [first, second], nextSequence: 2)
+
+        XCTAssertThrowsError(try WatchWorkoutPersistence.prepare(
+            current: original,
+            encode: { _ in nil }
+        ) { candidate in
+            candidate.outbox.removeAll { $0.id == first.id }
+        })
+        XCTAssertEqual(original.outbox, [first, second])
+
+        let acknowledged = try WatchWorkoutPersistence.prepare(current: original) { candidate in
+            candidate.outbox.removeAll { $0.id == first.id }
+        }
+        XCTAssertEqual(acknowledged.state.outbox, [second])
+        XCTAssertEqual(acknowledged.state.nextSequence, 2)
+    }
+
+    func testSequenceOverflowThrowsWithoutMutation() {
+        let currentSnapshot = snapshot()
+        let original = WatchWorkoutPersistedState(
+            snapshot: currentSnapshot,
+            nextSequence: .max
+        )
+
+        XCTAssertThrowsError(try WatchWorkoutPersistence.prepareEvent(
+            current: original,
+            snapshotChange: .keep
+        ) { sequence, _ in
+            self.event(workoutID: currentSnapshot.workoutID, sequence: sequence)
+        }) { error in
+            XCTAssertEqual(error as? WatchWorkoutPersistenceError, .sequenceOverflow)
+        }
+        XCTAssertEqual(original.nextSequence, .max)
+        XCTAssertTrue(original.outbox.isEmpty)
+    }
+
+    func testRevisionOverflowThrowsWithoutWrapping() {
+        var currentSnapshot = snapshot()
+        currentSnapshot.revision = .max
+
+        XCTAssertThrowsError(
+            try WatchWorkoutPersistence.incrementRevision(&currentSnapshot)
+        ) { error in
+            XCTAssertEqual(error as? WatchWorkoutPersistenceError, .revisionOverflow)
+        }
+        XCTAssertEqual(currentSnapshot.revision, .max)
+    }
+}

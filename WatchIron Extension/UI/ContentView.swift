@@ -65,9 +65,21 @@ struct WatchCard<Content: View>: View {
 }
 
 struct ContentView: View {
+    @ObservedObject private var workoutSessionManagerStore = WorkoutSessionManagerStore.shared
+
     var body: some View {
         _ContentView()
-            .environmentObject(WorkoutSessionManagerStore.shared)
+            .environmentObject(workoutSessionManagerStore)
+            .alert("Workout Not Saved", isPresented: Binding(
+                get: { workoutSessionManagerStore.persistenceFailure != nil },
+                set: { if !$0 { workoutSessionManagerStore.clearPersistenceFailure() } }
+            )) {
+                Button("OK", role: .cancel) {
+                    workoutSessionManagerStore.clearPersistenceFailure()
+                }
+            } message: {
+                Text(workoutSessionManagerStore.persistenceFailure?.message ?? "Please try again.")
+            }
     }
 }
 

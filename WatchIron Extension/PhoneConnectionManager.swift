@@ -123,7 +123,19 @@ extension PhoneConnectionManager {
             WorkoutSessionManagerStore.shared.applyWorkoutSnapshot(snapshot)
         } else if let ackData = message[PayloadKey.workoutEventAck] as? Data,
                   let ack = WatchWorkoutWire.decode(WatchWorkoutEventAck.self, from: ackData) {
-            WatchWorkoutStore.shared.acknowledge(eventIDs: ack.eventIDs)
+            do {
+                try WatchWorkoutStore.shared.acknowledge(eventIDs: ack.eventIDs)
+            } catch {
+                // The durable outbox still contains these events. Allow a later
+                // connectivity transition to redeliver them and obtain another
+                // idempotent ACK, but avoid an immediate retry loop.
+                ack.eventIDs.forEach {
+                    eventSendInFlight.remove($0)
+                    eventTransferSent.remove($0)
+                }
+                WorkoutSessionManagerStore.shared.reportPersistenceFailure(error)
+                return
+            }
             ack.eventIDs.forEach {
                 eventSendInFlight.remove($0)
                 eventTransferSent.remove($0)

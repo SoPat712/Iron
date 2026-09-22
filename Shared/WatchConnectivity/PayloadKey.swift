@@ -87,6 +87,103 @@ enum WatchWorkoutWire {
     }
 }
 
+/// The value stored under `watchWorkoutStore.v1`. Keep these property names
+/// stable so watch data written by earlier builds remains decodable.
+struct WatchWorkoutPersistedState: Codable, Equatable {
+    var snapshot: WatchWorkoutSnapshot?
+    var outbox: [WatchWorkoutEvent]
+    var nextSequence: Int64
+
+    init(
+        snapshot: WatchWorkoutSnapshot? = nil,
+        outbox: [WatchWorkoutEvent] = [],
+        nextSequence: Int64 = 0
+    ) {
+        self.snapshot = snapshot
+        self.outbox = outbox
+        self.nextSequence = nextSequence
+    }
+}
+
+enum WatchWorkoutPersistenceError: LocalizedError, Equatable {
+    case encodingFailed
+    case sequenceOverflow
+    case revisionOverflow
+    case missingProjection
+
+    var errorDescription: String? {
+        switch self {
+        case .encodingFailed:
+            return "The workout change could not be encoded for durable storage."
+        case .sequenceOverflow:
+            return "The workout event sequence is exhausted."
+        case .revisionOverflow:
+            return "The workout snapshot revision is exhausted."
+        case .missingProjection:
+            return "The workout action could not be saved because its local projection is missing."
+        }
+    }
+}
+
+enum WatchWorkoutSnapshotChange {
+    case keep
+    case replace(WatchWorkoutSnapshot?)
+}
+
+/// Prepares a complete replacement value before callers publish it in memory
+/// or write it to UserDefaults. This provides application-level atomicity for
+/// the snapshot, outbox, and event sequence.
+enum WatchWorkoutPersistence {
+    struct Prepared<Result> {
+        let state: WatchWorkoutPersistedState
+        let data: Data
+        let result: Result
+    }
+
+    static func prepare<Result>(
+        current: WatchWorkoutPersistedState,
+        encode: (WatchWorkoutPersistedState) -> Data? = { WatchWorkoutWire.encode($0) },
+        mutation: (inout WatchWorkoutPersistedState) throws -> Result
+    ) throws -> Prepared<Result> {
+        var candidate = current
+        let result = try mutation(&candidate)
+        guard let data = encode(candidate) else {
+            throw WatchWorkoutPersistenceError.encodingFailed
+        }
+        return Prepared(state: candidate, data: data, result: result)
+    }
+
+    static func prepareEvent(
+        current: WatchWorkoutPersistedState,
+        snapshotChange: WatchWorkoutSnapshotChange,
+        encode: (WatchWorkoutPersistedState) -> Data? = { WatchWorkoutWire.encode($0) },
+        makeEvent: (Int64, WatchWorkoutSnapshot?) -> WatchWorkoutEvent
+    ) throws -> Prepared<WatchWorkoutEvent> {
+        try prepare(current: current, encode: encode) { candidate in
+            guard candidate.nextSequence < Int64.max else {
+                throw WatchWorkoutPersistenceError.sequenceOverflow
+            }
+            candidate.nextSequence += 1
+            switch snapshotChange {
+            case .keep:
+                break
+            case .replace(let snapshot):
+                candidate.snapshot = snapshot
+            }
+            let event = makeEvent(candidate.nextSequence, candidate.snapshot)
+            candidate.outbox.append(event)
+            return event
+        }
+    }
+
+    static func incrementRevision(_ snapshot: inout WatchWorkoutSnapshot) throws {
+        guard snapshot.revision < Int64.max else {
+            throw WatchWorkoutPersistenceError.revisionOverflow
+        }
+        snapshot.revision += 1
+    }
+}
+
 struct WatchWorkoutSet: Codable, Identifiable, Equatable {
     let id: UUID
     var order: Int
