@@ -178,6 +178,13 @@ final class WorkoutLiveActivityManager {
         let backgroundTaskIdentifier: UIBackgroundTaskIdentifier
     }
 
+    struct EndSnapshot {
+        let workoutID: String
+        let completedSets: Int
+        let totalSets: Int
+        let fallbackSet: WorkoutActivityAttributes.SetSnapshot?
+    }
+
     private let confirmationTransitionLock = NSLock()
     private var pendingConfirmationTransitions: [String: PendingConfirmationTransition] = [:]
 
@@ -249,25 +256,38 @@ final class WorkoutLiveActivityManager {
     }
 
     func end(for workout: Workout, completed: Bool) {
-        let workoutID = identifier(for: workout)
-        cancelPendingConfirmationTransition(for: workoutID)
+        end(using: endSnapshot(for: workout), completed: completed)
+    }
+
+    /// Captures every Core Data value needed to end an activity before a
+    /// workout is durably deleted.
+    func endSnapshot(for workout: Workout) -> EndSnapshot {
         let counts = setCounts(in: workout)
-        let fallbackSet = currentPayload(for: workout)?.state.displaySet
+        return EndSnapshot(
+            workoutID: identifier(for: workout),
+            completedSets: counts.completed,
+            totalSets: counts.total,
+            fallbackSet: currentPayload(for: workout)?.state.displaySet
+        )
+    }
+
+    func end(using snapshot: EndSnapshot, completed: Bool) {
+        cancelPendingConfirmationTransition(for: snapshot.workoutID)
         let dismissalPolicy: ActivityUIDismissalPolicy = completed
             ? .after(Date().addingTimeInterval(30))
             : .immediate
 
         enqueueActivityOperation {
-            guard let activity = self.activity(for: workoutID) else { return }
+            guard let activity = self.activity(for: snapshot.workoutID) else { return }
             let finalState = WorkoutActivityAttributes.ContentState(
                 phase: .finished,
-                displaySet: activity.content.state.visibleSet(at: Date()) ?? fallbackSet,
+                displaySet: activity.content.state.visibleSet(at: Date()) ?? snapshot.fallbackSet,
                 nextSet: nil,
                 confirmationUntil: nil,
                 restTimerStart: nil,
                 restTimerEnd: nil,
-                completedSets: counts.completed,
-                totalSets: counts.total
+                completedSets: snapshot.completedSets,
+                totalSets: snapshot.totalSets
             )
             let content = ActivityContent(
                 state: finalState,

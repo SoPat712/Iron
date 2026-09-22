@@ -737,3 +737,242 @@ final class WorkoutLiveActivityReconciliationTests: XCTestCase {
         XCTAssertTrue(persistentContainer.viewContext.hasChanges)
     }
 }
+
+final class WatchEventPersistenceTests: XCTestCase {
+    private enum ExpectedError: Error { case saveFailed }
+
+    private var persistentContainer: NSPersistentContainer!
+    private var context: NSManagedObjectContext!
+    private var workout: Workout!
+    private var exercise: WorkoutExercise!
+    private var sets: [WorkoutSet]!
+
+    override func setUp() {
+        super.setUp()
+        persistentContainer = setUpInMemoryNSPersistentContainer()
+        context = persistentContainer.viewContext
+        workout = Workout.create(context: context)
+        workout.isCurrentWorkout = true
+        workout.start = Date(timeIntervalSinceReferenceDate: 1_000)
+        exercise = WorkoutExercise.create(context: context)
+        exercise.workout = workout
+        sets = (0..<2).map { index in
+            let set = WorkoutSet.create(context: context)
+            set.weightValue = Double(100 + index * 10)
+            set.repetitionsValue = Int16(5 + index)
+            set.workoutExercise = exercise
+            return set
+        }
+        workout.workoutExercises = NSOrderedSet(array: [exercise])
+        exercise.workoutSets = NSOrderedSet(array: sets)
+        try! context.save()
+    }
+
+    override func tearDown() {
+        context.reset()
+        context = nil
+        persistentContainer = nil
+        workout = nil
+        exercise = nil
+        sets = nil
+        super.tearDown()
+    }
+
+    private func event(
+        kind: WatchWorkoutEventKind,
+        setID: UUID? = nil,
+        weight: Double? = nil,
+        reps: Int? = nil,
+        id: UUID = UUID()
+    ) -> WatchWorkoutEvent {
+        WatchWorkoutEvent(
+            workoutID: workout.uuid!,
+            sequence: 1,
+            kind: kind,
+            exerciseID: exercise.uuid,
+            setID: setID,
+            weight: weight,
+            reps: reps,
+            id: id
+        )
+    }
+
+    func testFailedScalarUpdateRestoresEventFieldsAndPreservesPendingUserEdit() {
+        let originalWeight = sets[0].weight
+        let originalRepetitions = sets[0].repetitions
+        workout.title = "Pending user title"
+        var effects = 0
+        var acknowledgements = 0
+        let update = event(
+            kind: .setUpdated,
+            setID: sets[0].uuid,
+            weight: 225,
+            reps: 12
+        )
+
+        XCTAssertThrowsError(try WatchConnectionManager.commitWatchEventMutation(
+            in: context,
+            save: { throw ExpectedError.saveFailed },
+            mutation: {
+                _ = try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    update,
+                    to: self.workout,
+                    in: self.context
+                )
+                return .init(perform: { effects += 1 })
+            },
+            didPersist: { acknowledgements += 1 }
+        ))
+
+        XCTAssertEqual(sets[0].weight, originalWeight)
+        XCTAssertEqual(sets[0].repetitions, originalRepetitions)
+        XCTAssertEqual(workout.title, "Pending user title")
+        XCTAssertEqual(effects, 0)
+        XCTAssertEqual(acknowledgements, 0)
+        XCTAssertTrue(context.hasChanges)
+    }
+
+    func testFailedSetInsertionRemovesInsertedObject() {
+        let insertedID = UUID()
+        let add = event(kind: .setAdded, setID: insertedID, weight: 140, reps: 8)
+
+        XCTAssertThrowsError(try WatchConnectionManager.persistWatchEventMutation(
+            in: context,
+            save: { throw ExpectedError.saveFailed },
+            mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    add,
+                    to: self.workout,
+                    in: self.context
+                )
+            }
+        ))
+
+        let currentSets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+        XCTAssertEqual(currentSets.count, 2)
+        XCTAssertFalse(currentSets.contains { $0.uuid == insertedID })
+        XCTAssertFalse(context.insertedObjects.contains { ($0 as? WorkoutSet)?.uuid == insertedID })
+    }
+
+    func testFailedSetDeletionRestoresDeletedObjectAndRelationship() {
+        let deletedID = sets[0].uuid!
+        let delete = event(kind: .setDeleted, setID: deletedID)
+
+        XCTAssertThrowsError(try WatchConnectionManager.persistWatchEventMutation(
+            in: context,
+            save: { throw ExpectedError.saveFailed },
+            mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    delete,
+                    to: self.workout,
+                    in: self.context
+                )
+            }
+        ))
+
+        let currentSets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet } ?? []
+        XCTAssertEqual(currentSets.count, 2)
+        XCTAssertTrue(currentSets.contains { $0.uuid == deletedID })
+        XCTAssertFalse(sets[0].isDeleted)
+    }
+
+    func testFailedEventCanRetryAndOnlyThenPerformEffectsAndAcknowledge() throws {
+        let update = event(kind: .setUpdated, setID: sets[0].uuid, weight: 180, reps: 9)
+        var effects = 0
+        var acknowledgements = 0
+
+        XCTAssertThrowsError(try WatchConnectionManager.commitWatchEventMutation(
+            in: context,
+            save: { throw ExpectedError.saveFailed },
+            mutation: {
+                _ = try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    update,
+                    to: self.workout,
+                    in: self.context
+                )
+                return .init(perform: { effects += 1 })
+            },
+            didPersist: { acknowledgements += 1 }
+        ))
+
+        try WatchConnectionManager.commitWatchEventMutation(
+            in: context,
+            save: { try self.context.save() },
+            mutation: {
+                _ = try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    update,
+                    to: self.workout,
+                    in: self.context
+                )
+                return .init(perform: { effects += 1 })
+            },
+            didPersist: { acknowledgements += 1 }
+        )
+
+        XCTAssertEqual(sets[0].weightValue, 180, accuracy: 0.001)
+        XCTAssertEqual(sets[0].repetitionsValue, 9)
+        XCTAssertEqual(effects, 1)
+        XCTAssertEqual(acknowledgements, 1)
+        XCTAssertFalse(context.hasChanges)
+    }
+
+    func testDuplicateSetAddedEventRemainsIdempotent() throws {
+        let insertedID = UUID()
+        let eventID = UUID()
+        let add = event(kind: .setAdded, setID: insertedID, id: eventID)
+
+        for _ in 0..<2 {
+            _ = try WatchConnectionManager.persistWatchEventMutation(
+                in: context,
+                save: { try self.context.save() },
+                mutation: {
+                    try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                        add,
+                        to: self.workout,
+                        in: self.context
+                    )
+                }
+            )
+        }
+
+        let matchingSets = exercise.workoutSets?.array.compactMap { $0 as? WorkoutSet }
+            .filter { $0.uuid == insertedID } ?? []
+        XCTAssertEqual(matchingSets.count, 1)
+    }
+
+    func testThrowDuringMutationRestoresPendingChangesBeforeUndo() {
+        let originalWeight = sets[0].weightValue
+        workout.title = "Keep this pending title"
+        XCTAssertThrowsError(try WatchConnectionManager.persistWatchEventMutation(
+            in: context,
+            save: { XCTFail("A throwing mutation cannot be saved") },
+            mutation: {
+                self.sets[0].weightValue = 999
+                throw ExpectedError.saveFailed
+            }
+        ))
+        XCTAssertEqual(sets[0].weightValue, originalWeight)
+        XCTAssertEqual(workout.title, "Keep this pending title")
+    }
+
+    func testFailedWorkoutDiscardRestoresCascadingRelationships() {
+        let originalID = workout.uuid
+        let discard = event(kind: .workoutDiscarded)
+        workout.title = "Pending title"
+        XCTAssertThrowsError(try WatchConnectionManager.persistWatchEventMutation(
+            in: context,
+            save: { throw ExpectedError.saveFailed },
+            mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(
+                    discard, to: self.workout, in: self.context
+                )
+            }
+        ))
+        XCTAssertFalse(workout.isDeleted)
+        XCTAssertEqual(workout.uuid, originalID)
+        XCTAssertEqual(workout.title, "Pending title")
+        XCTAssertEqual(workout.workoutExercises?.count, 1)
+        XCTAssertEqual(exercise.workoutSets?.count, 2)
+        XCTAssertTrue(sets.allSatisfy { !$0.isDeleted })
+    }
+}

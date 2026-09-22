@@ -13,6 +13,7 @@ import Combine
 import HealthKit
 import WorkoutDataKit
 import UIKit
+import Intents
 import os.log
 
 /// The following behaviour was tested on watchOS 6.2 and iOS 13.4:
@@ -216,6 +217,60 @@ extension WatchConnectionManager {
 
 // MARK: - Durable watch edits
 extension WatchConnectionManager {
+    struct DeferredWatchEventEffects {
+        let perform: () -> Void
+
+        static var none: DeferredWatchEventEffects { DeferredWatchEventEffects(perform: {}) }
+    }
+
+    /// Captures only changes made by one Watch event. Pre-existing unsaved user
+    /// edits are processed before the temporary undo group begins and therefore
+    /// survive an event save failure.
+    static func persistWatchEventMutation(
+        in context: NSManagedObjectContext,
+        save: () throws -> Void,
+        mutation: () throws -> DeferredWatchEventEffects
+    ) throws -> DeferredWatchEventEffects {
+        context.processPendingChanges()
+        let previousUndoManager = context.undoManager
+        let eventUndoManager = UndoManager()
+        eventUndoManager.groupsByEvent = false
+        context.undoManager = eventUndoManager
+        defer { context.undoManager = previousUndoManager }
+
+        eventUndoManager.beginUndoGrouping()
+        do {
+            let effects = try mutation()
+            context.processPendingChanges()
+            eventUndoManager.endUndoGrouping()
+            try save()
+            return effects
+        } catch {
+            context.processPendingChanges()
+            if eventUndoManager.groupingLevel > 0 {
+                eventUndoManager.endUndoGrouping()
+            }
+            eventUndoManager.undo()
+            context.processPendingChanges()
+            throw error
+        }
+    }
+
+    static func commitWatchEventMutation(
+        in context: NSManagedObjectContext,
+        save: () throws -> Void,
+        mutation: () throws -> DeferredWatchEventEffects,
+        didPersist: () -> Void
+    ) throws {
+        let effects = try persistWatchEventMutation(
+            in: context,
+            save: save,
+            mutation: mutation
+        )
+        effects.perform()
+        didPersist()
+    }
+
     private func handleWorkoutEvent(_ event: WatchWorkoutEvent,
                                     replyHandler: (([String: Any]) -> Void)?) {
         guard event.schemaVersion <= WatchWorkoutWire.schemaVersion else {
@@ -252,14 +307,21 @@ extension WatchConnectionManager {
                     return
                 }
 
-                try self.apply(event, to: workout, in: context)
-                if context.hasChanges {
-                    try context.save()
-                }
-                self.recordProcessed(event, fieldKey: fieldKey)
-                self.acknowledge(eventID: event.id, replyHandler: replyHandler)
+                try Self.commitWatchEventMutation(
+                    in: context,
+                    save: {
+                        if context.hasChanges { try context.save() }
+                    },
+                    mutation: { try self.applyWatchEventModelMutation(event, to: workout, in: context) },
+                    didPersist: {
+                        self.recordProcessed(event, fieldKey: fieldKey)
+                        self.acknowledge(eventID: event.id, replyHandler: replyHandler)
+                    }
+                )
 
-                if !workout.isDeleted && workout.isCurrentWorkout {
+                if event.kind != .workoutDiscarded,
+                   !workout.isDeleted,
+                   workout.isCurrentWorkout {
                     self.sendWorkoutSnapshot(self.makeSnapshot(for: workout))
                 }
             } catch {
@@ -271,48 +333,59 @@ extension WatchConnectionManager {
         }
     }
 
-    private func apply(_ event: WatchWorkoutEvent,
-                       to workout: Workout,
-                       in context: NSManagedObjectContext) throws {
+    func applyWatchEventModelMutation(
+        _ event: WatchWorkoutEvent,
+        to workout: Workout,
+        in context: NSManagedObjectContext
+    ) throws -> DeferredWatchEventEffects {
         switch event.kind {
         case .setUpdated:
             guard workout.isCurrentWorkout,
-                  let set = workoutSet(with: event.setID, in: workout) else { return }
+                  let set = workoutSet(with: event.setID, in: workout) else { return .none }
             apply(weight: event.weight, reps: event.reps, rpe: event.rpe,
                   unit: event.weightUnit, to: set)
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            return DeferredWatchEventEffects {
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
 
         case .setCompletionChanged:
             guard workout.isCurrentWorkout,
                   let set = workoutSet(with: event.setID, in: workout),
-                  let completed = event.completed else { return }
+                  let completed = event.completed else { return .none }
             set.isCompleted = completed
             set.completedAt = completed ? (set.completedAt ?? event.createdAt) : nil
             if completed, let workoutExercise = set.workoutExercise {
                 let restTimerDuration = workoutExercise.restTimerDurationValue
                     ?? defaultRestTimerDuration(for: workoutExercise)
-                RestTimerStore.shared.restTimerDuration = restTimerDuration
-                RestTimerStore.shared.restTimerStart = event.createdAt
-                WorkoutLiveActivityManager.shared.setCompleted(
-                    set,
-                    in: workoutExercise,
-                    workout: workout
-                )
+                let restTimerEnd = event.createdAt.addingTimeInterval(restTimerDuration)
+                return DeferredWatchEventEffects {
+                    // This applies one atomic timer snapshot and intentionally
+                    // does not echo a Watch-originated timer back to the Watch.
+                    RestTimerStore.shared.applyWatchUpdate(end: restTimerEnd)
+                    WorkoutLiveActivityManager.shared.setCompleted(
+                        set,
+                        in: workoutExercise,
+                        workout: workout
+                    )
+                }
             } else {
-                RestTimerStore.shared.cancel()
-                WorkoutLiveActivityManager.shared.startOrUpdate(
-                    for: workout,
-                    preservingTransition: false
-                )
+                return DeferredWatchEventEffects {
+                    RestTimerStore.shared.cancel()
+                    WorkoutLiveActivityManager.shared.startOrUpdate(
+                        for: workout,
+                        preservingTransition: false
+                    )
+                }
+            }
+        case .restTimerUpdated:
+            guard workout.isCurrentWorkout else { return .none }
+            return DeferredWatchEventEffects {
+                RestTimerStore.shared.applyWatchUpdate(end: event.restTimerEnd)
+                WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
             }
 
-        case .restTimerUpdated:
-            guard workout.isCurrentWorkout else { return }
-            RestTimerStore.shared.applyWatchUpdate(end: event.restTimerEnd)
-            WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
-
         case .workoutFinished:
-            guard workout.isCurrentWorkout else { return }
+            guard workout.isCurrentWorkout else { return .none }
             if let snapshot = event.snapshot {
                 apply(snapshot, to: workout)
             }
@@ -329,31 +402,40 @@ extension WatchConnectionManager {
             workout.deleteExercisesWhereAllSetsAreUncompleted()
             workout.deleteUncompletedSets()
             workout.isCurrentWorkout = false
-            currentWatchWorkoutUuid = nil
-            RestTimerStore.shared.cancel()
-            WorkoutLiveActivityManager.shared.end(for: workout, completed: true)
+            return DeferredWatchEventEffects { [weak self] in
+                self?.currentWatchWorkoutUuid = nil
+                RestTimerStore.shared.cancel()
+                WorkoutLiveActivityManager.shared.end(for: workout, completed: true)
+            }
 
         case .workoutDiscarded:
-            guard workout.isCurrentWorkout else { return }
-            currentWatchWorkoutUuid = nil
-            RestTimerStore.shared.cancel()
-            WorkoutLiveActivityManager.shared.end(for: workout, completed: false)
-            Shortcuts.deleteStartWorkoutInteractionDonation(for: workout)
+            guard workout.isCurrentWorkout else { return .none }
+            let activityEndSnapshot = WorkoutLiveActivityManager.shared.endSnapshot(for: workout)
+            let workoutID = workout.uuid
             context.delete(workout)
+            return DeferredWatchEventEffects { [weak self] in
+                self?.currentWatchWorkoutUuid = nil
+                RestTimerStore.shared.cancel()
+                WorkoutLiveActivityManager.shared.end(using: activityEndSnapshot, completed: false)
+                self?.deleteStartWorkoutInteractionDonation(workoutID: workoutID)
+            }
 
         case .workoutFailed:
             // Keep the phone's workout intact, but allow a fresh HealthKit
             // session to be prepared the next time the apps reconnect.
-            if workout.isCurrentWorkout {
-                currentWatchWorkoutUuid = nil
+            let shouldClearWatchWorkout = workout.isCurrentWorkout
+            return DeferredWatchEventEffects { [weak self] in
+                if shouldClearWatchWorkout {
+                    self?.currentWatchWorkoutUuid = nil
+                }
+                os_log("Watch reported a failed workout session", log: .watch, type: .error)
             }
-            os_log("Watch reported a failed workout session", log: .watch, type: .error)
 
         case .setAdded:
             guard workout.isCurrentWorkout,
-                  let workoutExercise = workoutExercise(with: event.exerciseID, in: workout) else { return }
+                  let workoutExercise = workoutExercise(with: event.exerciseID, in: workout) else { return .none }
             if let setID = event.setID, workoutSet(with: setID, in: workout) != nil {
-                return
+                return .none
             }
             let set = WorkoutSet.create(context: context)
             if let setID = event.setID {
@@ -363,55 +445,67 @@ extension WatchConnectionManager {
             apply(weight: event.weight, reps: event.reps, rpe: event.rpe,
                   unit: event.weightUnit, to: set)
             set.isCompleted = false
-            selectedWatchSetUuid = set.uuid
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            let selectedSetID = set.uuid
+            return DeferredWatchEventEffects { [weak self] in
+                self?.selectedWatchSetUuid = selectedSetID
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
 
         case .setDeleted:
             guard workout.isCurrentWorkout,
                   let set = workoutSet(with: event.setID, in: workout),
                   let workoutExercise = set.workoutExercise,
-                  (workoutExercise.workoutSets?.count ?? 0) > 1 else { return }
-            if selectedWatchSetUuid == set.uuid {
-                selectedWatchSetUuid = (workoutExercise.workoutSets?.array as? [WorkoutSet])?
+                  (workoutExercise.workoutSets?.count ?? 0) > 1 else { return .none }
+            let replacementSelectedSetID: UUID? = selectedWatchSetUuid == set.uuid
+                ? (workoutExercise.workoutSets?.array as? [WorkoutSet])?
                     .first { $0.uuid != set.uuid }?.uuid
-            }
+                : selectedWatchSetUuid
             context.delete(set)
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            return DeferredWatchEventEffects { [weak self] in
+                self?.selectedWatchSetUuid = replacementSelectedSetID
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
 
         case .setTagChanged:
             guard workout.isCurrentWorkout,
-                  let set = workoutSet(with: event.setID, in: workout) else { return }
+                  let set = workoutSet(with: event.setID, in: workout) else { return .none }
             set.tagValue = event.tag.flatMap { WorkoutSetTag(rawValue: $0) }
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            return DeferredWatchEventEffects {
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
 
         case .exerciseAdded:
-            addExercise(from: event, to: workout, in: context)
+            return addExercise(from: event, to: workout, in: context)
 
         case .exerciseReplaced:
             guard workout.isCurrentWorkout,
                   let workoutExercise = workoutExercise(with: event.exerciseID, in: workout),
                   let catalogID = event.catalogExerciseUuid,
-                  ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return }
+                  ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return .none }
             workoutExercise.exerciseUuid = catalogID
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            return DeferredWatchEventEffects {
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
 
         case .exerciseDeleted:
             guard workout.isCurrentWorkout,
                   let workoutExercise = workoutExercise(with: event.exerciseID, in: workout),
-                  orderedExercises(in: workout).count > 1 else { return }
+                  orderedExercises(in: workout).count > 1 else { return .none }
             context.delete(workoutExercise)
-            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            return DeferredWatchEventEffects {
+                WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+            }
         }
     }
 
     private func addExercise(from event: WatchWorkoutEvent,
                              to workout: Workout,
-                             in context: NSManagedObjectContext) {
+                             in context: NSManagedObjectContext) -> DeferredWatchEventEffects {
         guard workout.isCurrentWorkout,
               let catalogID = event.catalogExerciseUuid,
-              ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return }
+              ExerciseStore.find(in: ExerciseStore.shared.exercises, with: catalogID) != nil else { return .none }
         if let exerciseID = event.exerciseID, workoutExercise(with: exerciseID, in: workout) != nil {
-            return
+            return .none
         }
 
         let workoutExercise = WorkoutExercise.create(context: context)
@@ -430,8 +524,11 @@ extension WatchConnectionManager {
         apply(weight: event.weight, reps: event.reps ?? 5, rpe: event.rpe,
               unit: event.weightUnit, to: set)
         set.isCompleted = false
-        selectedWatchSetUuid = set.uuid
-        WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        let selectedSetID = set.uuid
+        return DeferredWatchEventEffects { [weak self] in
+            self?.selectedWatchSetUuid = selectedSetID
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        }
     }
 
     private func defaultRestTimerDuration(
@@ -444,6 +541,18 @@ extension WatchConnectionManager {
             return SettingsStore.shared.defaultRestTimeDumbbellBased
         default:
             return SettingsStore.shared.defaultRestTime
+        }
+    }
+
+    private func deleteStartWorkoutInteractionDonation(workoutID: UUID?) {
+        guard let workoutID else { return }
+        os_log("Deleting start workout interaction with uuid=%@", log: .siri, workoutID as NSUUID)
+        INInteraction.delete(with: [workoutID.uuidString]) { error in
+            if let error {
+                os_log("Deleting interaction failed: %@", log: .siri, type: .error, error.localizedDescription)
+            } else {
+                os_log("Successfully deleted interaction with uuid=%@", log: .siri, type: .info, workoutID as NSUUID)
+            }
         }
     }
 
