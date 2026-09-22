@@ -9,6 +9,7 @@
 import XCTest
 import CoreData
 import WorkoutDataKit
+import UIKit
 @testable import Iron
 
 class IronBackupTests: XCTestCase {
@@ -184,6 +185,86 @@ class IronBackupTests: XCTestCase {
             )
         }
         XCTAssertTrue(unavailableStore.customExercises.isEmpty)
+    }
+}
+
+final class AutomaticBackupCoordinatorTests: XCTestCase {
+    @MainActor
+    func testCapturesBeforeAsyncWriteAndCoalescesOverlappingRequests() async {
+        let finished = expectation(description: "Background task ended")
+        var events: [String] = []
+        var complete: ((Result<URL, Error>) -> Void)?
+        let coordinator = AutomaticBackupCoordinator(
+            write: { data, completion in
+                XCTAssertEqual(data, Data([1, 2, 3]))
+                events.append("write")
+                complete = completion
+            },
+            begin: { _ in events.append("begin"); return UIBackgroundTaskIdentifier(rawValue: 1) },
+            end: { _ in events.append("end"); finished.fulfill() }
+        )
+        coordinator.start { events.append("capture"); return Data([1, 2, 3]) }
+        coordinator.start { XCTFail("Overlapping backup must be coalesced"); return Data() }
+        XCTAssertEqual(events, ["begin", "capture", "write"])
+        complete?(.success(URL(fileURLWithPath: "/tmp/test.ironbackup")))
+        await fulfillment(of: [finished], timeout: 2)
+        XCTAssertEqual(events.last, "end")
+    }
+
+    @MainActor
+    func testCaptureFailureEndsTaskWithoutWritingAndAllowsRetry() {
+        struct Failure: Error {}
+        var endCount = 0
+        let coordinator = AutomaticBackupCoordinator(
+            write: { _, _ in XCTFail("Failed snapshot cannot be written") },
+            begin: { _ in UIBackgroundTaskIdentifier(rawValue: 1) },
+            end: { _ in endCount += 1 }
+        )
+        coordinator.start { throw Failure() }
+        coordinator.start { throw Failure() }
+        XCTAssertEqual(endCount, 2)
+    }
+
+    @MainActor
+    func testWriteFailureEndsBackgroundTask() async {
+        struct Failure: Error {}
+        let finished = expectation(description: "Failed write ended")
+        let coordinator = AutomaticBackupCoordinator(
+            write: { _, completion in completion(.failure(Failure())) },
+            begin: { _ in UIBackgroundTaskIdentifier(rawValue: 1) },
+            end: { _ in finished.fulfill() }
+        )
+        coordinator.start { Data() }
+        await fulfillment(of: [finished], timeout: 2)
+    }
+
+    @MainActor
+    func testExpirationDoesNotAllowAnOlderWriteToRaceANewerBackup() async {
+        let expired = expectation(description: "Background time ended")
+        var expire: (() -> Void)?
+        var complete: ((Result<URL, Error>) -> Void)?
+        var writes = 0
+        var endCount = 0
+        let coordinator = AutomaticBackupCoordinator(
+            write: { _, completion in writes += 1; complete = completion },
+            begin: { expiration in
+                expire = expiration
+                return UIBackgroundTaskIdentifier(rawValue: 1)
+            },
+            end: { _ in endCount += 1; expired.fulfill() }
+        )
+        coordinator.start { Data([1]) }
+        expire?()
+        await fulfillment(of: [expired], timeout: 2)
+        coordinator.start { XCTFail("The expired write is still in flight"); return Data([2]) }
+        XCTAssertEqual(writes, 1)
+        complete?(.success(URL(fileURLWithPath: "/tmp/test.ironbackup")))
+        // The completion is delivered to the main actor before a subsequent
+        // background entry can start another run.
+        await Task.yield()
+        XCTAssertEqual(endCount, 1)
+        coordinator.start { Data([3]) }
+        XCTAssertEqual(writes, 2)
     }
 }
 

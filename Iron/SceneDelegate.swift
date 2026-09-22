@@ -230,6 +230,15 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         // Save changes in the application's managed object context when the application transitions to the background.
         os_log("Scene did enter background, saving workout data", log: .default)
         WorkoutDataStorage.shared.persistentContainer.viewContext.saveOrCrash()
+
+        if SettingsStore.shared.autoBackup {
+            AutomaticBackupCoordinator.shared.start {
+                try IronBackup.createBackupData(
+                    managedObjectContext: WorkoutDataStorage.shared.persistentContainer.viewContext,
+                    exerciseStore: ExerciseStore.shared
+                )
+            }
+        }
         
         if let currentWorkout = try? WorkoutDataStorage.shared.persistentContainer.viewContext.fetch(Workout.currentWorkoutFetchRequest).first {
             if currentWorkout.hasCompletedSets ?? false { // allows the user to prefill a workout without getting the notification

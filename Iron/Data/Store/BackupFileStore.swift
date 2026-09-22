@@ -225,3 +225,72 @@ extension BackupFileStore.BackupFile {
         ByteCountFormatter()
     }()
 }
+
+/// Captures Core Data on its owning queue before the asynchronous iCloud write.
+/// Never block the main queue waiting for work that may need that same queue.
+@MainActor
+final class AutomaticBackupCoordinator {
+    static let shared = AutomaticBackupCoordinator()
+
+    typealias Writer = (Data, @escaping (Result<URL, Error>) -> Void) -> Void
+    private let write: Writer
+    private let begin: (@escaping () -> Void) -> UIBackgroundTaskIdentifier
+    private let end: (UIBackgroundTaskIdentifier) -> Void
+    private var runID: UUID?
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+
+    init(
+        write: @escaping Writer = { data, completion in
+            BackupFileStore.create(data: { data }, completion: completion)
+        },
+        begin: @escaping (@escaping () -> Void) -> UIBackgroundTaskIdentifier = { expiration in
+            UIApplication.shared.beginBackgroundTask(withName: "Automatic backup", expirationHandler: expiration)
+        },
+        end: @escaping (UIBackgroundTaskIdentifier) -> Void = { task in
+            UIApplication.shared.endBackgroundTask(task)
+        }
+    ) {
+        self.write = write
+        self.begin = begin
+        self.end = end
+    }
+
+    func start(makeData: () throws -> Data) {
+        guard runID == nil else { return }
+        let id = UUID()
+        runID = id
+        backgroundTask = begin { [weak self] in
+            Task { @MainActor in self?.endBackgroundTime(id: id) }
+        }
+        do {
+            let data = try makeData()
+            write(data) { [weak self] result in
+                Task { @MainActor in
+                    if case .failure(let error) = result {
+                        os_log("Auto backup failed: %@", log: .backup, type: .error, error.localizedDescription)
+                    }
+                    self?.finish(id: id)
+                }
+            }
+        } catch {
+            os_log("Could not capture auto backup: %@", log: .backup, type: .error, error.localizedDescription)
+            finish(id: id)
+        }
+    }
+
+    private func finish(id: UUID) {
+        guard runID == id else { return }
+        endBackgroundTime(id: id)
+        runID = nil
+    }
+
+    private func endBackgroundTime(id: UUID) {
+        guard runID == id else { return }
+        // Expiration ends our background allowance, not the file operation.
+        // Keep the run in flight until its callback so an older write cannot
+        // race a newer snapshot to the same daily backup file.
+        let task = backgroundTask
+        backgroundTask = .invalid
+        if task != .invalid { end(task) }
+    }
+}

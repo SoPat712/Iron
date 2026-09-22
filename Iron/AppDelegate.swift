@@ -41,27 +41,6 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
-    func applicationWillTerminate(_ application: UIApplication) {
-        if SettingsStore.shared.autoBackup {
-            let dispatchGroup = DispatchGroup()
-            dispatchGroup.enter()
-            
-            os_log("Auto backup is enabled, creating backup", log: .backup, type: .default)
-            BackupFileStore.create(data: { () -> Data in
-                return try WorkoutDataStorage.shared.persistentContainer.viewContext.performAndWait { context in
-                    try IronBackup.createBackupData(managedObjectContext: context, exerciseStore: ExerciseStore.shared)
-                }
-            }) { result in
-                if case let .failure(error) = result {
-                    os_log("Auto backup failed: %@", log: .backup, type: .error, error.localizedDescription)
-                }
-                dispatchGroup.leave()
-            }
-            
-            // the app terminates after this function returns and the backup is written on another queue, therefore we have to wait() here
-            dispatchGroup.wait()
-        }
-    }
     
     // MARK: Intents
     
