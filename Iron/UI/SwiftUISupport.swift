@@ -1099,6 +1099,7 @@ struct IronDurationPickerSheet: View {
     let systemImage: String
     let secondaryActionTitle: String?
     let onSecondaryAction: (() -> Void)?
+    let shouldDismiss: () -> Bool
     let onApply: (TimeInterval) -> Void
 
     @State private var selection: TimeInterval
@@ -1119,6 +1120,7 @@ struct IronDurationPickerSheet: View {
         presets: [TimeInterval] = [30, 45, 60, 90, 120, 180, 300, 600],
         secondaryActionTitle: String? = nil,
         onSecondaryAction: (() -> Void)? = nil,
+        shouldDismiss: @escaping () -> Bool = { true },
         onApply: @escaping (TimeInterval) -> Void
     ) {
         self.title = title
@@ -1130,6 +1132,7 @@ struct IronDurationPickerSheet: View {
         self.presets = presets.filter { $0 >= minimumDuration && $0 <= maximumDuration }
         self.secondaryActionTitle = secondaryActionTitle
         self.onSecondaryAction = onSecondaryAction
+        self.shouldDismiss = shouldDismiss
         self.onApply = onApply
         _selection = State(
             initialValue: min(max(initialDuration, minimumDuration), max(maximumDuration, minimumDuration))
@@ -1177,7 +1180,7 @@ struct IronDurationPickerSheet: View {
                 VStack(spacing: 8) {
                     Button {
                         onApply(selection)
-                        dismiss()
+                        if shouldDismiss() { dismiss() }
                     } label: {
                         Label("Use \(durationTitle(selection))", systemImage: "checkmark")
                     }
@@ -1186,7 +1189,7 @@ struct IronDurationPickerSheet: View {
                     if let secondaryActionTitle, let onSecondaryAction {
                         Button {
                             onSecondaryAction()
-                            dismiss()
+                            if shouldDismiss() { dismiss() }
                         } label: {
                             Label(secondaryActionTitle, systemImage: "arrow.uturn.backward")
                         }

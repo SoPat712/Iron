@@ -2348,6 +2348,7 @@ struct InlineWorkoutSetRow: View {
 
     @State private var showingRPEPicker = false
     @State private var showingDurationPicker = false
+    @State private var showingDurationSaveError = false
     @State private var inlineTimerStart: Date?
 
     /// Timed sets can be run like a stopwatch instead of dialling in a target
@@ -2683,13 +2684,19 @@ struct InlineWorkoutSetRow: View {
         }
         .sheet(isPresented: $showingDurationPicker) {
             IronDurationPickerSheet(
-                initialDuration: set.durationValue ?? 60
+                initialDuration: set.durationValue ?? 60,
+                shouldDismiss: { !showingDurationSaveError }
             ) { duration in
                 set.durationValue = duration
                 set.distanceValue = nil
                 set.weightValue = 0
                 set.repetitionsValue = 0
-                _ = onChanged()
+                showingDurationSaveError = !onChanged()
+            }
+            .alert("Duration Not Saved", isPresented: $showingDurationSaveError) {
+                Button("OK", role: .cancel) { }
+            } message: {
+                Text("Your duration could not be saved. Keep this sheet open and try again.")
             }
         }
     }
