@@ -163,6 +163,24 @@ extension ExerciseStore {
 
 // MARK: - Custom Exercises
 extension ExerciseStore {
+    public struct CustomExerciseDefinition {
+        public let title: String
+        public let type: Exercise.ExerciseType
+
+        public init(title: String, type: Exercise.ExerciseType) {
+            self.title = title
+            self.type = type
+        }
+    }
+
+    public struct StagedCustomExerciseReplacement {
+        fileprivate let previousData: Data?
+        fileprivate let replacementData: Data
+        fileprivate let replacementExercises: [Exercise]
+
+        public var exercises: [Exercise] { replacementExercises }
+    }
+
     public enum CustomExerciseMutationError: LocalizedError {
         case invalidTitle
         case duplicateTitle(String)
@@ -186,6 +204,101 @@ extension ExerciseStore {
             case .couldNotWrite(let error):
                 return "Iron could not save the custom exercise: \(error.localizedDescription)"
             }
+        }
+    }
+
+    /// Prepares a single replacement without touching disk or publishing it.
+    /// Reading the original bytes first ensures corrupt existing storage fails
+    /// closed and can never be overwritten by an import.
+    public func stageCreatingCustomExercises(
+        _ definitions: [CustomExerciseDefinition]
+    ) throws -> StagedCustomExerciseReplacement? {
+        guard !definitions.isEmpty else { return nil }
+        guard let url = customExercisesURL else {
+            throw CustomExerciseMutationError.storageUnavailable
+        }
+
+        let previousData: Data?
+        let existingCustomExercises: [Exercise]
+        if FileManager.default.fileExists(atPath: url.path) {
+            do {
+                previousData = try Data(contentsOf: url)
+                existingCustomExercises = try JSONDecoder().decode([Exercise].self, from: previousData!)
+            } catch {
+                throw CustomExerciseMutationError.couldNotRead(error)
+            }
+        } else {
+            previousData = nil
+            existingCustomExercises = []
+        }
+
+        var allExercises = builtInExercises + existingCustomExercises
+        var replacements = existingCustomExercises
+        for definition in definitions {
+            let title = definition.title.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty else { throw CustomExerciseMutationError.invalidTitle }
+            guard !allExercises.contains(where: {
+                $0.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .localizedCaseInsensitiveCompare(title) == .orderedSame
+            }) else {
+                throw CustomExerciseMutationError.duplicateTitle(title)
+            }
+            let exercise = Exercise(
+                uuid: UUID(),
+                everkineticId: Exercise.customEverkineticId,
+                title: title,
+                alias: [],
+                description: nil,
+                primaryMuscle: [],
+                secondaryMuscle: [],
+                equipment: definition.type.equipment.map { [$0] } ?? [],
+                steps: [],
+                tips: [],
+                references: [],
+                pdfPaths: []
+            )
+            replacements.append(exercise)
+            allExercises.append(exercise)
+        }
+
+        do {
+            return StagedCustomExerciseReplacement(
+                previousData: previousData,
+                replacementData: try JSONEncoder().encode(replacements),
+                replacementExercises: replacements
+            )
+        } catch {
+            throw CustomExerciseMutationError.couldNotWrite(error)
+        }
+    }
+
+    public func write(_ replacement: StagedCustomExerciseReplacement) throws {
+        guard let url = customExercisesURL else {
+            throw CustomExerciseMutationError.storageUnavailable
+        }
+        do {
+            try replacement.replacementData.write(to: url, options: .atomic)
+        } catch {
+            throw CustomExerciseMutationError.couldNotWrite(error)
+        }
+    }
+
+    public func publish(_ replacement: StagedCustomExerciseReplacement) {
+        customExercises = replacement.replacementExercises
+    }
+
+    public func rollback(_ replacement: StagedCustomExerciseReplacement) throws {
+        guard let url = customExercisesURL else {
+            throw CustomExerciseMutationError.storageUnavailable
+        }
+        do {
+            if let previousData = replacement.previousData {
+                try previousData.write(to: url, options: .atomic)
+            } else if FileManager.default.fileExists(atPath: url.path) {
+                try FileManager.default.removeItem(at: url)
+            }
+        } catch {
+            throw CustomExerciseMutationError.couldNotWrite(error)
         }
     }
 

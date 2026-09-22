@@ -358,3 +358,281 @@ class ExportImportWorkoutDataTests: XCTestCase {
         XCTAssertTrue(store.entries.contains { $0.id == existing.id })
     }
 }
+
+extension ExportImportWorkoutDataTests {
+    private struct ImportSaveFailure: Error {}
+
+    private func workoutCSV(
+        title: String = "Imported",
+        start: String = "2026-08-17T08:16:00Z",
+        end: String = "2026-08-17T08:35:00Z",
+        exerciseTitle: String
+    ) -> Data {
+        Data("""
+        title,start_time,end_time,exercise_title,set_index,weight_kg,reps
+        \(title),\(start),\(end),\(exerciseTitle),0,100,8
+        """.utf8)
+    }
+
+    private func temporaryExerciseStore() -> (ExerciseStore, URL) {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("HevyImportCustomExercises.\(UUID().uuidString).json")
+        return (ExerciseStore(customExercisesURL: url), url)
+    }
+
+    func testImportTransactionErrorReportsPrimaryAndRollbackFailures() {
+        let primary = NSError(
+            domain: "HevyCSVImportTests",
+            code: 1,
+            userInfo: [NSLocalizedDescriptionKey: "unique primary save failure"]
+        )
+        let rollback = NSError(
+            domain: "HevyCSVImportTests",
+            code: 2,
+            userInfo: [NSLocalizedDescriptionKey: "unique custom rollback failure"]
+        )
+        let error = HevyCSVImportTransactionError(
+            primaryError: primary,
+            rollbackErrors: [rollback]
+        )
+
+        XCTAssertTrue(error.localizedDescription.contains("unique primary save failure"))
+        XCTAssertTrue(error.localizedDescription.contains("unique custom rollback failure"))
+    }
+
+    func testCustomExerciseReplacementDoesNotPublishBeforeImportCommit() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let replacement = try XCTUnwrap(store.stageCreatingCustomExercises([
+            .init(title: "Transaction Press", type: .barbell)
+        ]))
+
+        try store.write(replacement)
+
+        XCTAssertTrue(store.customExercises.isEmpty)
+        XCTAssertEqual(try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url)).count, 1)
+        store.publish(replacement)
+        XCTAssertEqual(store.customExercises.map(\.title), ["Transaction Press"])
+    }
+
+    func testCustomExerciseRollbackRestoresExactBytesAndAbsentFile() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let absentReplacement = try XCTUnwrap(store.stageCreatingCustomExercises([
+            .init(title: "Temporary Press", type: .other)
+        ]))
+        try store.write(absentReplacement)
+        try store.rollback(absentReplacement)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+
+        let original = try JSONEncoder().encode([Exercise]())
+        try original.write(to: url)
+        let existingReplacement = try XCTUnwrap(store.stageCreatingCustomExercises([
+            .init(title: "Another Press", type: .dumbbell)
+        ]))
+        try store.write(existingReplacement)
+        try store.rollback(existingReplacement)
+        XCTAssertEqual(try Data(contentsOf: url), original)
+    }
+
+    func testCorruptCustomExerciseFileFailsClosed() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let corrupt = Data("not-json".utf8)
+        try corrupt.write(to: url)
+
+        XCTAssertThrowsError(try store.stageCreatingCustomExercises([
+            .init(title: "Must Not Replace", type: .other)
+        ]))
+        XCTAssertEqual(try Data(contentsOf: url), corrupt)
+    }
+
+    func testBodyMetricsReplacementWritesWithoutPublishingAndRollsBack() throws {
+        let suiteName = "HevyStagedMeasurements.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let original = BodyMeasurementEntry(
+            date: Date(timeIntervalSince1970: 1_000),
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 80]
+        )
+        XCTAssertTrue(store.save(original, exportToHealth: false))
+        let replacementEntry = BodyMeasurementEntry(
+            date: Date(timeIntervalSince1970: 2_000),
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 82]
+        )
+        let replacement = try store.stageReplacement(with: [replacementEntry])
+
+        store.write(replacement)
+
+        XCTAssertEqual(store.entries, [original])
+        XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, [replacementEntry])
+        store.rollback(replacement)
+        XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, [original])
+    }
+
+    func testMixedImportSaveFailureRestoresExternalStorageAndImportedGraph() throws {
+        let (exerciseStore, exerciseURL) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: exerciseURL) }
+        let suiteName = "HevyMixedFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let measurementStore = BodyMetricsStore(userDefaults: defaults)
+        let original = BodyMeasurementEntry(
+            date: Date(timeIntervalSince1970: 1_000),
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 80]
+        )
+        XCTAssertTrue(measurementStore.save(original, exportToHealth: false))
+        let unrelated = Workout.create(context: persistenContainer.viewContext)
+        unrelated.title = "Pending User Edit"
+        unrelated.start = Date(timeIntervalSince1970: 100)
+        unrelated.end = Date(timeIntervalSince1970: 200)
+        unrelated.isCurrentWorkout = true
+        var saveInvoked = false
+
+        XCTAssertThrowsError(try HevyCSV.importData(
+            [
+                workoutCSV(exerciseTitle: "Unstored Transaction Lift"),
+                Data("date,weight_kg\n2026-08-18T08:00:00Z,82\n".utf8)
+            ],
+            into: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            bodyMetricsStore: measurementStore,
+            save: {
+                saveInvoked = true
+                throw ImportSaveFailure()
+            }
+        ))
+
+        XCTAssertTrue(saveInvoked)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: exerciseURL.path))
+        XCTAssertTrue(exerciseStore.customExercises.isEmpty)
+        XCTAssertEqual(measurementStore.entries, [original])
+        XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, [original])
+        XCTAssertFalse(unrelated.isDeleted)
+        XCTAssertEqual(unrelated.title, "Pending User Edit")
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        XCTAssertFalse(try persistenContainer.viewContext.fetch(request).contains { $0.title == "Imported" })
+    }
+
+    func testMeasurementOnlySaveFailureRestoresDefaultsAndPublishesNothing() throws {
+        let suiteName = "HevyMeasurementFailure.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let original = BodyMeasurementEntry(
+            date: Date(timeIntervalSince1970: 1_000),
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 80]
+        )
+        XCTAssertTrue(store.save(original, exportToHealth: false))
+        var saveInvoked = false
+
+        XCTAssertThrowsError(try HevyCSV.importData(
+            Data("date,weight_kg\n2026-08-18T08:00:00Z,82\n".utf8),
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store,
+            save: {
+                saveInvoked = true
+                throw ImportSaveFailure()
+            }
+        ))
+
+        XCTAssertTrue(saveInvoked)
+        XCTAssertEqual(store.entries, [original])
+        XCTAssertEqual(BodyMetricsStore(userDefaults: defaults).entries, [original])
+    }
+
+    func testDuplicateWorkoutDoesNotCreateExerciseFromSkippedRows() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let existingExercise = try XCTUnwrap(store.builtInExercises.first)
+        _ = try HevyCSV.importData(
+            workoutCSV(title: "Duplicate", exerciseTitle: existingExercise.title),
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+
+        let result = try HevyCSV.importData(
+            workoutCSV(title: "Duplicate", exerciseTitle: "Should Never Be Created"),
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(result.createdExercises, 0)
+        XCTAssertTrue(store.customExercises.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testBatchSkipsDuplicateWorkoutAcrossSelectedFiles() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let document = workoutCSV(title: "Selected Duplicate", exerciseTitle: exercise.title)
+
+        let result = try HevyCSV.importData(
+            [document, document],
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(result.importedSets, 1)
+    }
+
+    func testBatchMeasurementMergePreservesIDAndSequentialCounts() throws {
+        let suiteName = "HevySequentialMeasurements.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BodyMetricsStore(userDefaults: defaults)
+        let id = UUID()
+        let original = BodyMeasurementEntry(
+            id: id,
+            date: ISO8601DateFormatter().date(from: "2026-08-18T08:00:00Z")!,
+            values: [BodyMeasurementKind.bodyWeight.rawValue: 80]
+        )
+        XCTAssertTrue(store.save(original, exportToHealth: false))
+
+        let result = try HevyCSV.importData(
+            [
+                Data("date,weight_kg\n2026-08-18T08:00:00Z,82\n".utf8),
+                Data("date,weight_kg,fat_percent\n2026-08-18T08:00:00Z,82,18\n".utf8)
+            ],
+            into: persistenContainer.viewContext,
+            exerciseStore: .shared,
+            bodyMetricsStore: store
+        )
+
+        XCTAssertEqual(result.updatedMeasurements, 2)
+        XCTAssertEqual(store.entries.count, 1)
+        XCTAssertEqual(store.entries.first?.id, id)
+        XCTAssertEqual(store.entries.first?[.bodyWeight], 82)
+        XCTAssertEqual(store.entries.first?[.bodyFat], 18)
+    }
+
+    func testSuccessfulMixedBatchPublishesAllStagedStores() throws {
+        let (exerciseStore, exerciseURL) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: exerciseURL) }
+        let suiteName = "HevyMixedSuccess.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let measurementStore = BodyMetricsStore(userDefaults: defaults)
+
+        let result = try HevyCSV.importData(
+            [
+                workoutCSV(exerciseTitle: "Committed Transaction Lift"),
+                Data("date,weight_kg\n2026-08-18T08:00:00Z,82\n".utf8)
+            ],
+            into: persistenContainer.viewContext,
+            exerciseStore: exerciseStore,
+            bodyMetricsStore: measurementStore
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.importedSets, 1)
+        XCTAssertEqual(result.importedMeasurements, 1)
+        XCTAssertEqual(result.createdExercises, 1)
+        XCTAssertEqual(exerciseStore.customExercises.map(\.title), ["Committed Transaction Lift"])
+        XCTAssertEqual(measurementStore.entries.first?[.bodyWeight], 82)
+    }
+}

@@ -124,6 +124,18 @@ enum HevyCSVError: LocalizedError {
     }
 }
 
+struct HevyCSVImportTransactionError: LocalizedError {
+    let primaryError: Error
+    let rollbackErrors: [Error]
+
+    var errorDescription: String? {
+        guard !rollbackErrors.isEmpty else { return primaryError.localizedDescription }
+        return "The import failed: \(primaryError.localizedDescription) "
+            + "Iron also could not fully restore its prior data: "
+            + rollbackErrors.map(\.localizedDescription).joined(separator: "; ")
+    }
+}
+
 enum HevyCSV {
     private static let requiredColumns = ["title", "start_time", "exercise_title", "set_index"]
     private static let inputDateFormatters: [DateFormatter] = {
@@ -165,6 +177,18 @@ enum HevyCSV {
         let skippedRows: Int
     }
 
+    private enum ParsedImportDocument {
+        case workouts(HevyCSVDocument)
+        case measurements(MeasurementDocument)
+    }
+
+    private struct MeasurementPlan {
+        let entries: [BodyMeasurementEntry]
+        let inserted: Int
+        let updated: Int
+        let duplicates: Int
+    }
+
     static func parse(data: Data) throws -> HevyCSVDocument {
         guard var text = String(data: data, encoding: .utf8) else {
             throw HevyCSVError.unreadableText
@@ -199,157 +223,188 @@ enum HevyCSV {
         _ data: Data,
         into context: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
-        bodyMetricsStore: BodyMetricsStore = .shared
+        bodyMetricsStore: BodyMetricsStore = .shared,
+        save: (() throws -> Void)? = nil
     ) throws -> HevyCSVImportResult {
-        if try isMeasurementDocument(data) {
-            return try importMeasurementData(data, into: bodyMetricsStore)
+        try importData(
+            [data],
+            into: context,
+            exerciseStore: exerciseStore,
+            bodyMetricsStore: bodyMetricsStore,
+            save: save
+        )
+    }
+
+    /// Imports every selected CSV as one recoverable operation. External
+    /// storage is written before Core Data, but is not published until the
+    /// scoped Core Data save succeeds.
+    static func importData(
+        _ dataDocuments: [Data],
+        into context: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        bodyMetricsStore: BodyMetricsStore = .shared,
+        save: (() throws -> Void)? = nil
+    ) throws -> HevyCSVImportResult {
+        guard !dataDocuments.isEmpty else { throw HevyCSVError.noWorkoutRows }
+
+        let documents = try dataDocuments.map(parseImportDocument)
+        let allGroups = documents.flatMap { document -> [WorkoutGroup] in
+            guard case .workouts(let workoutDocument) = document else { return [] }
+            return workoutGroups(from: workoutDocument.records)
         }
-
-        let document = try parse(data: data)
-        let groups = workoutGroups(from: document.records)
-
-        var resolvedExercises = [String: Exercise]()
-        var createdExerciseNames = Set<String>()
-        for record in document.records {
-            let key = normalizedName(record.exerciseTitle)
-            guard resolvedExercises[key] == nil else { continue }
-            if let exercise = matchExercise(named: record.exerciseTitle, in: exerciseStore.exercises) {
-                resolvedExercises[key] = exercise
-                continue
+        let measurementDocuments = documents.compactMap { document -> MeasurementDocument? in
+            guard case .measurements(let measurementDocument) = document else { return nil }
+            return measurementDocument
+        }
+        let skippedRows = documents.reduce(into: 0) { count, document in
+            switch document {
+            case .workouts(let workoutDocument): count += workoutDocument.skippedRows
+            case .measurements(let measurementDocument): count += measurementDocument.skippedRows
             }
-
-            do {
-                try exerciseStore.createCustomExercise(
-                    title: record.exerciseTitle,
-                    description: nil,
-                    primaryMuscle: [],
-                    secondaryMuscle: [],
-                    type: inferredExerciseType(from: record.exerciseTitle)
-                )
-            } catch {
-                throw HevyCSVError.couldNotCreateExercise(record.exerciseTitle)
-            }
-            guard let exercise = matchExercise(named: record.exerciseTitle, in: exerciseStore.exercises) else {
-                throw HevyCSVError.couldNotCreateExercise(record.exerciseTitle)
-            }
-            resolvedExercises[key] = exercise
-            createdExerciseNames.insert(key)
+        }
+        let measurementPlan = measurementDocuments.isEmpty
+            ? nil
+            : makeMeasurementPlan(measurementDocuments, existing: bodyMetricsStore.entries)
+        let stagedMeasurements = try measurementPlan.map {
+            try bodyMetricsStore.stageReplacement(with: $0.entries)
         }
 
         return try context.performAndWait { context in
             let request: NSFetchRequest<Workout> = Workout.fetchRequest()
             request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(value: true))
             let existingWorkouts = try context.fetch(request)
-            var existingKeys = Set(existingWorkouts.map {
+            var knownKeys = Set(existingWorkouts.map {
                 workoutKey(start: $0.safeStart, title: $0.displayTitle(in: exerciseStore.exercises))
             })
-
-            var insertedObjects = [NSManagedObject]()
-            var importedWorkouts = 0
-            var importedSets = 0
+            var acceptedGroups = [WorkoutGroup]()
             var skippedDuplicates = 0
-
-            do {
-                for group in groups {
-                    guard !existingKeys.contains(group.key), let first = group.records.first else {
-                        skippedDuplicates += 1
-                        continue
-                    }
-
-                    let workout = Workout.create(context: context)
-                    insertedObjects.append(workout)
-                    workout.title = nonempty(first.title) ?? "Workout"
-                    workout.comment = nonempty(unescapeNewlines(first.description))
-                    workout.start = first.startTime
-                    let parsedEnd = group.records.compactMap(\.endTime).max()
-                    workout.end = max(parsedEnd ?? first.startTime, first.startTime)
-                    workout.isCurrentWorkout = false
-
-                    let exerciseRuns = splitExerciseRuns(group.records)
-                    var supersetUUIDs = [String: UUID]()
-                    for run in exerciseRuns {
-                        guard let firstExerciseRecord = run.records.first,
-                              let exercise = resolvedExercises[normalizedName(firstExerciseRecord.exerciseTitle)] else { continue }
-
-                        let workoutExercise = WorkoutExercise.create(context: context)
-                        insertedObjects.append(workoutExercise)
-                        workoutExercise.exerciseUuid = exercise.uuid
-                        workoutExercise.comment = nonempty(unescapeNewlines(firstExerciseRecord.exerciseNotes))
-                        if let sourceSupersetID = nonempty(firstExerciseRecord.supersetID) {
-                            let uuid = supersetUUIDs[sourceSupersetID] ?? UUID()
-                            supersetUUIDs[sourceSupersetID] = uuid
-                            workoutExercise.supersetUuid = uuid
-                        }
-                        workout.addToWorkoutExercises(workoutExercise)
-
-                        for record in run.records.sorted(by: setOrder) {
-                            let workoutSet = WorkoutSet.create(context: context)
-                            insertedObjects.append(workoutSet)
-                            workoutSet.weightValue = max(record.weightKilograms ?? 0, 0)
-                            workoutSet.repetitionsValue = Int16(clamping: record.repetitions)
-                            workoutSet.durationValue = record.durationSeconds
-                            workoutSet.distanceValue = record.distanceMeters
-                            workoutSet.rpeValue = record.rpe
-                            workoutSet.tagValue = workoutSetTag(for: record.setType)
-                            workoutSet.completedAt = workout.end
-                            workoutSet.isCompleted = true
-                            workoutExercise.addToWorkoutSets(workoutSet)
-                            importedSets += 1
-                        }
-                    }
-
-                    importedWorkouts += 1
-                    existingKeys.insert(group.key)
+            for group in allGroups {
+                guard !knownKeys.contains(group.key) else {
+                    skippedDuplicates += 1
+                    continue
                 }
-
-                if context.hasChanges {
-                    try context.save()
-                }
-            } catch {
-                insertedObjects.reversed().forEach { object in
-                    if !object.isDeleted { context.delete(object) }
-                }
-                throw error
+                knownKeys.insert(group.key)
+                acceptedGroups.append(group)
             }
 
-            return HevyCSVImportResult(
-                importedWorkouts: importedWorkouts,
-                importedSets: importedSets,
-                importedMeasurements: 0,
-                updatedMeasurements: 0,
-                createdExercises: createdExerciseNames.count,
-                skippedDuplicateWorkouts: skippedDuplicates,
-                skippedDuplicateMeasurements: 0,
-                skippedRows: document.skippedRows
-            )
+            var missingDefinitions = [ExerciseStore.CustomExerciseDefinition]()
+            var plannedTitles = [String]()
+            for record in acceptedGroups.flatMap(\.records) {
+                guard matchExercise(named: record.exerciseTitle, in: exerciseStore.exercises) == nil,
+                      !plannedTitles.contains(where: {
+                          normalizedName($0) == normalizedName(record.exerciseTitle)
+                              || normalizedTokens($0) == normalizedTokens(record.exerciseTitle)
+                      }) else { continue }
+                plannedTitles.append(record.exerciseTitle)
+                missingDefinitions.append(.init(
+                    title: record.exerciseTitle,
+                    type: inferredExerciseType(from: record.exerciseTitle)
+                ))
+            }
+
+            let stagedExercises: ExerciseStore.StagedCustomExerciseReplacement?
+            do {
+                stagedExercises = try exerciseStore.stageCreatingCustomExercises(missingDefinitions)
+            } catch {
+                throw HevyCSVError.couldNotCreateExercise(missingDefinitions.first?.title ?? "exercise")
+            }
+            let candidateExercises = exerciseStore.builtInExercises
+                + (stagedExercises?.exercises ?? exerciseStore.customExercises)
+            var resolvedExercises = [String: Exercise]()
+            for record in acceptedGroups.flatMap(\.records) {
+                let key = normalizedName(record.exerciseTitle)
+                guard resolvedExercises[key] == nil else { continue }
+                guard let exercise = matchExercise(named: record.exerciseTitle, in: candidateExercises) else {
+                    throw HevyCSVError.couldNotCreateExercise(record.exerciseTitle)
+                }
+                resolvedExercises[key] = exercise
+            }
+
+            var customWasWritten = false
+            var measurementsWereWritten = false
+            do {
+                if let stagedExercises {
+                    try exerciseStore.write(stagedExercises)
+                    customWasWritten = true
+                }
+                if let stagedMeasurements {
+                    bodyMetricsStore.write(stagedMeasurements)
+                    measurementsWereWritten = true
+                }
+
+                var importedSets = 0
+                try context.persistMutation(
+                    save: {
+                        if let save { try save() }
+                        else if context.hasChanges { try context.save() }
+                    },
+                    mutation: {
+                        for group in acceptedGroups {
+                            guard let first = group.records.first else { continue }
+                            let workout = Workout.create(context: context)
+                            workout.title = nonempty(first.title) ?? "Workout"
+                            workout.comment = nonempty(unescapeNewlines(first.description))
+                            workout.start = first.startTime
+                            let parsedEnd = group.records.compactMap(\.endTime).max()
+                            workout.end = max(parsedEnd ?? first.startTime, first.startTime)
+                            workout.isCurrentWorkout = false
+
+                            var supersetUUIDs = [String: UUID]()
+                            for run in splitExerciseRuns(group.records) {
+                                guard let firstExerciseRecord = run.records.first,
+                                      let exercise = resolvedExercises[normalizedName(firstExerciseRecord.exerciseTitle)] else { continue }
+                                let workoutExercise = WorkoutExercise.create(context: context)
+                                workoutExercise.exerciseUuid = exercise.uuid
+                                workoutExercise.comment = nonempty(unescapeNewlines(firstExerciseRecord.exerciseNotes))
+                                if let sourceSupersetID = nonempty(firstExerciseRecord.supersetID) {
+                                    let uuid = supersetUUIDs[sourceSupersetID] ?? UUID()
+                                    supersetUUIDs[sourceSupersetID] = uuid
+                                    workoutExercise.supersetUuid = uuid
+                                }
+                                workout.addToWorkoutExercises(workoutExercise)
+
+                                for record in run.records.sorted(by: setOrder) {
+                                    let workoutSet = WorkoutSet.create(context: context)
+                                    workoutSet.weightValue = max(record.weightKilograms ?? 0, 0)
+                                    workoutSet.repetitionsValue = Int16(clamping: record.repetitions)
+                                    workoutSet.durationValue = record.durationSeconds
+                                    workoutSet.distanceValue = record.distanceMeters
+                                    workoutSet.rpeValue = record.rpe
+                                    workoutSet.tagValue = workoutSetTag(for: record.setType)
+                                    workoutSet.completedAt = workout.end
+                                    workoutSet.isCompleted = true
+                                    workoutExercise.addToWorkoutSets(workoutSet)
+                                    importedSets += 1
+                                }
+                            }
+                        }
+                    }
+                )
+
+                if let stagedExercises { exerciseStore.publish(stagedExercises) }
+                if let stagedMeasurements { bodyMetricsStore.publish(stagedMeasurements) }
+                return HevyCSVImportResult(
+                    importedWorkouts: acceptedGroups.count,
+                    importedSets: importedSets,
+                    importedMeasurements: measurementPlan?.inserted ?? 0,
+                    updatedMeasurements: measurementPlan?.updated ?? 0,
+                    createdExercises: missingDefinitions.count,
+                    skippedDuplicateWorkouts: skippedDuplicates,
+                    skippedDuplicateMeasurements: measurementPlan?.duplicates ?? 0,
+                    skippedRows: skippedRows
+                )
+            } catch {
+                if measurementsWereWritten, let stagedMeasurements {
+                    bodyMetricsStore.rollback(stagedMeasurements)
+                }
+                var rollbackErrors = [Error]()
+                if customWasWritten, let stagedExercises {
+                    do { try exerciseStore.rollback(stagedExercises) }
+                    catch { rollbackErrors.append(error) }
+                }
+                throw HevyCSVImportTransactionError(primaryError: error, rollbackErrors: rollbackErrors)
+            }
         }
-    }
-
-    /// Imports every selected Hevy CSV as one operation. All files are parsed
-    /// before the first write so a malformed second file cannot leave the
-    /// first file partially imported.
-    static func importData(
-        _ dataDocuments: [Data],
-        into context: NSManagedObjectContext,
-        exerciseStore: ExerciseStore,
-        bodyMetricsStore: BodyMetricsStore = .shared
-    ) throws -> HevyCSVImportResult {
-        guard !dataDocuments.isEmpty else { throw HevyCSVError.noWorkoutRows }
-
-        try dataDocuments.forEach(validateImportData)
-
-        var combinedResult: HevyCSVImportResult?
-        for data in dataDocuments {
-            let result = try importData(
-                data,
-                into: context,
-                exerciseStore: exerciseStore,
-                bodyMetricsStore: bodyMetricsStore
-            )
-            combinedResult = combinedResult.map { $0.combined(with: result) } ?? result
-        }
-        guard let combinedResult else { throw HevyCSVError.noWorkoutRows }
-        return combinedResult
     }
 
     static func exportMeasurementData(
@@ -572,29 +627,26 @@ enum HevyCSV {
         return Set(scalarColumns + lengthColumns)
     }()
 
-    private static func validateImportData(_ data: Data) throws {
+    private static func parseImportDocument(_ data: Data) throws -> ParsedImportDocument {
         if try isMeasurementDocument(data) {
-            _ = try parseMeasurementData(data)
+            return .measurements(try parseMeasurementData(data))
         } else {
-            _ = try parse(data: data)
+            return .workouts(try parse(data: data))
         }
     }
 
-    private static func importMeasurementData(
-        _ data: Data,
-        into store: BodyMetricsStore
-    ) throws -> HevyCSVImportResult {
-        let document = try parseMeasurementData(data)
-        let importedEntries = document.entries
-
+    private static func makeMeasurementPlan(
+        _ documents: [MeasurementDocument],
+        existing entries: [BodyMeasurementEntry]
+    ) -> MeasurementPlan {
         var knownEntries = [TimeInterval: BodyMeasurementEntry]()
-        for entry in store.entries {
+        for entry in entries {
             knownEntries[entry.date.timeIntervalSince1970.rounded()] = entry
         }
         var inserted = 0
         var updated = 0
         var duplicates = 0
-        for entry in importedEntries {
+        for entry in documents.flatMap(\.entries) {
             let key = entry.date.timeIntervalSince1970.rounded()
             if var existing = knownEntries[key] {
                 let mergedValues = existing.values.merging(entry.values) { _, imported in imported }
@@ -603,29 +655,18 @@ enum HevyCSV {
                     continue
                 }
                 existing.values = mergedValues
-                guard store.save(existing, exportToHealth: false) else {
-                    throw HevyCSVError.couldNotSaveMeasurements
-                }
                 knownEntries[key] = existing
                 updated += 1
             } else {
-                guard store.save(entry, exportToHealth: false) else {
-                    throw HevyCSVError.couldNotSaveMeasurements
-                }
                 knownEntries[key] = entry
                 inserted += 1
             }
         }
-
-        return HevyCSVImportResult(
-            importedWorkouts: 0,
-            importedSets: 0,
-            importedMeasurements: inserted,
-            updatedMeasurements: updated,
-            createdExercises: 0,
-            skippedDuplicateWorkouts: 0,
-            skippedDuplicateMeasurements: duplicates,
-            skippedRows: document.skippedRows
+        return MeasurementPlan(
+            entries: Array(knownEntries.values),
+            inserted: inserted,
+            updated: updated,
+            duplicates: duplicates
         )
     }
 

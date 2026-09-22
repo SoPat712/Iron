@@ -130,6 +130,14 @@ struct BodyMeasurementEntry: Codable, Identifiable, Equatable {
 }
 
 final class BodyMetricsStore: ObservableObject {
+    struct StagedReplacement {
+        fileprivate let previousData: Data?
+        fileprivate let replacementData: Data
+        fileprivate let replacementEntries: [BodyMeasurementEntry]
+
+        var entries: [BodyMeasurementEntry] { replacementEntries }
+    }
+
     static let shared = BodyMetricsStore()
 
     @Published private(set) var entries: [BodyMeasurementEntry]
@@ -194,6 +202,43 @@ final class BodyMetricsStore: ObservableObject {
         var dictionary: [String: Double] = [:]
         values.forEach { dictionary[$0.key.rawValue] = $0.value }
         save(BodyMeasurementEntry(date: date, values: dictionary), exportToHealth: false)
+    }
+
+    func stageReplacement(with entries: [BodyMeasurementEntry]) throws -> StagedReplacement {
+        guard entries.allSatisfy({ entry in
+            entry.date.timeIntervalSinceReferenceDate.isFinite
+                && entry.values.values.allSatisfy { $0.isFinite && $0 > 0 }
+        }) else {
+            throw HevyCSVError.couldNotSaveMeasurements
+        }
+        let sorted = entries.sorted { $0.date > $1.date }
+        do {
+            return StagedReplacement(
+                previousData: userDefaults.data(forKey: storageKey),
+                replacementData: try JSONEncoder().encode(sorted),
+                replacementEntries: sorted
+            )
+        } catch {
+            throw HevyCSVError.couldNotSaveMeasurements
+        }
+    }
+
+    /// UserDefaults does not expose durable-write failures. Encoding is done
+    /// during staging; this method only installs the already encoded value.
+    func write(_ replacement: StagedReplacement) {
+        userDefaults.set(replacement.replacementData, forKey: storageKey)
+    }
+
+    func publish(_ replacement: StagedReplacement) {
+        entries = replacement.replacementEntries
+    }
+
+    func rollback(_ replacement: StagedReplacement) {
+        if let previousData = replacement.previousData {
+            userDefaults.set(previousData, forKey: storageKey)
+        } else {
+            userDefaults.removeObject(forKey: storageKey)
+        }
     }
 
     private func persist(_ updated: [BodyMeasurementEntry]) -> Bool {
