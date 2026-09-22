@@ -1371,3 +1371,105 @@ final class SavedWorkoutEditorPersistenceTests: XCTestCase {
         XCTAssertFalse(context.hasChanges)
     }
 }
+
+final class NewWorkoutStartPersistenceTests: XCTestCase {
+    private struct SaveFailure: Error {}
+
+    func testUnavailableRoutineCannotCreateAWorkout() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let otherContainer = setUpInMemoryNSPersistentContainer()
+        let foreignRoutine = WorkoutRoutine.create(context: otherContainer.viewContext)
+        var saveCalled = false
+
+        XCTAssertThrowsError(try Workout.startNew(in: context, routine: foreignRoutine, save: { saveCalled = true }))
+        XCTAssertFalse(saveCalled)
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 0)
+
+        let deletedRoutine = WorkoutRoutine.create(context: context)
+        context.delete(deletedRoutine)
+        XCTAssertThrowsError(try Workout.startNew(in: context, routine: deletedRoutine, save: { saveCalled = true }))
+        XCTAssertFalse(saveCalled)
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 0)
+    }
+
+    func testFailedEmptyStartDoesNotLeaveAnOrphanLog() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let unrelated = Workout.create(context: context)
+        unrelated.title = "Pending History Edit"
+
+        XCTAssertThrowsError(try Workout.startNew(in: context, save: { throw SaveFailure() }))
+
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 1)
+        XCTAssertEqual(try context.count(for: Workout.currentWorkoutFetchRequest), 0)
+        XCTAssertFalse(unrelated.isDeleted)
+        XCTAssertEqual(unrelated.title, "Pending History Edit")
+    }
+
+    func testFailedRoutineStartRemovesCopiedSetsAndPreservesRoutine() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let plan = WorkoutPlan.create(context: context)
+        let routine = WorkoutRoutine.create(context: context)
+        routine.workoutPlan = plan
+        routine.title = "Push"
+        let exercise = WorkoutRoutineExercise.create(context: context)
+        exercise.workoutRoutine = routine
+        let set = WorkoutRoutineSet.create(context: context)
+        set.workoutRoutineExercise = exercise
+        set.weightValue = 50
+        try context.save()
+
+        XCTAssertThrowsError(try Workout.startNew(in: context, routine: routine, save: { throw SaveFailure() }))
+
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutExercise.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutineSet.fetchRequest()), 1)
+        XCTAssertEqual(routine.title, "Push")
+        XCTAssertEqual(routine.workouts?.count ?? 0, 0)
+    }
+
+    func testExistingActiveWorkoutPreventsAnotherStart() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let active = Workout.create(context: context)
+        active.start = Date(timeIntervalSince1970: 1_000)
+        active.isCurrentWorkout = true
+        var saveCalled = false
+
+        XCTAssertThrowsError(try Workout.startNew(in: context, save: { saveCalled = true })) { error in
+            XCTAssertTrue(error is Workout.StartError)
+        }
+        XCTAssertFalse(saveCalled)
+        XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 1)
+        XCTAssertEqual(active.start, Date(timeIntervalSince1970: 1_000))
+    }
+
+    func testFailedRepeatRemovesOnlyTheNewGraph() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let original = Workout.create(context: context)
+        original.title = "Finished Workout"
+        original.start = Date(timeIntervalSince1970: 1_000)
+        original.end = Date(timeIntervalSince1970: 2_000)
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.workout = original
+        let set = WorkoutSet.create(context: context)
+        set.workoutExercise = exercise
+        set.isCompleted = true
+        set.repetitionsValue = 8
+        try context.save()
+
+        for blank in [false, true] {
+            XCTAssertThrowsError(try Workout.startRepeating(original, blank: blank, save: { throw SaveFailure() }))
+            XCTAssertEqual(try context.count(for: Workout.fetchRequest()), 1)
+            XCTAssertEqual(try context.count(for: WorkoutExercise.fetchRequest()), 1)
+            XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+            XCTAssertFalse(original.isCurrentWorkout)
+            XCTAssertTrue(set.isCompleted)
+            XCTAssertEqual(set.repetitionsValue, 8)
+        }
+    }
+}

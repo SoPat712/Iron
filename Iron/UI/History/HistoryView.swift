@@ -23,6 +23,7 @@ struct HistoryView: View {
     @State private var showingMuscleBreakdown = false
     @State private var showingRepeatBlocked = false
     @State private var showingShareUnavailable = false
+    @State private var persistenceError: String?
     @State private var trendMetric: HistoryTrendMetric = .duration
     @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
     @State private var browseMode: HistoryBrowseMode = .workouts
@@ -69,7 +70,11 @@ struct HistoryView: View {
             Button("Delete Workout", role: .destructive) {
                 guard let workout = workoutToDelete else { return }
                 workoutToDelete = nil
-                workout.deleteOrCrash()
+                do {
+                    try workout.delete()
+                } catch {
+                    persistenceError = "The workout was not deleted. \(error.localizedDescription)"
+                }
             }
             Button("Cancel", role: .cancel) {
                 workoutToDelete = nil
@@ -109,6 +114,14 @@ struct HistoryView: View {
             .presentationDragIndicator(.visible)
         }
         .ironActivitySheet(activityItems: $activityItems)
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
     }
 
     private var progressSummary: some View {
@@ -720,23 +733,25 @@ struct HistoryView: View {
     }
 
     private func repeatWorkout(_ workout: Workout, blank: Bool) {
-        let didStart: Bool
-        if blank {
-            didStart = WorkoutDetailView.repeatWorkoutBlank(
-                workout: workout,
-                settingsStore: settingsStore,
-                sceneState: sceneState
-            )
-        } else {
-            didStart = WorkoutDetailView.repeatWorkout(
-                workout: workout,
-                settingsStore: settingsStore,
-                sceneState: sceneState
-            )
-        }
+        do {
+            let didStart: Bool
+            if blank {
+                didStart = try WorkoutDetailView.repeatWorkoutBlank(
+                    workout: workout,
+                    settingsStore: settingsStore,
+                    sceneState: sceneState
+                )
+            } else {
+                didStart = try WorkoutDetailView.repeatWorkout(
+                    workout: workout,
+                    settingsStore: settingsStore,
+                    sceneState: sceneState
+                )
+            }
 
-        if !didStart {
-            showingRepeatBlocked = true
+            if !didStart { showingRepeatBlocked = true }
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
         }
     }
 

@@ -14,6 +14,63 @@ import os.log
 
 extension Workout {
     // TODO: would be better when SettingsStore, WatchConnectionManager, RestTimerStore etc are injected
+
+    enum StartError: LocalizedError {
+        case workoutAlreadyActive
+        case workoutUnavailable
+
+        var errorDescription: String? {
+            switch self {
+            case .workoutAlreadyActive:
+                return "A workout is already active. Finish or discard it before starting another."
+            case .workoutUnavailable:
+                return "This workout is no longer available."
+            }
+        }
+    }
+
+    /// Create the log and its sets inside the save boundary so a failed start
+    /// cannot leave an orphan history entry or partially copied routine.
+    static func startNew(
+        in context: NSManagedObjectContext,
+        routine: WorkoutRoutine? = nil,
+        save: (() throws -> Void)? = nil
+    ) throws -> Workout {
+        if let routine, routine.managedObjectContext !== context || routine.isDeleted {
+            throw StartError.workoutUnavailable
+        }
+        return try startCreatedWorkout(in: context, save: save) {
+            routine?.createWorkout(context: context) ?? Workout.create(context: context)
+        }
+    }
+
+    static func startRepeating(_ source: Workout, blank: Bool, save: (() throws -> Void)? = nil) throws -> Workout {
+        guard let context = source.managedObjectContext, !source.isDeleted else {
+            throw StartError.workoutUnavailable
+        }
+        return try startCreatedWorkout(in: context, save: save) {
+            guard let copy = source.copyForRepeat(blank: blank) else { throw StartError.workoutUnavailable }
+            return copy
+        }
+    }
+
+    private static func startCreatedWorkout(
+        in context: NSManagedObjectContext,
+        save: (() throws -> Void)?,
+        create: () throws -> Workout
+    ) throws -> Workout {
+        guard try context.count(for: Workout.currentWorkoutFetchRequest) == 0 else {
+            throw StartError.workoutAlreadyActive
+        }
+        let workout = try context.persistMutation(save: { try save?() ?? context.save() }) {
+            let workout = try create()
+            workout.start = Date()
+            workout.isCurrentWorkout = true
+            return workout
+        }
+        workout.didStart(startWatchCompanionErrorHandler: nil)
+        return workout
+    }
     
     func start(startWatchCompanionErrorHandler: WatchConnectionManager.StartWatchCompanionErrorHandler? = nil,
                save: (() throws -> Void)? = nil) throws {
@@ -28,6 +85,10 @@ extension Workout {
             isCurrentWorkout = true
         }
 
+        didStart(startWatchCompanionErrorHandler: startWatchCompanionErrorHandler)
+    }
+
+    private func didStart(startWatchCompanionErrorHandler: WatchConnectionManager.StartWatchCompanionErrorHandler?) {
         WorkoutLiveActivityManager.shared.startOrUpdate(for: self)
         
         if SettingsStore.shared.watchCompanion {

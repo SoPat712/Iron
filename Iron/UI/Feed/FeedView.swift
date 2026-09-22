@@ -26,6 +26,7 @@ struct FeedView : View {
     @FetchRequest(fetchRequest: FeedView.planFetchRequest) private var workoutPlans: FetchedResults<WorkoutPlan>
 
     @State private var showingMeasurements = false
+    @State private var persistenceError: String?
 
     static var workoutFetchRequest: NSFetchRequest<Workout> {
         let request: NSFetchRequest<Workout> = Workout.fetchRequest()
@@ -109,15 +110,23 @@ struct FeedView : View {
     }
 
     private func startEmptyWorkout() {
-        Workout.create(context: managedObjectContext).startOrCrash()
-        sceneState.selectedTab = .workout
-        sceneState.isCurrentWorkoutExpanded = true
+        do {
+            _ = try Workout.startNew(in: managedObjectContext)
+            sceneState.selectedTab = .workout
+            sceneState.isCurrentWorkoutExpanded = true
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
+        }
     }
 
     private func start(_ routine: WorkoutRoutine) {
-        routine.createWorkout(context: managedObjectContext).startOrCrash()
-        sceneState.selectedTab = .workout
-        sceneState.isCurrentWorkoutExpanded = true
+        do {
+            _ = try Workout.startNew(in: managedObjectContext, routine: routine)
+            sceneState.selectedTab = .workout
+            sceneState.isCurrentWorkoutExpanded = true
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
+        }
     }
 
     private var hero: some View {
@@ -505,6 +514,14 @@ struct FeedView : View {
             }
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
+            .alert("Workout Not Started", isPresented: Binding(
+                get: { persistenceError != nil },
+                set: { if !$0 { persistenceError = nil } }
+            )) {
+                Button("OK", role: .cancel) { persistenceError = nil }
+            } message: {
+                Text(persistenceError ?? "Please try again.")
+            }
             .navigationDestination(isPresented: $showingMeasurements) {
                 BodyMeasurementsView(store: bodyMetricsStore)
                     .environmentObject(settingsStore)

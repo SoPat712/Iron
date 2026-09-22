@@ -230,6 +230,7 @@ struct StartWorkoutView: View {
 
     @State private var planToDelete: WorkoutRoutine?
     @State private var planEditorRoute: WorkoutPlanEditorRoute?
+    @State private var persistenceError: String?
 
     static var fetchRequest: NSFetchRequest<WorkoutPlan> {
         let request: NSFetchRequest<WorkoutPlan> = WorkoutPlan.fetchRequest()
@@ -275,7 +276,8 @@ struct StartWorkoutView: View {
                                             onDelete: { requestDelete(plan) },
                                             canStartWorkout: currentWorkouts.isEmpty,
                                             isActiveWorkout: activeRoutineObjectID == plan.objectID,
-                                            onWorkoutStarted: onOpenCurrentWorkout
+                                            onWorkoutStarted: onOpenCurrentWorkout,
+                                            onFailure: { persistenceError = $0.localizedDescription }
                                         )
 
                                         if index < plans.count - 1 {
@@ -341,6 +343,14 @@ struct StartWorkoutView: View {
         } message: {
             Text("This removes the exercises, targets, and notes saved in this workout. Your completed workout history is not affected.")
         }
+        .alert("Workout Not Saved", isPresented: Binding(
+            get: { persistenceError != nil },
+            set: { if !$0 { persistenceError = nil } }
+        )) {
+            Button("OK", role: .cancel) { persistenceError = nil }
+        } message: {
+            Text(persistenceError ?? "Please try again.")
+        }
     }
 
     private var quickStartCard: some View {
@@ -393,8 +403,12 @@ struct StartWorkoutView: View {
     }
 
     private func startEmptyWorkout() {
-        Workout.create(context: managedObjectContext).startOrCrash()
-        onOpenCurrentWorkout()
+        do {
+            _ = try Workout.startNew(in: managedObjectContext)
+            onOpenCurrentWorkout()
+        } catch {
+            persistenceError = error.localizedDescription
+        }
     }
 
     private func newPlan() {
@@ -414,8 +428,13 @@ struct StartWorkoutView: View {
     }
 
     private func delete(_ plan: WorkoutRoutine) {
-        managedObjectContext.delete(plan)
-        managedObjectContext.saveOrCrash()
+        do {
+            try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
+                managedObjectContext.delete(plan)
+            }
+        } catch {
+            persistenceError = "The saved workout was not deleted. \(error.localizedDescription)"
+        }
     }
 }
 
@@ -763,6 +782,7 @@ private struct WorkoutPlanDetailView: View {
     let isActiveWorkout: Bool
     let onEdit: () -> Void
     let onWorkoutStarted: () -> Void
+    let onFailure: (Error) -> Void
 
     @State private var selectedMetric: WorkoutPlanTrendMetric = .volume
 
@@ -1167,8 +1187,12 @@ private struct WorkoutPlanDetailView: View {
             return
         }
         guard canStartWorkout, !planExercises.isEmpty else { return }
-        plan.createWorkout(context: managedObjectContext).startOrCrash()
-        onWorkoutStarted()
+        do {
+            _ = try Workout.startNew(in: managedObjectContext, routine: plan)
+            onWorkoutStarted()
+        } catch {
+            onFailure(error)
+        }
     }
 
     private func metricValue(for workout: Workout) -> Double {
@@ -1281,6 +1305,7 @@ private struct SavedWorkoutRow: View {
     let canStartWorkout: Bool
     let isActiveWorkout: Bool
     let onWorkoutStarted: () -> Void
+    let onFailure: (Error) -> Void
 
     private var workoutExercises: [WorkoutRoutineExercise] {
         workout.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
@@ -1304,7 +1329,8 @@ private struct SavedWorkoutRow: View {
                     canStartWorkout: canStartWorkout,
                     isActiveWorkout: isActiveWorkout,
                     onEdit: onEdit,
-                    onWorkoutStarted: onWorkoutStarted
+                    onWorkoutStarted: onWorkoutStarted,
+                    onFailure: onFailure
                 )
             } label: {
                 HStack(spacing: 12) {
@@ -1348,12 +1374,7 @@ private struct SavedWorkoutRow: View {
                 .buttonStyle(.bordered)
                 .controlSize(.small)
             } else {
-                Button(action: {
-                    if !isActiveWorkout {
-                        workout.createWorkout(context: managedObjectContext).startOrCrash()
-                    }
-                    onWorkoutStarted()
-                }) {
+                Button(action: start) {
                     Text(isActiveWorkout ? "Resume" : "Start")
                 }
                 .buttonStyle(.borderedProminent)
@@ -1385,6 +1406,19 @@ private struct SavedWorkoutRow: View {
         .padding(.trailing, 4)
         .padding(.vertical, 10)
         .frame(minHeight: 72)
+    }
+
+    private func start() {
+        if isActiveWorkout {
+            onWorkoutStarted()
+            return
+        }
+        do {
+            _ = try Workout.startNew(in: managedObjectContext, routine: workout)
+            onWorkoutStarted()
+        } catch {
+            onFailure(error)
+        }
     }
 }
 

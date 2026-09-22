@@ -859,23 +859,25 @@ struct WorkoutDetailView: View {
     }
 
     private func repeatWorkout(blank: Bool) {
-        let didStart: Bool
-        if blank {
-            didStart = Self.repeatWorkoutBlank(
-                workout: workout,
-                settingsStore: settingsStore,
-                sceneState: sceneState
-            )
-        } else {
-            didStart = Self.repeatWorkout(
-                workout: workout,
-                settingsStore: settingsStore,
-                sceneState: sceneState
-            )
-        }
+        do {
+            let didStart: Bool
+            if blank {
+                didStart = try Self.repeatWorkoutBlank(
+                    workout: workout,
+                    settingsStore: settingsStore,
+                    sceneState: sceneState
+                )
+            } else {
+                didStart = try Self.repeatWorkout(
+                    workout: workout,
+                    settingsStore: settingsStore,
+                    sceneState: sceneState
+                )
+            }
 
-        if !didStart {
-            showingRepeatBlocked = true
+            if !didStart { showingRepeatBlocked = true }
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
         }
     }
 }
@@ -1135,34 +1137,24 @@ private struct CompletedWorkoutDetailsEditor: View {
 // MARK: Actions
 extension WorkoutDetailView {
     @discardableResult
-    static func repeatWorkout(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) -> Bool {
-        guard let context = workout.managedObjectContext else { return false }
-        guard let count = try? context.count(for: Workout.currentWorkoutFetchRequest), count == 0 else {
-            let feedbackGenerator = UINotificationFeedbackGenerator()
-            feedbackGenerator.prepare()
-            feedbackGenerator.notificationOccurred(.error)
+    static func repeatWorkout(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) throws -> Bool {
+        do {
+            _ = try Workout.startRepeating(workout, blank: false)
+        } catch Workout.StartError.workoutAlreadyActive {
             return false
         }
-        guard let newWorkout = workout.copyForRepeat(blank: false) else { return false }
-
-        newWorkout.startOrCrash()
         sceneState.selectedTab = .workout
         sceneState.isCurrentWorkoutExpanded = true
         return true
     }
 
     @discardableResult
-    static func repeatWorkoutBlank(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) -> Bool {
-        guard let context = workout.managedObjectContext else { return false }
-        guard let count = try? context.count(for: Workout.currentWorkoutFetchRequest), count == 0 else {
-            let feedbackGenerator = UINotificationFeedbackGenerator()
-            feedbackGenerator.prepare()
-            feedbackGenerator.notificationOccurred(.error)
+    static func repeatWorkoutBlank(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) throws -> Bool {
+        do {
+            _ = try Workout.startRepeating(workout, blank: true)
+        } catch Workout.StartError.workoutAlreadyActive {
             return false
         }
-        guard let newWorkout = workout.copyForRepeat(blank: true) else { return false }
-
-        newWorkout.startOrCrash()
         sceneState.selectedTab = .workout
         sceneState.isCurrentWorkoutExpanded = true
         return true
