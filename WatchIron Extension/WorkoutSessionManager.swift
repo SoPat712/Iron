@@ -311,7 +311,12 @@ class WorkoutSessionManager: NSObject, ObservableObject {
                 // the start date was updated while the workout was already running
                 // replace the saved workout with a copy that has the correct start date
                 
-                let updatedWorkout = HKWorkout(activityType: workout.workoutActivityType, start: _startDate, end: workout.endDate, workoutEvents: workout.workoutEvents, totalEnergyBurned: workout.totalEnergyBurned, totalDistance: workout.totalDistance, device: workout.device, metadata: workout.metadata)
+                var replacementMetadata = workout.metadata ?? [:]
+                // This is a new sample. Reusing a prior sync version can make
+                // HealthKit ignore its save before we remove the old workout.
+                replacementMetadata.removeValue(forKey: HKMetadataKeySyncIdentifier)
+                replacementMetadata.removeValue(forKey: HKMetadataKeySyncVersion)
+                let updatedWorkout = HKWorkout(activityType: workout.workoutActivityType, start: _startDate, end: workout.endDate, workoutEvents: workout.workoutEvents, totalEnergyBurned: workout.totalEnergyBurned, totalDistance: workout.totalDistance, device: workout.device, metadata: replacementMetadata)
 
                 Self.healthStore.save(updatedWorkout) { (success, error) in
                     guard success else {
@@ -320,7 +325,11 @@ class WorkoutSessionManager: NSObject, ObservableObject {
                     }
                     Self.healthStore.delete(workout) { (success, error) in
                         guard success else {
-                            print(error.debugDescription)
+                            completion(.failure(error ?? NSError(
+                                domain: "Iron.HealthKit.WorkoutReplacement",
+                                code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "The corrected workout was saved, but Apple Health could not remove the previous sample."]
+                            )))
                             return
                         }
                         completion(.success(updatedWorkout))
@@ -495,7 +504,7 @@ extension HKWorkoutSessionState {
         case .stopped:
             return "stopped"
         @unknown default:
-            fatalError()
+            return "unknown (\(rawValue))"
         }
     }
 }
