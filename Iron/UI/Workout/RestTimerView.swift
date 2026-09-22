@@ -13,6 +13,10 @@ import AudioToolbox
 
 enum RestTimerSheetLayout {
     static let height: CGFloat = 540
+    static let dialSize: CGFloat = 214
+    // Reserve the selector's two action rows in every state. Starting or
+    // pausing must not recenter the dial when its controls change underneath.
+    static let contentHeight: CGFloat = 400
 }
 
 struct RestTimerView: View {
@@ -37,6 +41,8 @@ struct RestTimerView: View {
                 timerPicker
             }
         }
+        .frame(maxWidth: .infinity)
+        .frame(height: RestTimerSheetLayout.contentHeight, alignment: .top)
         .onAppear {
             if let recent = restTimerStore.recentRestTimes.first {
                 selectedDuration = clamped(recent)
@@ -57,7 +63,7 @@ struct RestTimerView: View {
                 secondsStep: durationStep,
                 subtitle: "Spin to set rest"
             )
-            .frame(width: 214, height: 214)
+            .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
 
             VStack(alignment: .leading, spacing: 5) {
                 Text("Presets")
@@ -92,7 +98,7 @@ struct RestTimerView: View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
             let remaining = restTimerStore.restTimerRemainingTime ?? 0
 
-            VStack(spacing: 14) {
+            VStack(spacing: 10) {
                 RestTimerDurationDial(
                     selection: activeDurationBinding(fallback: remaining),
                     minimumDuration: 0,
@@ -100,7 +106,7 @@ struct RestTimerView: View {
                     secondsStep: durationStep,
                     subtitle: restTimerStore.isPaused ? "Paused · spin to adjust" : "Spin to adjust remaining"
                 )
-                .frame(width: 214, height: 214)
+                .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
 
                 HStack(spacing: 8) {
                     timerActionButton("−15") {
@@ -126,7 +132,7 @@ struct RestTimerView: View {
             .padding(.horizontal, IronTheme.horizontalPadding)
             .padding(.vertical, 12)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .frame(maxWidth: .infinity, alignment: .top)
     }
 
     @ViewBuilder
@@ -141,7 +147,7 @@ struct RestTimerView: View {
             Group {
                 if let systemImage {
                     Label(title, systemImage: systemImage)
-                        .labelStyle(.titleAndIcon)
+                        .labelStyle(.iconOnly)
                 } else {
                     Text(title)
                 }
@@ -260,7 +266,7 @@ struct RestTimerConfigurationSheet: View {
                     secondsStep: durationStep,
                     subtitle: "Spin to choose duration"
                 )
-                .frame(width: 214, height: 214)
+                .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
 
                 Picker("Presets", selection: $selection) {
                     ForEach(quickDurations, id: \.self) { duration in
@@ -298,7 +304,9 @@ struct RestTimerConfigurationSheet: View {
                     .padding(.horizontal, IronTheme.horizontalPadding)
                 }
             }
-            .padding(.bottom, 18)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity)
+            .frame(height: RestTimerSheetLayout.contentHeight, alignment: .top)
         }
         .presentationDetents([.height(RestTimerSheetLayout.height)])
         .presentationDragIndicator(.visible)
