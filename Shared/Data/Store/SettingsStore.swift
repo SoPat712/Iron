@@ -148,6 +148,116 @@ final class SettingsStore: ObservableObject {
             userDefaults.watchCompanion = newValue
         }
     }
+
+    var autoStartRestTimer: Bool {
+        get {
+            userDefaults.autoStartRestTimer
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.autoStartRestTimer = newValue
+        }
+    }
+
+    var keepScreenAwakeDuringWorkout: Bool {
+        get {
+            userDefaults.keepScreenAwakeDuringWorkout
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.keepScreenAwakeDuringWorkout = newValue
+        }
+    }
+
+    var showPlateCalculator: Bool {
+        get {
+            userDefaults.showPlateCalculator
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.showPlateCalculator = newValue
+        }
+    }
+
+    var showWarmUpCalculator: Bool {
+        get {
+            userDefaults.showWarmUpCalculator
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.showWarmUpCalculator = newValue
+        }
+    }
+
+    var logRPE: Bool {
+        get {
+            userDefaults.logRPE
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.logRPE = newValue
+        }
+    }
+
+    var prefillPreviousValues: Bool {
+        get {
+            userDefaults.prefillPreviousValues
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.prefillPreviousValues = newValue
+        }
+    }
+
+    var supersetAutoScroll: Bool {
+        get {
+            userDefaults.supersetAutoScroll
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.supersetAutoScroll = newValue
+        }
+    }
+
+    var inlineSetTimer: Bool {
+        get {
+            userDefaults.inlineSetTimer
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.inlineSetTimer = newValue
+        }
+    }
+
+    var workoutSounds: Bool {
+        get {
+            userDefaults.workoutSounds
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.workoutSounds = newValue
+        }
+    }
+
+    var workoutHaptics: Bool {
+        get {
+            userDefaults.workoutHaptics
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.workoutHaptics = newValue
+        }
+    }
+
+    var personalRecordAlerts: Bool {
+        get {
+            userDefaults.personalRecordAlerts
+        }
+        set {
+            self.objectWillChange.send()
+            userDefaults.personalRecordAlerts = newValue
+        }
+    }
 }
 
 #if DEBUG

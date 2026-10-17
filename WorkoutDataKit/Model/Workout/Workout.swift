@@ -71,14 +71,81 @@ public class Workout: NSManagedObject, Codable {
     }
     
     public func generatedTitle(in exercises: [Exercise]) -> String? {
-        let muscleGroups = self.muscleGroups(in: exercises)
-        switch muscleGroups.count {
-        case 1:
-            return muscleGroups[0].capitalized
-        case 2...:
-            return "\(muscleGroups[0].capitalized) & \(muscleGroups[1].capitalized)"
-        default:
-            return nil
+        Self.generatedTitle(muscleGroups: muscleGroups(in: exercises), at: start ?? Date())
+    }
+
+    /// Names a session the way a person would: time of day plus the split that
+    /// actually got trained, e.g. "Early Morning Leg Day".
+    public static func generatedTitle(
+        muscleGroups: [String],
+        at date: Date,
+        calendar: Calendar = .current
+    ) -> String? {
+        guard let focus = trainingFocusTitle(from: muscleGroups) else { return nil }
+        return "\(timeOfDayPrefix(at: date, calendar: calendar)) \(focus)"
+    }
+
+    public static func timeOfDayPrefix(at date: Date, calendar: Calendar = .current) -> String {
+        switch calendar.component(.hour, from: date) {
+        case 4..<9: return "Early Morning"
+        case 9..<12: return "Morning"
+        case 12..<17: return "Afternoon"
+        case 17..<21: return "Evening"
+        default: return "Late Night"
+        }
+    }
+
+    public static func trainingFocusTitle(from muscleGroups: [String]) -> String? {
+        let groups = muscleGroups.map { $0.lowercased() }
+        guard let primary = groups.first else { return nil }
+
+        var unique: [String] = []
+        for group in groups where !unique.contains(group) {
+            unique.append(group)
+        }
+        let set = Set(unique)
+        let upper: Set<String> = ["chest", "back", "shoulders", "arms"]
+        let hasLegs = set.contains("legs")
+        let upperCount = set.intersection(upper).count
+
+        if hasLegs && upperCount >= 2 { return "Full Body" }
+        if unique.count >= 4 { return "Full Body" }
+
+        if unique.count >= 2 {
+            let pair = Set(unique.prefix(2))
+            if pair == ["chest", "arms"] { return "Chest + Arms" }
+            if pair == ["chest", "shoulders"] { return "Push Day" }
+            if pair == ["shoulders", "arms"] { return "Push Day" }
+            if pair == ["back", "arms"] { return "Pull Day" }
+            if pair == ["back", "chest"] { return "Upper Body" }
+            if pair == ["legs", "abdominals"] { return "Leg Day" }
+            if unique.count == 2 {
+                return "\(friendlyMuscleName(unique[0])) + \(friendlyMuscleName(unique[1]))"
+            }
+        }
+
+        switch primary {
+        case "legs": return "Leg Day"
+        case "arms": return "Arm Day"
+        case "chest": return "Chest Day"
+        case "back": return "Back Day"
+        case "shoulders": return "Shoulder Day"
+        case "abdominals": return "Core Day"
+        case "cardio": return "Cardio"
+        default: return primary.capitalized
+        }
+    }
+
+    private static func friendlyMuscleName(_ group: String) -> String {
+        switch group {
+        case "abdominals": return "Core"
+        case "arms": return "Arms"
+        case "shoulders": return "Shoulders"
+        case "back": return "Back"
+        case "legs": return "Legs"
+        case "chest": return "Chest"
+        case "cardio": return "Cardio"
+        default: return group.capitalized
         }
     }
 

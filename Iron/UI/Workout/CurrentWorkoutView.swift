@@ -45,8 +45,10 @@ struct CurrentWorkoutView: View {
     @State private var showingExerciseSelector = false
     @State private var showingFinishEditor = false
     @State private var showingDiscardConfirmation = false
+    @State private var showingFinishDiscardConfirmation = false
     @State private var finishTitle = ""
-    @State private var sessionEffort = 7.0
+    @State private var sessionEffort = 0.0
+    @State private var finishRecap = FinishWorkoutRecap()
     @State private var finishMediaItem: PhotosPickerItem?
     @State private var finishMediaURL: URL?
     @State private var finishMediaKind = FinishWorkoutMediaKind.image
@@ -68,6 +70,12 @@ struct CurrentWorkoutView: View {
     @State private var personalRecordBanner: PersonalRecordBanner?
     @State private var scrollTarget: NSManagedObjectID?
     @State private var runningSetTimers: [NSManagedObjectID: Date] = [:]
+    @State private var restPillExerciseID: NSManagedObjectID?
+    @State private var restPillSetID: NSManagedObjectID?
+    @State private var isRestPillVisible = false
+    @State private var restPillRevealsAt: Date?
+    @State private var restRingPulses = false
+    @State private var restEndFeedback = 0
 
     init(workout: Workout, onMinimize: @escaping () -> Void = {}) {
         self.workout = workout
@@ -226,7 +234,7 @@ struct CurrentWorkoutView: View {
                             collapsedWorkoutSummaryPill
                                 .padding(.horizontal, IronTheme.horizontalPadding)
                                 .padding(.top, 8)
-                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                                 .zIndex(2)
                         }
 
@@ -234,7 +242,7 @@ struct CurrentWorkoutView: View {
                             personalRecordBannerView(banner)
                                 .padding(.horizontal, IronTheme.horizontalPadding)
                                 .padding(.top, isSessionHeaderCollapsed ? 62 : 8)
-                                .transition(.move(edge: .top).combined(with: .opacity))
+                                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                                 .zIndex(3)
                         }
                     }
@@ -387,6 +395,12 @@ struct CurrentWorkoutView: View {
         }
         .onChange(of: settingsStore.keepScreenAwakeDuringWorkout) { _, _ in
             applyIdleTimerPreference()
+        }
+        .task(id: restPillTimerSnapshot) {
+            await updateRestPillPresentation()
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: restEndFeedback) { _, _ in
+            settingsStore.workoutHaptics
         }
     }
 
@@ -560,34 +574,33 @@ struct CurrentWorkoutView: View {
             TimelineView(.periodic(from: .now, by: 1)) { _ in
                 if let remaining = restTimerStore.restTimerRemainingTime {
                     Text(restTimerCountdownText(remaining))
-                        .font(.subheadline.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(Color.accentColor)
-                        .contentTransition(.numericText())
-                        .padding(.horizontal, 4)
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(restTimerTint)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(remaining))
+                        .padding(.horizontal, 10)
                         .accessibilityValue(remaining <= 0 ? "Finished" : restTimerTimeText(remaining))
                 } else {
                     Image(systemName: "timer")
                         .font(.body.weight(.semibold))
-                        .foregroundStyle(.tint)
+                        .foregroundStyle(IronTheme.metricTime)
                         .frame(width: 32, height: 32)
                 }
             }
         }
-        // Keep the timer discoverable beside Finish. A capsule outline gives
-        // it the same affordance as the other toolbar controls without adding
-        // another filled panel to the workout header.
-        .buttonStyle(.bordered)
+        .buttonStyle(.plain)
+        .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+        .background(restTimerTint.opacity(0.18), in: Capsule())
         .buttonBorderShape(.capsule)
         .controlSize(.small)
-        .tint(restTimerStore.isPaused ? .orange : .accentColor)
-        .overlay {
-            Capsule(style: .continuous)
-                .stroke(
-                    (restTimerStore.isPaused ? Color.orange : Color.accentColor).opacity(0.42),
-                    lineWidth: 0.8
-                )
-        }
+        .tint(restTimerTint)
+        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: restTimerStore.isPaused)
         .accessibilityLabel("Rest timer")
+    }
+
+    /// Paused rest keeps the warning tint so it reads differently from a live countdown.
+    private var restTimerTint: Color {
+        restTimerStore.isPaused ? IronTheme.warning : IronTheme.metricTime
     }
 
     private func personalRecordBannerView(_ banner: PersonalRecordBanner) -> some View {
@@ -613,7 +626,7 @@ struct CurrentWorkoutView: View {
         .accessibilityElement(children: .combine)
         .task(id: banner.id) {
             try? await Task.sleep(nanoseconds: 2_600_000_000)
-            withAnimation(IronMotion.snappy) { personalRecordBanner = nil }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) { personalRecordBanner = nil }
         }
     }
 
@@ -734,15 +747,15 @@ struct CurrentWorkoutView: View {
                     summaryValue(
                         "Duration",
                         workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00",
-                        tint: IronTheme.accent,
+                        tint: IronTheme.metricTime,
                         systemImage: "pencil"
                     )
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Edit workout duration")
                 .accessibilityValue(workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
-                summaryValue("Volume", workoutVolumeTitle)
-                summaryValue("Sets", "\(workout.numberOfCompletedSets ?? 0)")
+                summaryValue("Volume", workoutVolumeNumber, tint: IronTheme.metricVolume, unit: settingsStore.weightUnit.unit.symbol)
+                summaryValue("Sets", "\(workout.numberOfCompletedSets ?? 0)", tint: IronTheme.metricSets)
 
                 if !usesAccessibilityHeaderLayout {
                     liveMuscleMap
@@ -776,8 +789,11 @@ struct CurrentWorkoutView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tint)
                 }
-                .font(.caption.weight(.semibold).monospacedDigit())
-                .contentTransition(.numericText())
+                .font(.ironMetric(.caption))
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workoutVolumeTitle)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.numberOfCompletedSets)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 46)
                 .contentShape(Capsule(style: .continuous))
@@ -797,7 +813,8 @@ struct CurrentWorkoutView: View {
     private func summaryValue(
         _ label: String,
         _ value: String,
-        tint: Color = IronTheme.primaryText,
+        tint: Color,
+        unit: String? = nil,
         systemImage: String? = nil
     ) -> some View {
         VStack(alignment: .leading, spacing: 5) {
@@ -808,16 +825,24 @@ struct CurrentWorkoutView: View {
                         .font(.system(size: 8, weight: .semibold))
                 }
             }
-            .font(.caption)
-            .foregroundStyle(systemImage == nil ? AnyShapeStyle(.secondary) : AnyShapeStyle(.tint))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(tint)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
-            Text(value)
-                .font(.system(size: 16, weight: .medium).monospacedDigit())
-                .foregroundColor(tint)
-                .lineLimit(1)
-                .minimumScaleFactor(0.65)
-                .contentTransition(.numericText())
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(value)
+                    .font(.ironMetric(.callout))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
+                if let unit {
+                    Text(unit)
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            .lineLimit(1)
+            .minimumScaleFactor(0.65)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1026,24 +1051,42 @@ struct CurrentWorkoutView: View {
                     onChanged: {
                         let saved = save()
                         if saved {
+                            workout.objectWillChange.send()
                             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
                         }
                         return saved
                     },
-                    allowsSwipeToDelete: true
+                    allowsSwipeToDelete: true,
+                    isCurrent: sets.first(where: { !$0.isCompleted })?.objectID == set.objectID
                 )
                 .environmentObject(settingsStore)
                 .transition(
-                    .asymmetric(
+                    reduceMotion ? .opacity : .asymmetric(
                         insertion: .move(edge: .bottom).combined(with: .opacity),
-                        removal: .opacity.combined(with: .move(edge: .trailing))
+                        removal: .opacity.combined(with: .scale(scale: 0.96))
                     )
                 )
+
+                if isRestPillVisible,
+                   restPillExerciseID == workoutExercise.objectID,
+                   restPillSetID == set.objectID {
+                    activeRestTimerStrip
+                        .padding(.vertical, 6)
+                        .transition(restPillTransition)
+                }
             }
             .animation(
-                IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
+                IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion),
                 value: sets.count
             )
+
+            if isRestPillVisible,
+               restPillExerciseID == workoutExercise.objectID,
+               !sets.contains(where: { $0.objectID == restPillSetID }) {
+                activeRestTimerStrip
+                    .padding(.vertical, 6)
+                    .transition(restPillTransition)
+            }
 
             Button {
                 addSet(to: workoutExercise)
@@ -1055,12 +1098,6 @@ struct CurrentWorkoutView: View {
             .buttonBorderShape(.capsule)
             .controlSize(.regular)
             .padding(.top, 12)
-
-            if activeRestTimerExercise?.objectID == workoutExercise.objectID {
-                activeRestTimerStrip
-                    .padding(.top, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
         }
         .padding(14)
         // One continuous grouped container per exercise. The previous layout
@@ -1164,70 +1201,145 @@ struct CurrentWorkoutView: View {
             .max() ?? .distantPast
     }
 
-    private enum ActiveRestTimerMetrics {
-        static let containerHeight: CGFloat = 46
-        static let controlHeight: CGFloat = 32
-        static let iconControlWidth: CGFloat = 36
-        static let textControlWidth: CGFloat = 50
-        static let countdownWidth: CGFloat = 74
-        static let contentSpacing: CGFloat = 4
-        static let minimumControlGap: CGFloat = 4
-        static let horizontalPadding: CGFloat = 10
+    private struct RestPillTimerSnapshot: Equatable {
+        let end: Date?
+        let duration: TimeInterval?
+        let isPaused: Bool
+    }
+
+    private var restPillTimerSnapshot: RestPillTimerSnapshot {
+        RestPillTimerSnapshot(
+            end: restTimerStore.restTimerEnd,
+            duration: restTimerStore.restTimerDuration,
+            isPaused: restTimerStore.isPaused
+        )
+    }
+
+    private var restPillTransition: AnyTransition {
+        reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity)
+    }
+
+    /// Presentation follows the shared timer; no timer or notification work is delayed.
+    /// This task is cancelled on adjustment, pause, skip, restart, or dismissal.
+    @MainActor
+    private func updateRestPillPresentation() async {
+        let snapshot = restPillTimerSnapshot
+        guard let remaining = restTimerStore.restTimerRemainingTime, remaining > 0,
+              let exercise = activeRestTimerExercise else {
+            withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+                isRestPillVisible = false
+            }
+            return
+        }
+
+        if !reduceMotion, let revealDate = restPillRevealsAt {
+            do {
+                try await Task.sleep(for: .seconds(max(0, revealDate.timeIntervalSinceNow)))
+            } catch { return }
+        }
+        guard !Task.isCancelled else { return }
+
+        restRingPulses = false
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+            restPillExerciseID = exercise.objectID
+            restPillSetID = workoutSets(for: exercise)
+                .filter(\.isCompleted)
+                .max { ($0.completedAt ?? .distantPast) < ($1.completedAt ?? .distantPast) }?
+                .objectID
+            isRestPillVisible = true
+        }
+
+        guard !snapshot.isPaused, let end = snapshot.end else { return }
+        do {
+            try await Task.sleep(for: .seconds(max(0, end.timeIntervalSinceNow)))
+        } catch { return }
+        guard !Task.isCancelled, restPillTimerSnapshot == snapshot else { return }
+
+        // Pulse during removal, without holding the pill or delaying the next action.
+        restEndFeedback += 1
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            restRingPulses = true
+        }
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+            isRestPillVisible = false
+        }
     }
 
     private var activeRestTimerStrip: some View {
         TimelineView(.periodic(from: .now, by: 1)) { _ in
-            if let remaining = restTimerStore.restTimerRemainingTime {
-                HStack(spacing: ActiveRestTimerMetrics.contentSpacing) {
-                    Button(action: { activeSheet = .restTimer }) {
-                        Text(restTimerCountdownText(remaining))
-                            .font(.system(size: 16, weight: .bold).monospacedDigit())
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.65)
-                            .contentTransition(.numericText())
-                        .foregroundColor(IronTheme.accent)
-                        .frame(width: ActiveRestTimerMetrics.countdownWidth, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel("Rest timer")
-                    .accessibilityValue(remaining <= 0 ? "Finished" : restTimerTimeText(remaining))
+            let remaining = restTimerStore.restTimerRemainingTime ?? 0
+            let duration = restTimerStore.restTimerDuration ?? 0
+            let countdown = restTimerCountdownText(remaining)
 
-                    HStack(spacing: 0) {
-                        activeTimerControl(title: "−15", systemImage: nil, label: "Subtract 15 seconds") {
-                            adjustActiveRestTimer(by: -15)
-                        }
-                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
-                        activeTimerControl(
-                            title: "",
-                            systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
-                            label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
-                        ) {
-                            restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
-                            WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
-                        }
-                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
-                        activeTimerControl(title: "+15", systemImage: nil, label: "Add 15 seconds") {
-                            adjustActiveRestTimer(by: 15)
-                        }
-                        Spacer(minLength: ActiveRestTimerMetrics.minimumControlGap)
-                        activeTimerControl(
-                            title: "",
-                            systemImage: "xmark",
-                            label: "Stop rest timer",
-                            tint: .red,
-                            action: stopActiveRestTimer
-                        )
-                    }
-                    .frame(maxWidth: .infinity)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    activeRestTimerReadout(remaining: remaining, duration: duration, countdown: countdown)
+                    activeRestTimerControls
                 }
-                .padding(.horizontal, ActiveRestTimerMetrics.horizontalPadding)
-                .frame(maxWidth: .infinity)
-                .frame(height: ActiveRestTimerMetrics.containerHeight)
-                // The live countdown is the one thing on this screen that must
-                // stay readable at a glance mid-set, so it floats on glass.
-                .ironLiquidGlassPill(tint: .clear)
+                VStack(alignment: .leading, spacing: 8) {
+                    activeRestTimerReadout(remaining: remaining, duration: duration, countdown: countdown)
+                    activeRestTimerControls
+                }
             }
+            .padding(8)
+            .frame(maxWidth: .infinity)
+            .background(
+                IronTheme.metricTimeContainer,
+                in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
+            )
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: countdown)
         }
+    }
+
+    private func activeRestTimerReadout(remaining: TimeInterval, duration: TimeInterval, countdown: String) -> some View {
+        Button(action: { activeSheet = .restTimer }) {
+            HStack(spacing: 8) {
+                IronRestRing(progress: duration > 0 ? remaining / duration : 0)
+                    .scaleEffect(reduceMotion || !restRingPulses ? 1 : 1.12)
+                    .opacity(reduceMotion && restRingPulses ? 0.5 : 1)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(countdown)
+                        .font(.ironMetric(.title3))
+                        .foregroundStyle(IronTheme.metricTime)
+                        .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
+                    Text("Rest of \(restTimerTimeText(duration))")
+                        .font(.caption2)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+                .fixedSize(horizontal: true, vertical: false)
+                Spacer(minLength: 0)
+            }
+            .frame(minHeight: IronTheme.controlHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(restTimerStore.isPaused ? "Rest timer paused" : "Rest timer")
+        .accessibilityValue("\(countdown) remaining of \(restTimerTimeText(duration))")
+        .accessibilityHint("Opens the rest timer dial")
+    }
+
+    private var activeRestTimerControls: some View {
+        HStack(spacing: 0) {
+            activeTimerControl(title: "−15", label: "Subtract 15 seconds") {
+                adjustActiveRestTimer(by: -15)
+            }
+            Spacer(minLength: 4)
+            activeTimerControl(
+                systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
+                label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
+            ) {
+                restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
+                WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+            }
+            Spacer(minLength: 4)
+            activeTimerControl(title: "+15", label: "Add 15 seconds") {
+                adjustActiveRestTimer(by: 15)
+            }
+            Spacer(minLength: 4)
+            activeTimerControl(systemImage: "forward.end.fill", label: "Skip rest", action: stopActiveRestTimer)
+        }
+        .frame(minWidth: IronTheme.iconButtonSize * 4 + 12)
     }
 
     private func restTimerTimeText(_ remaining: TimeInterval) -> String {
@@ -1239,39 +1351,28 @@ struct CurrentWorkoutView: View {
     }
 
     private func activeTimerControl(
-        title: String,
-        systemImage: String?,
+        title: String = "",
+        systemImage: String? = nil,
         label: String,
-        tint: Color = IronTheme.accent,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
             Group {
-                if title.isEmpty, let systemImage {
+                if let systemImage {
                     Image(systemName: systemImage)
-                } else if let systemImage {
-                    Label(title, systemImage: systemImage)
-                        .labelStyle(.titleAndIcon)
                 } else {
                     Text(title)
                 }
             }
-
-            .font(.caption.weight(.semibold))
+            .font(.ironMetric(.caption))
             .lineLimit(1)
             .minimumScaleFactor(0.7)
-            .frame(
-                width: title.isEmpty
-                    ? ActiveRestTimerMetrics.iconControlWidth
-                    : ActiveRestTimerMetrics.textControlWidth,
-                height: ActiveRestTimerMetrics.controlHeight
-            )
+            .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
+            .background(IronTheme.field, in: Circle())
+            .contentShape(Circle())
         }
         .buttonStyle(.plain)
-        .contentShape(Capsule(style: .continuous))
-        .foregroundStyle(tint)
-        .tint(tint)
-        .ironLiquidGlassPill(tint: tint.opacity(0.06))
+        .foregroundStyle(IronTheme.primaryText)
         .accessibilityLabel(label)
     }
 
@@ -1310,17 +1411,20 @@ struct CurrentWorkoutView: View {
     private var finishWorkoutSheet: some View {
         NavigationStack {
             Form {
+                finishHeaderSection
                 finishSummarySection
-                finishTitleSection
+                finishSessionSection
                 finishEffortSection
+                finishRecordsSection
+                finishSyncSection
+                finishTitleSection
+                finishTimingSection
                 finishNotesSection
                 finishMediaSection
-                finishTimingSection
-                finishSyncSection
                 finishExerciseSummarySection
                 finishDiscardSection
             }
-            .navigationTitle("Finish Workout")
+            .navigationTitle("Workout Complete")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -1328,7 +1432,7 @@ struct CurrentWorkoutView: View {
                         .disabled(isFinishingWorkout)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isFinishingWorkout ? "Saving…" : "Finish", action: finishWorkout)
+                    Button(isFinishingWorkout ? "Saving…" : "Save", action: finishWorkout)
                         .fontWeight(.semibold)
                         .disabled(isLoadingFinishMedia || isFinishingWorkout)
                 }
@@ -1342,6 +1446,15 @@ struct CurrentWorkoutView: View {
             Button("OK", role: .cancel) { persistenceError = nil }
         } message: {
             Text(persistenceError ?? "Please try again.")
+        }
+        .alert("Discard this workout?", isPresented: $showingFinishDiscardConfirmation) {
+            Button("Discard Workout", role: .destructive) {
+                showingFinishDiscardConfirmation = false
+                cancelWorkout()
+            }
+            Button("Cancel", role: .cancel) { showingFinishDiscardConfirmation = false }
+        } message: {
+            Text("This workout and its logged sets will be permanently deleted.")
         }
         .onChange(of: finishMediaItem) { _, item in
             guard let item = item else { return }
@@ -1362,18 +1475,126 @@ struct CurrentWorkoutView: View {
         }
     }
 
+    private var finishHeaderSection: some View {
+        Section {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "dumbbell.fill")
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(IronTheme.onAccent)
+                    .frame(width: 44, height: 44)
+                    .background(IronTheme.accent, in: Circle())
+                    .accessibilityHidden(true)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(finishTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                         ? suggestedWorkoutTitle : finishTitle)
+                        .font(.title2.bold())
+                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                    Text(finishDateRange)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    private var finishDateRange: String {
+        if Calendar.current.isDate(finishStartDate, inSameDayAs: finishEndDate) {
+            return "\(finishStartDate.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day())) · \(finishStartDate.formatted(date: .omitted, time: .shortened))–\(finishEndDate.formatted(date: .omitted, time: .shortened))"
+        }
+        return "\(finishStartDate.formatted(date: .abbreviated, time: .shortened))–\(finishEndDate.formatted(date: .abbreviated, time: .shortened))"
+    }
+
     private var finishSummarySection: some View {
         Section {
-            LabeledContent("Duration", value: workoutDurationFormatter.string(from: finishDuration) ?? "0:00")
-                .monospacedDigit()
-            LabeledContent("Volume", value: workoutVolumeTitle)
-                .monospacedDigit()
-            LabeledContent("Completed Sets", value: "\(workout.numberOfCompletedSets ?? 0)")
-                .monospacedDigit()
+            // Keep the 3 × 2 grid and complete numerals at every text size.
+            // Large accessibility sizes can scroll instead of clipping values.
+            ViewThatFits(in: .horizontal) {
+                finishMetricsGrid
+                ScrollView(.horizontal) { finishMetricsGrid }
+            }
+            .padding(.vertical, 6)
         } header: {
             Text("Session Summary")
         } footer: {
-            Text("Review the session, then tap Finish to save it to your history.")
+            Text("Review the session, then tap Save to add it to your history.")
+        }
+    }
+
+    private var finishMetricsGrid: some View {
+        Grid(alignment: .leading, horizontalSpacing: 16, verticalSpacing: 16) {
+            GridRow {
+                finishMetric("Duration", value: IronDurationFormat.title(finishDuration), color: IronTheme.metricTime, index: 0)
+                finishMetric("Volume", value: workoutVolumeNumber, unit: settingsStore.weightUnit.unit.symbol, color: IronTheme.metricVolume, index: 1)
+                finishMetric("Sets", value: "\(finishRecap.setCount)", color: IronTheme.metricSets, index: 2)
+            }
+            GridRow {
+                finishMetric("Exercises", value: "\(finishRecap.exerciseCount)", color: IronTheme.accent, index: 3)
+                finishMetric("Avg RPE", value: finishRecap.averageRPE, color: IronTheme.metricEffort, index: 4)
+                finishMetric("Records", value: "\(finishRecap.records.count)", color: IronTheme.metricRecord, index: 5)
+            }
+        }
+        .fixedSize(horizontal: true, vertical: false)
+    }
+
+    private func finishMetric(_ title: String, value: String, unit: String? = nil, color: Color, index: Int) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(IronTheme.primaryText)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                finishMetricValue(value, color: color)
+                if let unit { Text(unit).font(.caption).foregroundStyle(IronTheme.secondaryText) }
+            }
+        }
+        .frame(minWidth: 80, alignment: .leading)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(title)
+        .accessibilityValue(value == "–" ? "No rated sets" : "\(value)\(unit.map { " \($0)" } ?? "")")
+        .ironStaggeredEntrance(index: index)
+    }
+
+    private func finishMetricValue(_ value: String, color: Color) -> some View {
+        Text(value)
+            .font(.ironMetric(.title3))
+            .foregroundStyle(color)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .fixedSize(horizontal: true, vertical: false)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
+    }
+
+    private var finishSessionSection: some View {
+        Section {
+            if finishRecap.setCount == 0 {
+                Text("No completed sets yet")
+                    .foregroundStyle(IronTheme.secondaryText)
+            } else {
+                IronSessionStrip(
+                    groups: finishRecap.groups,
+                    accessibilityLabel: finishRecap.accessibilitySummary,
+                    sessionStart: finishStartDate,
+                    volumeUnit: settingsStore.weightUnit.unit.symbol
+                )
+                    .padding(.vertical, 6)
+            }
+        } header: {
+            Text("Session")
+        } footer: {
+            Text("Bar height shows set volume. The track shows work and rest, estimating 40 seconds for sets without a recorded duration.")
+        }
+    }
+
+    @ViewBuilder
+    private var finishRecordsSection: some View {
+        if !finishRecap.records.isEmpty {
+            Section("Personal Records") {
+                ForEach(finishRecap.records) { record in
+                    FinishWorkoutRecordRow(record: record)
+                }
+            }
         }
     }
 
@@ -1394,21 +1615,17 @@ struct CurrentWorkoutView: View {
 
     private var finishEffortSection: some View {
         Section {
-            EffortRatingGraph(rating: sessionEffortSelection)
-                .padding(.vertical, 6)
-        } header: {
-            Text("Session Effort")
+            FinishWorkoutEffortControl(rating: sessionEffortSelection)
         } footer: {
-            Text(effortLabel)
+            Text("Rate your overall session from 1 (easy) to 10 (all out), or leave it unrated.")
         }
     }
 
-    /// The effort picker writes back into the same 1–10 scale the rest of the
-    /// app stores, so the segmented control stays the source of truth.
+    /// Zero represents an unrated session; saving maps it to the model's nil value.
     private var sessionEffortSelection: Binding<Int> {
         Binding(
-            get: { Int(sessionEffort.rounded()) },
-            set: { sessionEffort = Double($0) }
+            get: { min(max(Int(sessionEffort.rounded()), 0), 10) },
+            set: { sessionEffort = Double(min(max($0, 0), 10)) }
         )
     }
 
@@ -1507,7 +1724,14 @@ struct CurrentWorkoutView: View {
 
     private var finishSyncSection: some View {
         Section {
-            Toggle("Sync with Apple Health", isOn: $syncWithHealth)
+            Toggle(isOn: $syncWithHealth) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Sync with Apple Health")
+                    Text(syncWithHealth ? "Exports when you save" : "Export off for this session")
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
 
             Toggle("Update Linked Workout", isOn: $updateLinkedRoutine)
                 .disabled(workout.workoutRoutine == nil)
@@ -1558,7 +1782,7 @@ struct CurrentWorkoutView: View {
     private var finishDiscardSection: some View {
         Section {
             Button("Discard Workout", role: .destructive) {
-                showingDiscardConfirmation = true
+                showingFinishDiscardConfirmation = true
             }
             .accessibilityHint("Permanently deletes this workout and its logged sets.")
         }
@@ -1601,17 +1825,6 @@ struct CurrentWorkoutView: View {
         .presentationDetents([.height(360), .medium])
         .presentationDragIndicator(.visible)    }
 
-    private var effortLabel: String {
-        switch sessionEffort {
-        case 1...2: return "Very light — plenty left in the tank"
-        case 3...4: return "Light and comfortable"
-        case 5...6: return "Solid training effort"
-        case 7...8: return "Hard, productive work"
-        case 9: return "Near your limit"
-        default: return "All-out effort"
-        }
-    }
-
     private let workoutDurationFormatter: DateComponentsFormatter = {
         let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .positional
@@ -1619,6 +1832,15 @@ struct CurrentWorkoutView: View {
         formatter.zeroFormattingBehavior = .pad
         return formatter
     }()
+
+    private var workoutVolumeNumber: String {
+        let displayWeight = WeightUnit.convert(
+            weight: workout.totalCompletedWeight ?? 0,
+            from: .metric,
+            to: settingsStore.weightUnit
+        )
+        return settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: displayWeight)) ?? "0"
+    }
 
     private var workoutVolumeTitle: String {
         WeightUnit.format(
@@ -1793,7 +2015,7 @@ struct CurrentWorkoutView: View {
     @discardableResult
     private func deleteSet(_ set: WorkoutSet, from workoutExercise: WorkoutExercise) -> Bool {
         var saved = false
-        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
             saved = persistMutation {
                 workoutExercise.removeFromWorkoutSets(set)
                 managedObjectContext.delete(set)
@@ -1848,22 +2070,27 @@ struct CurrentWorkoutView: View {
             return
         }
 
+        // Summary metrics and the next current row derive from child-set values.
+        workout.objectWillChange.send()
+
         if justCompleted {
             let isRecord = settingsStore.personalRecordAlerts && set.isPersonalRecord == true
 
-            if settingsStore.workoutHaptics {
+            // Ordinary completion feedback is owned by the row's shared modifier.
+            if settingsStore.workoutHaptics, isRecord {
                 let feedback = UINotificationFeedbackGenerator()
                 feedback.prepare()
-                feedback.notificationOccurred(isRecord ? .warning : .success)
+                feedback.notificationOccurred(.warning)
             }
             if settingsStore.workoutSounds {
-                AudioServicesPlaySystemSound(isRecord ? 1025 : 1103)
+                IronSoundPlayer.shared.play(isRecord ? .setRecord : .setComplete)
             }
             if isRecord {
                 announcePersonalRecord(for: set, in: workoutExercise)
             }
 
             if settingsStore.autoStartRestTimer {
+                restPillRevealsAt = Date().addingTimeInterval(0.38)
                 restTimerStore.start(duration: restTimerDuration(for: workoutExercise))
             }
         } else {
@@ -1891,7 +2118,7 @@ struct CurrentWorkoutView: View {
     private func announcePersonalRecord(for set: WorkoutSet, in workoutExercise: WorkoutExercise) {
         let title = workoutExercise.exercise(in: exerciseStore.exercises)?.title ?? "Personal Record"
         let detail = set.resultTitle(weightUnit: settingsStore.weightUnit)
-        withAnimation(IronMotion.snappy) {
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
             personalRecordBanner = PersonalRecordBanner(exerciseTitle: title, detail: detail)
         }
     }
@@ -2015,7 +2242,8 @@ struct CurrentWorkoutView: View {
         }
         finishStartDate = workout.safeStart
         finishDuration = max(workout.safeDuration, 0)
-        sessionEffort = workout.sessionEffortValue ?? 7
+        sessionEffort = workout.sessionEffortValue ?? 0
+        finishRecap = FinishWorkoutRecap(workout: workout, exercises: exerciseStore.exercises, weightUnit: settingsStore.weightUnit)
         syncWithHealth = UserDefaults.standard.object(forKey: "Iron.finishWorkout.syncWithHealth") as? Bool ?? true
         updateLinkedRoutine = false
         finishMediaError = nil
@@ -2136,7 +2364,7 @@ struct CurrentWorkoutView: View {
                 workout.comment = trimmedComment.isEmpty ? nil : trimmedComment
                 workout.start = finishStartDate
                 workout.end = finishEndDate
-                workout.sessionEffortValue = sessionEffort
+                workout.sessionEffortValue = sessionEffort > 0 ? sessionEffort : nil
                 if updateLinkedRoutine { updateLinkedRoutineFromCompletedSets() }
             }
         } catch {
@@ -2149,7 +2377,7 @@ struct CurrentWorkoutView: View {
         let feedback = UINotificationFeedbackGenerator()
         feedback.prepare()
         feedback.notificationOccurred(.success)
-        AudioServicesPlaySystemSound(1103)
+        IronSoundPlayer.shared.play(.workoutFinish)
 
         UserDefaults.standard.finishedWorkoutsCount += 1
         if UserDefaults.standard.finishedWorkoutsCount == 6,
@@ -2205,6 +2433,315 @@ struct CurrentWorkoutView: View {
         } catch {
             persistenceError = "Your latest changes could not be saved. \(error.localizedDescription)"
             return false
+        }
+    }
+}
+
+/// Capture the recap once when the editor opens. Record classification queries
+/// stay out of the body so scrubbing effort does no Core Data work.
+private struct FinishWorkoutRecap {
+    struct Record: Identifiable {
+        let id: NSManagedObjectID
+        let exerciseName: String
+        let title: String
+        let setSummary: String
+    }
+
+    var setCount = 0
+    var exerciseCount = 0
+    var averageRPE = "–"
+    var groups: [IronSessionStrip.ExerciseGroup] = []
+    var records: [Record] = []
+    var accessibilitySummary = "No completed sets."
+
+    init() {}
+
+    init(workout: Workout, exercises: [Exercise], weightUnit: WeightUnit) {
+        let workoutExercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+        var entries: [(set: WorkoutSet, exercise: WorkoutExercise, order: Int)] = []
+        for exercise in workoutExercises {
+            let sets = exercise.workoutSets?.array as? [WorkoutSet] ?? []
+            if sets.contains(where: \.isCompleted) { exerciseCount += 1 }
+            for set in sets where set.isCompleted {
+                entries.append((set, exercise, entries.count))
+            }
+        }
+        // Legacy timestamps fall back to session start, then relationship order.
+        let fallback = workout.start ?? .distantPast
+        entries.sort {
+            let lhs = $0.set.completedAt ?? fallback
+            let rhs = $1.set.completedAt ?? fallback
+            return lhs == rhs ? $0.order < $1.order : lhs < rhs
+        }
+        setCount = entries.count
+        let rpes = entries.compactMap { $0.set.rpeValue }.filter { $0 > 0 }
+        if !rpes.isEmpty {
+            averageRPE = (rpes.reduce(0, +) / Double(rpes.count))
+                .formatted(.number.precision(.fractionLength(0...1)))
+        }
+
+        let maximumVolume = entries.map { Self.volume(of: $0.set) }.max() ?? 0
+        var groupExercise: NSManagedObjectID?
+        var groupLabel = ""
+        var bars: [IronSessionStrip.Set] = []
+        var historyByExercise: [NSManagedObjectID: [WorkoutSet]] = [:]
+        var warmUpCount = 0
+        for entry in entries {
+            let name = entry.exercise.exercise(in: exercises)?.title ?? "Unknown exercise"
+            if groupExercise != entry.exercise.objectID {
+                if !bars.isEmpty { groups.append(.init(label: groupLabel, sets: bars)) }
+                groupExercise = entry.exercise.objectID
+                groupLabel = name
+                bars = []
+            }
+
+            let isRecord = entry.set.isPersonalRecord == true
+            let isWarmUp = entry.set.tagValue == .warmUp
+            if isWarmUp { warmUpCount += 1 }
+            let volume = Self.volume(of: entry.set)
+            bars.append(.init(
+                relativeVolume: volume > 0 && maximumVolume > 0 ? volume / maximumVolume : 0.45,
+                kind: isWarmUp ? .warmUp : isRecord ? .record : .normal,
+                completedAt: entry.set.completedAt,
+                duration: entry.set.durationValue,
+                volume: WeightUnit.convert(weight: volume, from: .metric, to: weightUnit),
+                result: entry.set.resultTitle(weightUnit: weightUnit),
+                rpe: entry.set.rpeValue
+            ))
+
+            if isRecord {
+                let id = entry.exercise.objectID
+                if historyByExercise[id] == nil, let context = workout.managedObjectContext,
+                   let history = try? context.fetch(entry.exercise.historyFetchRequest) {
+                    historyByExercise[id] = history.flatMap {
+                        ($0.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
+                    }
+                }
+                let precedingSets = entries.filter {
+                    $0.order < entry.order && $0.exercise.exerciseUuid == entry.exercise.exerciseUuid
+                }.map(\.set)
+                let priorSets = historyByExercise[id].map { $0 + precedingSets }
+                records.append(.init(
+                    id: entry.set.objectID,
+                    exerciseName: name,
+                    title: Self.recordTitle(for: entry.set, priorSets: priorSets, weightUnit: weightUnit),
+                    setSummary: entry.set.resultTitle(weightUnit: weightUnit)
+                ))
+            }
+        }
+        if !bars.isEmpty { groups.append(.init(label: groupLabel, sets: bars)) }
+        let exerciseSummary = groups.map { "\($0.label), \($0.sets.count) sets" }.joined(separator: "; ")
+        accessibilitySummary = "Session timeline in completion order: \(setCount) completed sets, \(warmUpCount) warm-up sets, \(records.count) personal records. \(exerciseSummary). Bar height shows set volume. The activity track shows work and rest, estimating 40 seconds for sets without a recorded duration."
+    }
+
+    private static func volume(of set: WorkoutSet) -> Double {
+        guard set.durationValue == nil else { return 0 }
+        let volume = set.weightValue * Double(set.repetitionsValue)
+        return volume.isFinite && volume > 0 ? volume : 0
+    }
+
+    private static func recordTitle(for set: WorkoutSet, priorSets: [WorkoutSet]?, weightUnit: WeightUnit) -> String {
+        // isPersonalRecord means a weight/repetition improvement, not necessarily
+        // an estimated 1RM record. Only name a more specific record with evidence.
+        guard let priorSets, !priorSets.isEmpty else { return "New personal record" }
+        if let maximum = priorSets.map(\.weightValue).max(), set.weightValue > maximum {
+            return "Heaviest weight"
+        }
+        let atWeight = priorSets.filter { $0.weightValue == set.weightValue }
+        if let maximum = atWeight.map(\.repetitionsValue).max(), set.repetitionsValue > maximum {
+            let weight = WeightUnit.format(weight: set.weightValue, from: .metric, to: weightUnit)
+            return "Most reps at \(weight)"
+        }
+        return "New personal record"
+    }
+}
+
+private struct FinishWorkoutRecordRow: View {
+    let record: FinishWorkoutRecap.Record
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "trophy.fill")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(IronTheme.metricRecord)
+                .modifier(if: !reduceMotion) {
+                    $0.symbolEffect(.bounce, options: .nonRepeating, value: hasAppeared)
+                }
+                .frame(width: 36, height: 36)
+                .background(IronTheme.metricRecordContainer, in: Circle())
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(record.exerciseName)
+                    .font(.body.weight(.semibold))
+                Text(record.title)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                Text(record.setSummary)
+                    .font(.ironMetric(.caption, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.vertical, 4)
+        .opacity(hasAppeared ? 1 : 0)
+        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: hasAppeared)
+        .accessibilityElement(children: .combine)
+        .onAppear { hasAppeared = true }
+    }
+}
+
+/// Completion-only control. The history editor keeps its existing effort picker.
+private struct FinishWorkoutEffortControl: View {
+    @Binding var rating: Int
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ScaledMetric(relativeTo: .caption2) private var numeralHeight: CGFloat = 18
+    @State private var hasAppeared = false
+    @State private var dragIsHorizontal: Bool?
+
+    private var graphHeight: CGFloat { 56 + 8 + numeralHeight }
+
+    private var ratingTitle: String {
+        switch rating {
+        case 1...3: return "\(rating) · Easy"
+        case 4...6: return "\(rating) · Moderate"
+        case 7...8: return "\(rating) · Hard"
+        case 9...10: return "\(rating) · All Out"
+        default: return "Not rated"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("How hard was it?").font(.headline)
+                    Spacer(minLength: 8)
+                    ratingLabel
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("How hard was it?").font(.headline)
+                    ratingLabel
+                }
+            }
+
+            // Geometry measures the touch range only; the segments are a plain stack.
+            GeometryReader { proxy in
+                HStack(alignment: .bottom, spacing: 4) {
+                    ForEach(1...10, id: \.self) { level in
+                        FinishWorkoutEffortBar(level: level, rating: rating, hasAppeared: hasAppeared)
+                    }
+                }
+                .frame(height: graphHeight, alignment: .bottom)
+                .contentShape(Rectangle())
+                .gesture(SpatialTapGesture().onEnded { value in
+                    select(at: value.location.x, width: proxy.size.width)
+                })
+                .simultaneousGesture(
+                    DragGesture(minimumDistance: 12)
+                        .onChanged { value in
+                            // Lock intent once so a vertical scroll never turns
+                            // into a rating change when the finger veers sideways.
+                            if dragIsHorizontal == nil {
+                                dragIsHorizontal = abs(value.translation.width) > abs(value.translation.height)
+                            }
+                            guard dragIsHorizontal == true else { return }
+                            select(at: value.location.x, width: proxy.size.width)
+                        }
+                        .onEnded { _ in dragIsHorizontal = nil }
+                )
+            }
+            .frame(height: graphHeight)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Session effort")
+            .accessibilityValue(rating == 0 ? "Not rated" : "\(ratingTitle), out of 10")
+            .accessibilityHint("Swipe up or down to adjust. Zero leaves the session unrated.")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: rating = min(rating + 1, 10)
+                case .decrement: rating = max(rating - 1, 0)
+                default: break
+                }
+            }
+
+            if rating > 0 {
+                Button("Clear rating") { rating = 0 }
+                    .font(.subheadline)
+                    .frame(minHeight: IronTheme.controlHeight)
+                    .buttonStyle(.borderless)
+                    .accessibilityHint("Leaves session effort unrated")
+            }
+        }
+        .sensoryFeedback(.selection, trigger: rating)
+        // Entrance plays once; List prefetching can call onDisappear before the
+        // row is ever shown, so never reset the flag there.
+        .onAppear { hasAppeared = true }
+        .onDisappear { dragIsHorizontal = nil }
+    }
+
+    private var ratingLabel: some View {
+        Text(ratingTitle)
+            .font(.ironMetric(.subheadline))
+            .foregroundStyle(IronTheme.metricEffort)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: rating)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func select(at x: CGFloat, width: CGFloat) {
+        guard width > 0 else { return }
+        let level = min(max(Int((x / width * 10).rounded(.down)) + 1, 1), 10)
+        if level != rating { rating = level }
+    }
+}
+
+private struct FinishWorkoutEffortBar: View {
+    let level: Int
+    let rating: Int
+    let hasAppeared: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var selectionScale: CGFloat = 1
+
+    private var isFilled: Bool { level <= rating }
+    private var shape: UnevenRoundedRectangle {
+        UnevenRoundedRectangle(topLeadingRadius: 5, topTrailingRadius: 5)
+    }
+
+    var body: some View {
+        VStack(spacing: 5) {
+            shape
+                .fill(IronTheme.tertiaryFill)
+                .overlay { shape.strokeBorder(IronTheme.outline.opacity(0.5), lineWidth: 0.5) }
+                .overlay {
+                    shape.fill(IronTheme.metricEffort.opacity(0.55 + 0.45 * Double(level - 1) / 9))
+                        .opacity(isFilled ? 1 : 0)
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isFilled)
+                }
+                .frame(height: 56 * (0.14 + 0.86 * Double(level) / 10))
+                .scaleEffect(y: selectionScale, anchor: .bottom)
+                .scaleEffect(y: hasAppeared || reduceMotion ? 1 : 0, anchor: .bottom)
+                .frame(height: 56, alignment: .bottom)
+            Text("\(level)")
+                .font(.caption2.weight(level == rating ? .bold : .regular))
+                .monospacedDigit()
+                .lineLimit(1)
+                .minimumScaleFactor(0.6)
+                .foregroundStyle(level == rating ? IronTheme.metricEffort : IronTheme.secondaryText)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity)
+        .opacity(hasAppeared ? 1 : 0)
+        .animation(IronMotion.preferred(
+            IronMotion.snappy.delay(Double(level - 1) * 0.04), reduceMotion: reduceMotion
+        ), value: hasAppeared)
+        .task(id: isFilled) {
+            guard isFilled, !reduceMotion else { selectionScale = 1; return }
+            selectionScale = 0.9
+            await Task.yield()
+            guard !Task.isCancelled else { return }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                selectionScale = 1
+            }
         }
     }
 }
@@ -2311,26 +2848,6 @@ enum InlineWorkoutSetLayout {
     static let completionWidth: CGFloat = 40
 }
 
-private struct CompletedSetGlassChrome: ViewModifier {
-    let isCompleted: Bool
-
-    @ViewBuilder
-    func body(content: Content) -> some View {
-        if isCompleted {
-            content
-                // Expand only the completed chrome. The negative outer inset
-                // preserves the row's reported width, so none of its columns
-                // reflow when completion toggles.
-                .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
-                .background(IronTheme.successContainer, in: Capsule(style: .continuous))
-                .ironLiquidGlassPill(tint: IronTheme.success.opacity(0.10))
-                .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
-        } else {
-            content
-        }
-    }
-}
-
 struct InlineWorkoutSetRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -2345,6 +2862,63 @@ struct InlineWorkoutSetRow: View {
     let onDelete: () -> Bool
     let onChanged: () -> Bool
     var allowsSwipeToDelete = false
+    var isCurrent = false
+
+    @State private var isRaisedCurrent = false
+    @State private var completionBounce = 0
+    @State private var checkReveal: CGFloat = 0
+
+    private var valueColor: Color {
+        return set.isCompleted || isRaisedCurrent ? IronTheme.primaryText : IronTheme.secondaryText
+    }
+
+    private var badgeColor: Color {
+        if set.tagValue == .warmUp { return IronTheme.metricSets }
+        return set.isCompleted || isRaisedCurrent ? IronTheme.accent : IronTheme.secondaryText
+    }
+
+    private var badgeFill: Color {
+        if set.tagValue == .warmUp { return IronTheme.metricSetsContainer }
+        if set.isCompleted { return IronTheme.accentSoft }
+        return isRaisedCurrent ? .clear : IronTheme.field
+    }
+
+    private var completionFeedbackEnabled: Bool {
+        settingsStore.workoutHaptics
+            && !(settingsStore.personalRecordAlerts && set.isPersonalRecord == true)
+    }
+
+    private var completionImage: some View {
+        Image(systemName: set.isCompleted ? "checkmark.circle.fill" : "circle")
+            .symbolRenderingMode(.palette)
+            .foregroundStyle(
+                set.isCompleted ? IronTheme.onAccent : (isRaisedCurrent ? IronTheme.accent : IronTheme.tertiaryText),
+                IronTheme.accent
+            )
+            .font(.system(size: 28, weight: .semibold))
+    }
+
+    @ViewBuilder
+    private var completionSymbol: some View {
+        if reduceMotion {
+            completionImage.contentTransition(.opacity)
+        } else {
+            ZStack {
+                // Keep the blue disc visible while the symbol's white check draws in.
+                Circle()
+                    .fill(IronTheme.accent)
+                    .opacity(set.isCompleted ? 1 : 0)
+                completionImage
+                    .contentTransition(.symbolEffect(.replace))
+                    .symbolEffect(.bounce, options: .nonRepeating, value: completionBounce)
+                    .mask {
+                        Rectangle()
+                            .scaleEffect(x: set.isCompleted ? checkReveal : 1, anchor: .leading)
+                    }
+            }
+            .frame(width: 28, height: 28)
+        }
+    }
 
     @State private var showingRPEPicker = false
     @State private var showingDurationPicker = false
@@ -2386,13 +2960,13 @@ struct InlineWorkoutSetRow: View {
             Image(systemName: isRunning ? "stop.fill" : "stopwatch")
                 .font(.system(size: 12, weight: .bold))
                 .foregroundColor(
-                    set.isCompleted
-                        ? IronTheme.onSuccessContainer
-                        : (isRunning ? .red : IronTheme.accent)
+                    isRunning ? IronTheme.danger : (set.isCompleted || isRaisedCurrent ? IronTheme.metricTime : IronTheme.secondaryText)
                 )
             Text(text)
-                .font(.system(size: 15, weight: .semibold).monospacedDigit())
-                .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.primaryText)
+                .font(.ironMetric(.subheadline))
+                .foregroundColor(valueColor)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: text)
         }
         .frame(maxWidth: .infinity, minHeight: 44)
     }
@@ -2508,23 +3082,25 @@ struct InlineWorkoutSetRow: View {
                 setTypeMenuItems
             } label: {
                 Text(setLabel)
-                    .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                    .foregroundColor(
-                        set.isCompleted
-                            ? IronTheme.onSuccessContainer
-                            : (set.tagValue == .warmUp ? IronTheme.warning : IronTheme.primaryText)
-                    )
-                    .frame(width: InlineWorkoutSetLayout.setWidth, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
-                    )
+                    .font(.ironMetric(.callout, weight: .semibold))
+                    .foregroundStyle(badgeColor)
+                    .frame(width: 30, height: 30)
+                    .background(badgeFill, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(IronTheme.accent, lineWidth: 1.5)
+                            .opacity(isRaisedCurrent && !set.isCompleted && set.tagValue != .warmUp ? 1 : 0)
+                    }
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.setWidth)
             }
             .accessibilityLabel("Set type")
+            .accessibilityValue(set.tagValue?.title ?? "Normal set")
 
             Text(previousTitle)
-                .font(.system(size: 13).monospacedDigit())
-                .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.secondaryText)
+                .font(.ironMetric(.caption, weight: .semibold))
+                .foregroundColor(IronTheme.secondaryText)
                 .lineLimit(2)
                 .minimumScaleFactor(0.7)
                 .multilineTextAlignment(.center)
@@ -2562,21 +3138,22 @@ struct InlineWorkoutSetRow: View {
                     Group {
                         if let rpe = set.rpeValue {
                             Text(String(format: "%g", rpe))
+                        } else if set.isCompleted {
+                            Text("–")
                         } else {
                             Image(systemName: "gauge.with.dots.needle.50percent")
                         }
                     }
-                    .font(.system(size: 13, weight: .medium).monospacedDigit())
-                    .foregroundColor(
-                        set.isCompleted
-                            ? IronTheme.onSuccessContainer
-                            : (set.rpeValue == nil ? IronTheme.secondaryText : IronTheme.accent)
-                    )
-                    .frame(width: InlineWorkoutSetLayout.rpeWidth, height: 44)
+                    .font(.ironMetric(.caption, weight: .semibold))
+                    .foregroundStyle(set.rpeValue != nil || (!set.isCompleted && isRaisedCurrent) ? IronTheme.metricEffort : IronTheme.secondaryText)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
                     .background(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
+                        Capsule(style: .continuous)
+                            .fill(IronTheme.metricEffortContainer)
+                            .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
                     )
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.rpeWidth)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(rpeAccessibilityLabel)
@@ -2588,22 +3165,12 @@ struct InlineWorkoutSetRow: View {
                     onToggleCompleted()
                 }
             } label: {
-                Image(systemName: "checkmark")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(
-                        set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.secondaryText
-                    )
-                    // Completing a set is the most repeated action in the app, so
-                    // it gets the one piece of overshoot motion in the logger.
-                    .scaleEffect(set.isCompleted ? 1.12 : 1)
-                    .frame(width: InlineWorkoutSetLayout.completionWidth, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(set.isCompleted ? IronTheme.successControl : Color(.tertiarySystemFill))
-                )
+                completionSymbol
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.completionWidth)
             }
             .buttonStyle(.plain)
-            .sensoryFeedback(.success, trigger: set.isCompleted) { _, completed in completed }
             .accessibilityLabel(
                 set.isCompleted
                     ? "Set \(index + 1) completed"
@@ -2613,12 +3180,18 @@ struct InlineWorkoutSetRow: View {
             .accessibilityRemoveTraits(.isSelected)
             .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
             }
-            // Completion changes only the chrome. The table columns keep the
-            // same geometry, while the green treatment remains inset from the
-            // exercise card and rounds into a true glass capsule.
+            // Every state uses the same insets and columns. Only the fills change.
             .padding(.vertical, 5)
             .frame(maxWidth: .infinity)
-            .modifier(CompletedSetGlassChrome(isCompleted: set.isCompleted))
+            .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
+            .background {
+                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                    .fill(IronTheme.field)
+                    .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
+            }
+            .ironSetCompletion(isComplete: set.isCompleted, feedbackEnabled: completionFeedbackEnabled)
+            .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: set.isCompleted)
             .padding(.vertical, 2)
             .offset(x: swipeOffset)
         }
@@ -2635,8 +3208,32 @@ struct InlineWorkoutSetRow: View {
         )
         .contentShape(Rectangle())
         .simultaneousGesture(swipeDeleteGesture)
-        .onAppear(perform: synchronizeEntryText)
+        .onAppear {
+            synchronizeEntryText()
+            isRaisedCurrent = isCurrent && !set.isCompleted
+            checkReveal = set.isCompleted ? 1 : 0
+        }
+        .onChange(of: isCurrent) { _, current in
+            withAnimation(IronMotion.preferred(
+                current ? IronMotion.snappy.delay(0.18) : IronMotion.snappy,
+                reduceMotion: reduceMotion
+            )) {
+                isRaisedCurrent = current && !set.isCompleted
+            }
+        }
         .onChange(of: set.isCompleted) { _, isCompleted in
+            if focusedField != .weight { weightText = formattedWeight }
+            if isCompleted {
+                completionBounce += 1
+                withAnimation(IronMotion.preferred(IronMotion.snappy.delay(0.12), reduceMotion: reduceMotion)) {
+                    checkReveal = 1
+                }
+            } else {
+                checkReveal = 0
+            }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                isRaisedCurrent = isCurrent && !isCompleted
+            }
             // Banking the elapsed time on completion keeps a running stopwatch
             // from being silently discarded.
             guard isCompleted, inlineTimerStart != nil else { return }
@@ -2655,9 +3252,7 @@ struct InlineWorkoutSetRow: View {
             weightText = formattedWeight
         }
         .onChange(of: focusedField) { _, newValue in
-            if newValue != .weight {
-                weightText = formattedWeight
-            }
+            weightText = formattedWeight
             if newValue != .repetitions {
                 repetitionsText = formattedRepetitions
             }
@@ -2756,7 +3351,8 @@ struct InlineWorkoutSetRow: View {
             from: .metric,
             to: settingsStore.weightUnit
         )
-        return weightFormatter.string(from: NSNumber(value: displayValue)) ?? "0"
+        let formatter = focusedField == .weight ? weightFormatter : settingsStore.weightUnit.displayNumberFormatter
+        return formatter.string(from: NSNumber(value: displayValue)) ?? "0"
     }
 
     private var formattedRepetitions: String {
@@ -2825,23 +3421,18 @@ struct InlineWorkoutSetRow: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .font(.system(size: 16, weight: .medium).monospacedDigit())
-            .foregroundColor(set.isCompleted ? IronTheme.onSuccessContainer : IronTheme.primaryText)
+            .font(.ironMetric(.callout))
+            .foregroundColor(valueColor)
             .multilineTextAlignment(.center)
             .frame(maxWidth: width == nil ? .infinity : nil, minHeight: 46)
             .frame(width: width)
             .background(
-                RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                    .fill(
-                        set.isCompleted
-                            ? IronTheme.successControl
-                            : (isFocused ? IronTheme.accentSoft : Color(.tertiarySystemFill))
-                    )
-                    // The focus ring is the only stroke left on a set field; the
-                    // resting outline was pure decoration on top of a filled shape.
+                Capsule(style: .continuous)
+                    .fill(isFocused ? IronTheme.accentSoft : IronTheme.tertiaryFill)
+                    .opacity(!set.isCompleted && (isRaisedCurrent || isFocused) ? 1 : 0)
                     .overlay {
                         if isFocused && !set.isCompleted {
-                            RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
+                            Capsule(style: .continuous)
                                 .stroke(IronTheme.accent, lineWidth: 2)
                         }
                     }
@@ -2865,7 +3456,7 @@ struct InlineWorkoutSetRow: View {
                 .foregroundColor(IronTheme.onMedia)
                 .frame(width: deleteRevealWidth)
                 .opacity(deleteRevealWidth >= 52 ? 1 : deleteRevealWidth / 52)
-                .scaleEffect(deleteRevealWidth >= 52 ? 1 : 0.82)
+                .scaleEffect(reduceMotion || deleteRevealWidth >= 52 ? 1 : 0.82)
             }
             .frame(width: deleteRevealWidth + deleteRevealOverlap, height: 52)
         }
@@ -2911,7 +3502,7 @@ struct InlineWorkoutSetRow: View {
                 if swipeOffset <= -fullSwipeDeleteThreshold {
                     performSwipeDelete()
                 } else {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) {
+                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                         swipeOffset = projectedOffset < -deleteActionWidth * 0.42
                             ? -deleteActionWidth
                             : 0
@@ -2925,11 +3516,11 @@ struct InlineWorkoutSetRow: View {
         isPerformingSwipeDelete = true
         focusedField = nil
 
-        withAnimation(.snappy(duration: 0.28)) {
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
             swipeOffset = -effectiveRowWidth
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            withAnimation(.snappy(duration: 0.22)) {
+            withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
                 if !onDelete() {
                     swipeOffset = 0
                     isPerformingSwipeDelete = false
@@ -2968,7 +3559,7 @@ private struct RPEPickerSheet: View {
                     Picker("RPE", selection: $selection) {
                         ForEach(Array(RPE.allowedValues), id: \.self) { value in
                             Text(String(format: "%g", value))
-                                .monospacedDigit()
+                                .font(.ironMetric(.body, weight: .semibold))
                                 .tag(value)
                         }
                     }

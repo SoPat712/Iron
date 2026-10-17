@@ -7,11 +7,13 @@
 //
 
 import SwiftUI
+import Charts
 import CoreData
 import MuscleMap
 import WorkoutDataKit
 
 struct HistoryView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var sceneState: SceneState
@@ -41,21 +43,24 @@ struct HistoryView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                IronScreenBackground()
-                VStack(spacing: 0) {
-                    historyModePicker
-
-                    ScrollView(showsIndicators: false) {
-                        VStack(alignment: .leading, spacing: 22) {
-                            historyModeContent
+            List {
+                Section {
+                    EmptyView()
+                } header: {
+                    Picker("History Section", selection: $browseMode) {
+                        ForEach(HistoryBrowseMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
                         }
-                        .padding(IronTheme.horizontalPadding)
-                        .padding(.top, 10)
-                        .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
                     }
+                    .pickerStyle(.segmented)
+                    .textCase(nil)
+                    .padding(.bottom, 4)
                 }
+
+                historyModeContent
             }
+            .listStyle(.insetGrouped)
+            .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.large)
         }
@@ -84,10 +89,8 @@ struct HistoryView: View {
         }
         .sheet(isPresented: $showingMuscleBreakdown) {
             WeeklyMuscleBreakdownSheet(items: weeklyMuscleBreakdown)
-                .presentationDetents([.height(390), .large])
+                .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
-                .presentationContentInteraction(.scrolls)
-                .presentationBackground(IronTheme.modalSurface)
         }
         .sheet(isPresented: $showingRepeatBlocked) {
             IronStatusSheet(
@@ -124,81 +127,6 @@ struct HistoryView: View {
         }
     }
 
-    private var progressSummary: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            IronSectionTitle(title: "Training trend", detail: selectedTimeFrame.compactTitle)
-
-            VStack(alignment: .leading, spacing: 14) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(trendMetric.headline(value: currentTrendValue, weightUnit: settingsStore.weightUnit))
-                        .font(.system(size: 30, weight: .bold).monospacedDigit())
-                        .foregroundColor(IronTheme.primaryText)
-                        .contentTransition(.numericText())
-                    Text("This week · \(trendMetric.contextLabel(weightUnit: settingsStore.weightUnit))")
-                        .font(.caption.weight(.semibold))
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-
-                HStack(spacing: 6) {
-                    ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { timeFrame in
-                        Button {
-                            selectedTimeFrame = timeFrame
-                        } label: {
-                            Text(timeFrame.compactTitle)
-                        }
-                        .buttonStyle(IronChoicePillButtonStyle(isSelected: selectedTimeFrame == timeFrame))
-                        .accessibilityLabel(timeFrame.title)
-                    }
-                }
-
-                HistoryTrendChart(
-                    points: trendPoints,
-                    metricTitle: trendMetric.title,
-                    weightUnit: settingsStore.weightUnit,
-                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) }
-                )
-
-                Picker("Trend metric", selection: $trendMetric) {
-                    ForEach(HistoryTrendMetric.allCases) { metric in
-                        Text(metric.title)
-                            .tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-
-                HStack(spacing: 0) {
-                    compactWeekMetric(value: "\(workoutsThisWeek)", label: "WORKOUTS")
-                    weekMetricDivider
-                    compactWeekMetric(value: "\(setsThisWeek)", label: "SETS")
-                    weekMetricDivider
-                    compactWeekMetric(value: durationThisWeek, label: "TIME")
-                }
-                .padding(.vertical, 13)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                        .fill(IronTheme.raisedSurface)
-                )
-            }
-            .padding(.vertical, 14)
-            .overlay(IronHairline(opacity: 0.48), alignment: .top)
-            .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
-        }
-    }
-
-    private var historyModePicker: some View {
-        Picker("History section", selection: $browseMode) {
-            ForEach(HistoryBrowseMode.allCases) { mode in
-                Text(mode.title)
-                    .tag(mode)
-            }
-        }
-        .pickerStyle(.segmented)
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.top, 10)
-        .padding(.bottom, 2)
-        .background(IronTheme.background)
-    }
-
     @ViewBuilder
     private var historyModeContent: some View {
         switch browseMode {
@@ -212,122 +140,179 @@ struct HistoryView: View {
         }
     }
 
+    @ViewBuilder
+    private var progressSummary: some View {
+        Section {
+            VStack(alignment: .leading, spacing: 10) {
+                trendMetric.headlineText(value: currentTrendValue, weightUnit: settingsStore.weightUnit)
+                    .font(.ironMetric(.title))
+                    .foregroundStyle(trendMetric.color)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: currentTrendValue)
+
+                HistoryTrendChart(
+                    points: trendPoints,
+                    metricTitle: trendMetric.title,
+                    metricColor: trendMetric.color,
+                    weightUnit: settingsStore.weightUnit,
+                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) }
+                )
+            }
+            .padding(.vertical, 6)
+
+            Picker("Metric", selection: $trendMetric) {
+                ForEach(HistoryTrendMetric.allCases) { metric in
+                    Text(metric.title).tag(metric)
+                }
+            }
+            .pickerStyle(.segmented)
+            .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+
+            Picker("Range", selection: $selectedTimeFrame) {
+                ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { timeFrame in
+                    Text(timeFrame.title).tag(timeFrame)
+                }
+            }
+        } header: {
+            Text("Training Trend")
+        } footer: {
+            Text("Latest \(trendMetric.contextLabel(weightUnit: settingsStore.weightUnit)).")
+        }
+
+        Section("This Week") {
+            LabeledContent("Workouts", value: "\(workoutsThisWeek)")
+            LabeledContent("Sets", value: "\(setsThisWeek)")
+            LabeledContent("Time", value: durationThisWeek)
+        }
+        .monospacedDigit()
+    }
+
+    @ViewBuilder
     private var workoutHistoryContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(title: "Workout history", detail: "\(completedWorkouts.count) TOTAL")
-
-            if completedWorkouts.isEmpty {
-                emptyState
-            } else {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(completedWorkouts.enumerated()), id: \.element.id) { index, workout in
-                        HStack(alignment: .top, spacing: 0) {
-                            NavigationLink(destination: WorkoutDetailView(workout: workout).environmentObject(settingsStore)) {
-                                WorkoutProgressCard(workout: workout)
-                            }
-                            .buttonStyle(.plain)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-
-                            IronPopupMenu(
-                                title: "Workout actions",
-                                actions: workoutPopupActions(for: workout),
-                                arrowEdge: .bottom
-                            ) {
-                                Image(systemName: "ellipsis")
-                                    .font(.system(size: 16, weight: .bold))
-                                    .foregroundColor(IronTheme.primaryText)
-                                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                                    .background(Circle().fill(IronTheme.raisedSurface))
-                            }
-                            .padding(.top, 4)
-                            .padding(.trailing, 4)
+        let completed = completedWorkouts
+        // isPersonalRecord performs count fetches. Build the same classification
+        // once from the fetched history instead of querying from every row/bar.
+        let records = HistoryRecordIndex.recordSetIDs(in: completed)
+        if completed.isEmpty {
+            Section("Workouts") {
+                ContentUnavailableView(
+                    "No Workouts Yet",
+                    systemImage: "chart.xyaxis.line",
+                    description: Text("Finished workouts, volume, effort, and personal records appear here.")
+                )
+                .listRowBackground(Color.clear)
+            }
+        } else {
+            let weeks = HistoryWorkoutWeek.group(completed)
+            ForEach(weeks) { week in
+                Section {
+                    ForEach(week.workouts, id: \.objectID) { workout in
+                        workoutHistoryLink(workout, recordSetIDs: records)
+                    }
+                } header: {
+                    ViewThatFits(in: .horizontal) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(week.title)
+                            Spacer(minLength: 8)
+                            weekTotals(week)
                         }
-
-                        if index < completedWorkouts.count - 1 {
-                            IronHairline(opacity: 0.46)
-                                .padding(.leading, 14)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(week.title)
+                            weekTotals(week)
                         }
                     }
+                    .textCase(nil)
+                } footer: {
+                    if week.id == weeks.last?.id {
+                        Text("\(completed.count) completed workout\(completed.count == 1 ? "" : "s").")
+                    }
                 }
-                .overlay(IronHairline(opacity: 0.48), alignment: .top)
-                .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
             }
         }
     }
 
+    private func weekTotals(_ week: HistoryWorkoutWeek) -> some View {
+        let volume = WeightUnit.convert(weight: week.volume, from: .metric, to: settingsStore.weightUnit)
+        let value = volume >= 1_000
+            ? String(format: "%.1fk", volume / 1_000)
+            : String(format: "%.0f", volume)
+        return (Text("\(week.workouts.count) workout\(week.workouts.count == 1 ? "" : "s")")
+            .foregroundColor(IronTheme.accent)
+            + Text(" · ").foregroundColor(IronTheme.secondaryText)
+            + Text(value).foregroundColor(IronTheme.metricVolume)
+            + Text(" \(settingsStore.weightUnit.unit.symbol)")
+                .font(.caption2).foregroundColor(IronTheme.secondaryText))
+            .font(.ironMetric(.caption))
+    }
+
+    private func workoutHistoryLink(_ workout: Workout, recordSetIDs: Set<NSManagedObjectID>) -> some View {
+        NavigationLink {
+            WorkoutDetailView(workout: workout)
+                .environmentObject(settingsStore)
+        } label: {
+            WorkoutHistoryRow(workout: workout, recordSetIDs: recordSetIDs)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                workoutToDelete = workout
+            }
+            Button("Share", systemImage: "square.and.arrow.up") {
+                share(workout)
+            }
+            .tint(IronTheme.secondaryText)
+        }
+        .contextMenu {
+            Button("Share Workout", systemImage: "square.and.arrow.up") { share(workout) }
+            Button("Repeat Workout", systemImage: "arrow.clockwise") { repeatWorkout(workout, blank: false) }
+            Button("Repeat with Blank Sets", systemImage: "doc") { repeatWorkout(workout, blank: true) }
+            Divider()
+            Button("Delete Workout", systemImage: "trash", role: .destructive) { workoutToDelete = workout }
+        }
+    }
+
+    @ViewBuilder
     private var exerciseHistoryContent: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(title: "Exercise history", detail: "\(trainedExerciseSummaries.count) TRAINED")
-
+        Section {
             if trainedExerciseSummaries.isEmpty {
-                VStack(spacing: 12) {
-                    Image(systemName: "dumbbell.fill")
-                        .font(.system(size: 34, weight: .semibold))
-                        .foregroundColor(IronTheme.accent)
-                    Text("No exercise history yet")
-                        .font(.headline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("Complete a set to start tracking sessions, volume, and personal records for each exercise.")
-                        .font(.subheadline)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.horizontal, 20)
-                .padding(.vertical, 34)
-                .overlay(IronHairline(opacity: 0.48), alignment: .top)
-                .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
+                ContentUnavailableView(
+                    "No Exercise History",
+                    systemImage: "dumbbell",
+                    description: Text("Complete a set to start tracking sessions, volume, and personal records for each exercise.")
+                )
+                .listRowBackground(Color.clear)
             } else {
-                LazyVStack(spacing: 0) {
-                    ForEach(Array(trainedExerciseSummaries.enumerated()), id: \.element.id) { index, summary in
-                        NavigationLink(destination: ExerciseDetailView(exercise: summary.exercise)) {
-                            historyExerciseRow(summary)
-                        }
-                        .buttonStyle(.plain)
+                ForEach(trainedExerciseSummaries) { summary in
+                    NavigationLink {
+                        ExerciseDetailView(exercise: summary.exercise)
+                    } label: {
+                        HStack(spacing: 12) {
+                            ExerciseDiagramThumbnail(exercise: summary.exercise, size: 40)
 
-                        if index < trainedExerciseSummaries.count - 1 {
-                            IronHairline(opacity: 0.44)
-                                .padding(.leading, 64)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(summary.exercise.title)
+                                    .lineLimit(2)
+                                Text("\(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s") · \(summary.setCount) set\(summary.setCount == 1 ? "" : "s")")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Text(summary.lastTrained.formatted(.dateTime.month(.abbreviated).day()))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
-                .overlay(IronHairline(opacity: 0.48), alignment: .top)
-                .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
+            }
+        } header: {
+            Text("Exercises")
+        } footer: {
+            if !trainedExerciseSummaries.isEmpty {
+                Text("\(trainedExerciseSummaries.count) exercise\(trainedExerciseSummaries.count == 1 ? "" : "s") trained.")
             }
         }
-    }
-
-    private func historyExerciseRow(_ summary: HistoryExerciseSummary) -> some View {
-        HStack(spacing: 12) {
-            ExerciseDiagramThumbnail(exercise: summary.exercise, size: 48)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(summary.exercise.title)
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .lineLimit(2)
-
-                Text("\(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s") · \(summary.setCount) set\(summary.setCount == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 8)
-
-            VStack(alignment: .trailing, spacing: 5) {
-                Text(summary.lastTrained.formatted(.dateTime.month(.abbreviated).day()))
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(IronTheme.secondaryText)
-                Image(systemName: "chevron.right")
-                    .font(.caption.weight(.bold))
-                    .foregroundColor(IronTheme.tertiaryText)
-            }
-        }
-        .frame(maxWidth: .infinity, minHeight: 68, alignment: .leading)
-        .contentShape(Rectangle())
-        .accessibilityElement(children: .combine)
-        .accessibilityHint("Opens exercise statistics and session history")
     }
 
     private var trainedExerciseSummaries: [HistoryExerciseSummary] {
@@ -366,125 +351,38 @@ struct HistoryView: View {
         }
     }
 
-    private func compactWeekMetric(value: String, label: String) -> some View {
-        VStack(spacing: 3) {
-            Text(value)
-                .font(.system(size: 17, weight: .bold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.75)
-            Text(label)
-                .font(.system(size: 9, weight: .bold))
-                .tracking(0.7)
-                .foregroundColor(IronTheme.secondaryText)
-        }
-        .frame(maxWidth: .infinity)
-        .accessibilityElement(children: .combine)
-    }
-
-    private var weekMetricDivider: some View {
-        Rectangle()
-            .fill(IronTheme.outline.opacity(0.55))
-            .frame(width: 1, height: 30)
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.system(size: 36, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text("Your progress starts with one set")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Finished workouts, volume, effort, and personal records will appear here.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .padding(.horizontal, 18)
-        .overlay(IronHairline(opacity: 0.48), alignment: .top)
-        .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
-    }
-
+    @ViewBuilder
     private var muscleRecoveryMap: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(title: "Muscle load", detail: "LAST 7 DAYS")
-
-            VStack(spacing: 12) {
-                if weeklyMuscleSets.isEmpty {
-                    VStack(spacing: 11) {
-                        Image(systemName: "figure.arms.open")
-                            .font(.system(size: 32, weight: .semibold))
-                            .foregroundColor(IronTheme.accent)
-                        Text("Complete sets to build your muscle map")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text("Your weekly training distribution will appear here.")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                            .multilineTextAlignment(.center)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 176)
-                } else {
-                    VStack(spacing: 12) {
-                        HStack(spacing: 8) {
-                            weeklyBody(side: .front)
-                            weeklyBody(side: .back)
-                        }
-                        .frame(height: 176)
-
-                        HStack {
-                            Text("FRONT")
-                            Spacer()
-                            HStack(spacing: 6) {
-                                Circle().fill(IronTheme.accent.opacity(0.25)).frame(width: 7, height: 7)
-                                Text("LOW")
-                                Rectangle()
-                                    .fill(LinearGradient(colors: [IronTheme.accent.opacity(0.22), IronTheme.accent.opacity(0.62), IronTheme.accent], startPoint: .leading, endPoint: .trailing))
-                                    .frame(width: 64, height: 5)
-                                    .clipShape(Capsule())
-                                Text("HIGH")
-                            }
-                            Spacer()
-                            Text("BACK")
-                        }
-                        .font(.caption2.weight(.bold))
-                        .foregroundColor(IronTheme.tertiaryText)
-                    }
-                    .allowsHitTesting(false)
+        Section {
+            if weeklyMuscleSets.isEmpty {
+                ContentUnavailableView(
+                    "No Muscle Load",
+                    systemImage: "figure.arms.open",
+                    description: Text("Complete a working set and your weekly training distribution appears here.")
+                )
+                .listRowBackground(Color.clear)
+            } else {
+                HStack(spacing: 8) {
+                    weeklyBody(side: .front)
+                    weeklyBody(side: .back)
                 }
+                .frame(height: 180)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 6)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
 
-                IronHairline()
-
-                Button(action: { showingMuscleBreakdown = true }) {
-                    HStack(spacing: 10) {
-                        Image(systemName: "chart.bar.fill")
-                            .foregroundColor(IronTheme.accent)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("View muscle breakdown")
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("Set counts and weekly distribution")
-                                .font(.caption)
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                    .contentShape(Rectangle())
-                    .frame(minHeight: IronTheme.controlHeight)
+                Button {
+                    showingMuscleBreakdown = true
+                } label: {
+                    LabeledContent("Muscle Breakdown", value: "\(weeklyMuscleSets.count) muscles")
                 }
-                .buttonStyle(.plain)
                 .accessibilityHint("Shows set counts for each trained muscle")
             }
-            .padding(.vertical, 14)
-            .overlay(IronHairline(opacity: 0.48), alignment: .top)
-            .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
-            .frame(maxWidth: .infinity)
+        } header: {
+            Text("Muscle Load")
+        } footer: {
+            Text("Primary muscles trained over the last 7 days. Darker means more sets.")
         }
     }
 
@@ -545,13 +443,13 @@ struct HistoryView: View {
 
     private func weeklyBody(side: BodySide) -> some View {
         let style = BodyViewStyle(
-            defaultFillColor: IronTheme.secondaryText.opacity(0.14),
-            strokeColor: IronTheme.secondaryText.opacity(0.16),
+            defaultFillColor: Color(.quaternaryLabel),
+            strokeColor: Color(.separator),
             strokeWidth: 0.5,
-            headColor: IronTheme.secondaryText.opacity(0.20),
-            hairColor: IronTheme.secondaryText.opacity(0.10)
+            headColor: Color(.tertiaryLabel),
+            hairColor: Color(.quaternaryLabel)
         )
-        let scale = HeatmapColorScale(colors: [IronTheme.accent.opacity(0.25), IronTheme.accent.opacity(0.62), IronTheme.accent])
+        let scale = HeatmapColorScale(colors: [Color.accentColor.opacity(0.25), Color.accentColor.opacity(0.62), Color.accentColor])
         return BodyView(gender: .male, side: side, style: style)
             .heatmap(weeklyHeatmap, colorScale: scale)
             // This is a read-only visualization. MuscleMap's own gesture
@@ -755,26 +653,6 @@ struct HistoryView: View {
         }
     }
 
-    private func workoutPopupActions(for workout: Workout) -> [IronPopupAction] {
-        [
-            IronPopupAction(title: "Share Workout", systemImage: "square.and.arrow.up") {
-                share(workout)
-            },
-            IronPopupAction(title: "Repeat Workout", systemImage: "arrow.clockwise") {
-                repeatWorkout(workout, blank: false)
-            },
-            IronPopupAction(title: "Repeat with Blank Sets", systemImage: "doc") {
-                repeatWorkout(workout, blank: true)
-            },
-            IronPopupAction(
-                title: "Delete Workout",
-                systemImage: "trash",
-                role: .destructive
-            ) {
-                workoutToDelete = workout
-            }
-        ]
-    }
 }
 
 private enum HistoryBrowseMode: String, CaseIterable, Identifiable {
@@ -817,6 +695,14 @@ private enum HistoryTrendMetric: String, CaseIterable, Identifiable {
 
     var id: String { rawValue }
 
+    var color: Color {
+        switch self {
+        case .duration: return IronTheme.metricTime
+        case .volume: return IronTheme.metricVolume
+        case .repetitions: return IronTheme.metricSets
+        }
+    }
+
     var title: String {
         switch self {
         case .duration: return "Duration"
@@ -856,6 +742,14 @@ private enum HistoryTrendMetric: String, CaseIterable, Identifiable {
         }
     }
 
+    func headlineText(value: Double, weightUnit: WeightUnit) -> Text {
+        if self == .volume {
+            return Text(compact(value)).foregroundColor(IronTheme.metricVolume)
+                + Text(" " + weightUnit.unit.symbol).font(.caption).foregroundColor(IronTheme.secondaryText)
+        }
+        return Text(headline(value: value, weightUnit: weightUnit))
+    }
+
     func axisLabel(value: Double, weightUnit: WeightUnit) -> String {
         switch self {
         case .duration:
@@ -890,22 +784,15 @@ private struct HistoryTrendPoint: Identifiable {
 }
 
 private struct HistoryTrendChart: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let points: [HistoryTrendPoint]
     let metricTitle: String
+    let metricColor: Color
     let weightUnit: WeightUnit
     let valueLabel: (Double) -> String
 
+    @State private var hasAppeared = false
     @State private var selectedPointID: Date?
-
-    // Keep the number shown to people independent from the denominator used to
-    // keep an all-zero chart drawable.
-    private var displayedMaximum: Double {
-        max(points.map(\.value).max() ?? 0, 0)
-    }
-
-    private var scaleDenominator: Double {
-        max(displayedMaximum, 1)
-    }
 
     private var selectedPoint: HistoryTrendPoint? {
         guard let selectedPointID else { return nil }
@@ -913,304 +800,116 @@ private struct HistoryTrendChart: View {
     }
 
     var body: some View {
-        VStack(spacing: 7) {
-            selectionHeader
-
-            GeometryReader { proxy in
-                let showsScroll = points.count > 8
-                ScrollView(.horizontal, showsIndicators: showsScroll) {
-                    ZStack {
-                        VStack(spacing: 0) {
-                            IronHairline(opacity: 0.34)
-                            Spacer()
-                            IronHairline(opacity: 0.25)
-                            Spacer()
-                            IronHairline(opacity: 0.34)
-                                .padding(.bottom, 21)
-                        }
-
-                        HStack(alignment: .bottom, spacing: 7) {
-                            ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
-                                VStack(spacing: 5) {
-                                    Spacer(minLength: 0)
-                                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                                        .fill(barColor(for: point, isSelected: point.id == selectedPointID))
-                                        .frame(height: barHeight(for: point.value, availableHeight: proxy.size.height - 24))
-                                    Text(shouldShowLabel(at: index, point: point) ? point.label : " ")
-                                        .font(.system(size: 9, weight: point.isCurrent ? .bold : .medium))
-                                        .foregroundColor(point.isCurrent ? IronTheme.accent : IronTheme.tertiaryText)
-                                        .lineLimit(1)
-                                        .minimumScaleFactor(0.65)
-                                }
-                                .frame(minWidth: showsScroll ? 28 : 0, maxWidth: .infinity)
-                                .accessibilityElement(children: .ignore)
-                                .accessibilityLabel(accessibilityLabel(for: point))
-                            }
-                        }
-                        .frame(minWidth: proxy.size.width)
-
-                        if let selectedPoint {
-                            selectionGuide(
-                                for: selectedPoint,
-                                width: proxy.size.width,
-                                height: proxy.size.height
-                            )
-                                .transition(.opacity)
-                        }
-                    }
-                    .frame(minWidth: proxy.size.width)
-                    .frame(height: proxy.size.height)
-                }
-                .defaultScrollAnchorCompat_trailing()
-                .contentShape(Rectangle())
-                .simultaneousGesture(
-                    SpatialTapGesture()
-                        .onEnded { value in
-                            selectPoint(at: value.location.x, width: proxy.size.width)
-                        }
-                )
-                .simultaneousGesture(
-                    DragGesture(minimumDistance: 8, coordinateSpace: .local)
-                        .onChanged { value in
-                            // Let the containing ScrollView own vertical intent;
-                            // only a clearly horizontal drag scrubs the chart.
-                            guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                            selectPoint(at: value.location.x, width: proxy.size.width)
-                        }
-                )
-                .onContinuousHover(coordinateSpace: .local) { phase in
-                    switch phase {
-                    case .active(let location):
-                        selectPoint(
-                            at: location.x,
-                            width: proxy.size.width,
-                            producesHaptic: false
-                        )
-                    case .ended:
-                        selectedPointID = nil
+        Chart(points) { point in
+            BarMark(
+                x: .value("Period", point.id, unit: barUnit),
+                y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
+            )
+            .cornerRadius(4)
+            .foregroundStyle(barStyle(for: point))
+            .opacity(selectedPointID == nil || selectedPointID == point.id ? 1 : 0.4)
+        }
+        .chartYScale(domain: 0...max((points.map(\.value).max() ?? 0) * 1.1, 1))
+        .opacity(!reduceMotion || hasAppeared ? 1 : 0)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+        .onAppear { hasAppeared = true }
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(valueLabel(raw))
                     }
                 }
             }
-            .frame(height: 132)
-
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) {
+                AxisValueLabel()
+            }
+        }
+        .chartXSelection(value: Binding(
+            get: { selectedPoint?.id },
+            set: { newDate in
+                guard let newDate else {
+                    selectedPointID = nil
+                    return
+                }
+                selectedPointID = points.min {
+                    abs($0.id.timeIntervalSince(newDate)) < abs($1.id.timeIntervalSince(newDate))
+                }?.id
+            }
+        ))
+        .frame(height: 150)
+        .overlay(alignment: .topTrailing) {
             if let selectedPoint {
-                detailCallout(for: selectedPoint)
-                    // The callout is laid out after the plot. An opacity-only
-                    // transition keeps its animation from crossing the marks.
+                selectionCallout(for: selectedPoint)
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.22), value: points.map(\.value))
-        .animation(.spring(response: 0.26, dampingFraction: 0.86), value: selectedPointID)
+        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: selectedPointID)
+        .sensoryFeedback(.selection, trigger: selectedPointID)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Eight week activity chart")
-        .accessibilityValue(
-            selectedPoint.map(accessibilityValue(for:)) ?? "No week selected"
-        )
-        .accessibilityHint("Swipe up or down to inspect another week")
-        .accessibilityAdjustableAction { direction in
-            adjustSelection(direction)
-        }
+        .accessibilityLabel("\(metricTitle) trend chart with \(points.count) periods")
+        .accessibilityValue(selectedPoint.map(accessibilityValue(for:)) ?? "No period selected")
+        .accessibilityAdjustableAction(adjustSelection)
     }
 
-    private func barHeight(for value: Double, availableHeight: CGFloat) -> CGFloat {
-        guard value > 0 else { return 4 }
-        return max(8, availableHeight * CGFloat(value / scaleDenominator))
+    private var barUnit: Calendar.Component {
+        guard points.count > 1 else { return .day }
+        let spacing = points[1].id.timeIntervalSince(points[0].id)
+        if spacing > 60 * 60 * 24 * 20 { return .month }
+        if spacing > 60 * 60 * 24 * 3 { return .weekOfYear }
+        return .day
     }
 
-    private var selectionHeader: some View {
-        HStack(spacing: 6) {
-            if let selectedPoint {
-                Text(periodLabel(for: selectedPoint))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-                Spacer(minLength: 4)
-                Text("\(metricTitle) · \(valueLabel(selectedPoint.value))")
-                    .monospacedDigit()
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            } else {
-                Text("PEAK")
-                    .tracking(0.8)
-                Spacer()
-                Text(valueLabel(displayedMaximum))
-                    .monospacedDigit()
-            }
+    private func barStyle(for point: HistoryTrendPoint) -> Color {
+        point.isCurrent ? metricColor : metricColor.opacity(0.55)
+    }
+
+    private func selectionCallout(for point: HistoryTrendPoint) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(periodLabel(for: point))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text(valueLabel(point.value))
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(metricColor)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+            Text("\(point.workoutCount) workout\(point.workoutCount == 1 ? "" : "s") · \(point.sets) sets · \(point.repetitions) reps")
+                .font(.ironMetric(.caption2, weight: .semibold))
+                .foregroundStyle(.secondary)
         }
-        .font(.system(size: 10, weight: .bold))
-        .foregroundColor(IronTheme.secondaryText)
-        // A fixed row prevents selecting a week from moving the plot.
-        .frame(height: 16)
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .allowsHitTesting(false)
         .accessibilityHidden(true)
-    }
-
-    private func barColor(for point: HistoryTrendPoint, isSelected: Bool) -> Color {
-        guard point.value > 0 else {
-            return isSelected
-                ? IronTheme.accent.opacity(0.55)
-                : (point.isCurrent ? IronTheme.accent.opacity(0.28) : IronTheme.outline.opacity(0.32))
-        }
-        if isSelected { return IronTheme.accent }
-        return point.isCurrent ? IronTheme.accent : IronTheme.accent.opacity(0.48)
-    }
-
-    private func shouldShowLabel(at index: Int, point: HistoryTrendPoint) -> Bool {
-        if points.count <= 7 { return true }
-        if point.isCurrent || index == 0 || index == points.count - 1 { return true }
-        let stride = max(points.count / 4, 1)
-        return index % stride == 0
-    }
-
-    private func selectPoint(
-        at xPosition: CGFloat,
-        width: CGFloat,
-        producesHaptic: Bool = true
-    ) {
-        guard !points.isEmpty, width > 0 else { return }
-        let clampedX = min(max(xPosition, 0), max(width - 0.001, 0))
-        let index = min(Int((clampedX / width) * CGFloat(points.count)), points.count - 1)
-        let id = points[index].id
-        guard selectedPointID != id else { return }
-        selectedPointID = id
-        if producesHaptic {
-            UISelectionFeedbackGenerator().selectionChanged()
-        }
     }
 
     private func adjustSelection(_ direction: AccessibilityAdjustmentDirection) {
         guard !points.isEmpty else { return }
         let currentIndex = selectedPointID.flatMap { id in points.firstIndex { $0.id == id } }
             ?? (points.count - 1)
-        let nextIndex: Int
         switch direction {
         case .increment:
-            nextIndex = min(currentIndex + 1, points.count - 1)
+            selectedPointID = points[min(currentIndex + 1, points.count - 1)].id
         case .decrement:
-            nextIndex = max(currentIndex - 1, 0)
+            selectedPointID = points[max(currentIndex - 1, 0)].id
         @unknown default:
-            nextIndex = currentIndex
+            break
         }
-        selectedPointID = points[nextIndex].id
-    }
-
-    private func selectionGuide(
-        for point: HistoryTrendPoint,
-        width: CGFloat,
-        height: CGFloat
-    ) -> some View {
-        let index = points.firstIndex { $0.id == point.id } ?? 0
-        let slotWidth = width / CGFloat(max(points.count, 1))
-        let xPosition = (CGFloat(index) + 0.5) * slotWidth
-
-        return Rectangle()
-            .fill(IronTheme.accent.opacity(0.34))
-            .frame(width: 1, height: height)
-            .position(x: xPosition, y: height / 2)
-            .allowsHitTesting(false)
-    }
-
-    private func detailCallout(for point: HistoryTrendPoint) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(periodLabel(for: point))
-                    .font(.caption.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.75)
-
-                Spacer(minLength: 4)
-
-                Text("\(metricTitle) · \(valueLabel(point.value))")
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.accent)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.68)
-            }
-
-            HStack(spacing: 0) {
-                detailMetric("Workouts", value: "\(point.workoutCount)")
-                detailMetric("Sets", value: "\(point.sets)")
-                detailMetric("Reps", value: "\(point.repetitions)")
-            }
-
-            HStack(spacing: 0) {
-                detailMetric("Time", value: durationLabel(point.duration))
-                detailMetric("Volume", value: volumeLabel(point.volume))
-                detailMetric(
-                    "Effort",
-                    value: point.averageEffort.map { String(format: "%.1f/10", $0) } ?? "—"
-                )
-            }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(IronTheme.raisedSurface)
-        )
-        .allowsHitTesting(false)
-        .accessibilityHidden(true)
-    }
-
-    private func detailMetric(_ title: String, value: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(title.uppercased())
-                .font(.system(size: 8, weight: .bold))
-                .tracking(0.55)
-                .foregroundColor(IronTheme.tertiaryText)
-            Text(value)
-                .font(.system(size: 11, weight: .semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func periodLabel(for point: HistoryTrendPoint) -> String {
         let end = Calendar.current.date(byAdding: .day, value: -1, to: point.end) ?? point.end
+        if Calendar.current.isDate(point.id, inSameDayAs: end) {
+            return point.id.formatted(date: .abbreviated, time: .omitted)
+        }
         return "\(point.id.formatted(date: .abbreviated, time: .omitted)) – \(end.formatted(date: .abbreviated, time: .omitted))"
     }
 
-    private func durationLabel(_ duration: TimeInterval) -> String {
-        let minutes = max(Int(duration / 60), 0)
-        let hours = minutes / 60
-        let remainder = minutes % 60
-        if hours == 0 { return "\(minutes)m" }
-        return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
-    }
-
-    private func volumeLabel(_ volume: Double) -> String {
-        let value: String
-        if volume >= 1_000_000 {
-            value = String(format: "%.1fM", volume / 1_000_000)
-        } else if volume >= 1_000 {
-            value = String(format: "%.1fk", volume / 1_000)
-        } else {
-            value = String(format: "%.0f", volume)
-        }
-        return "\(value) \(weightUnit.unit.symbol)"
-    }
-
-    private func accessibilityLabel(for point: HistoryTrendPoint) -> String {
-        var values = [
-            periodLabel(for: point),
-            "\(metricTitle) \(valueLabel(point.value))",
-            "\(point.workoutCount) \(point.workoutCount == 1 ? "workout" : "workouts")",
-            "\(point.sets) sets",
-            "\(point.repetitions) repetitions",
-            durationLabel(point.duration),
-            volumeLabel(point.volume)
-        ]
-        if let averageEffort = point.averageEffort {
-            values.append(String(format: "average effort %.1f out of 10", averageEffort))
-        }
-        return values.joined(separator: ", ")
-    }
-
     private func accessibilityValue(for point: HistoryTrendPoint) -> String {
-        "Selected \(periodLabel(for: point)), \(metricTitle) \(valueLabel(point.value))"
+        "Selected \(periodLabel(for: point)), \(metricTitle) \(valueLabel(point.value)), \(point.workoutCount) workouts, \(point.sets) sets, \(point.repetitions) repetitions"
     }
 }
 
@@ -1222,6 +921,8 @@ private struct WeeklyMuscleLoad: Identifiable {
 }
 
 private struct WeeklyMuscleBreakdownSheet: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
     @Environment(\.dismiss) private var dismiss
 
     let items: [WeeklyMuscleLoad]
@@ -1232,130 +933,158 @@ private struct WeeklyMuscleBreakdownSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                IronModalBackground()
-
-                ScrollView(showsIndicators: false) {
-                    VStack(alignment: .leading, spacing: 18) {
-                        if items.isEmpty {
-                            emptyState
-                        } else {
-                            summaryCard
-                            distributionCard
-
-                            HStack(alignment: .top, spacing: 9) {
-                                Image(systemName: "info.circle.fill")
-                                    .foregroundColor(IronTheme.accent)
-                                Text("A completed set is counted for every primary muscle assigned to its exercise, so targeted sets can exceed your workout set total.")
-                                    .font(.caption)
-                                    .foregroundColor(IronTheme.secondaryText)
-                            }
-                            .padding(.horizontal, 2)
-                        }
+            List {
+                if items.isEmpty {
+                    Section {
+                        ContentUnavailableView(
+                            "No Muscle Load",
+                            systemImage: "figure.strengthtraining.traditional",
+                            description: Text("Complete a working set and Iron will map your weekly distribution here.")
+                        )
+                        .listRowBackground(Color.clear)
                     }
-                    .padding(IronTheme.horizontalPadding)
-                    .padding(.bottom, 28)
+                } else {
+                    Section {
+                        LabeledContent("Targeted Sets") {
+                            Text("\(totalTargetedSets)")
+                                .font(.ironMetric(.body))
+                                .foregroundStyle(IronTheme.metricSets)
+                        }
+
+                        if let leading = items.first {
+                            LabeledContent("Most Trained", value: leading.title)
+                        }
+                    } header: {
+                        Text("Last 7 Days")
+                    } footer: {
+                        Text("A completed set counts once for every primary muscle assigned to its exercise, so targeted sets can exceed your workout set total.")
+                    }
+
+                    Section("Distribution") {
+                        Chart(items) { item in
+                            BarMark(
+                                x: .value("Sets", hasAppeared || reduceMotion ? item.sets : 0),
+                                y: .value("Muscle", item.title)
+                            )
+                            .cornerRadius(4)
+                            .annotation(position: .trailing, alignment: .leading) {
+                                Text("\(item.sets)")
+                                    .font(.ironMetric(.caption2, weight: .semibold))
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                        .foregroundStyle(IronTheme.metricSets)
+                        .chartXScale(domain: 0...max(items.map(\.sets).max() ?? 0, 1))
+                        .opacity(!reduceMotion || hasAppeared ? 1 : 0)
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+                        .onAppear { hasAppeared = true }
+                        .chartXAxis(.hidden)
+                        .frame(height: CGFloat(items.count) * 26 + 12)
+                        .padding(.vertical, 6)
+                    }
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle("Muscle Breakdown")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-        .ironScreen()
-    }
-
-    private var emptyState: some View {
-        IronCard {
-            VStack(spacing: 12) {
-                Image(systemName: "figure.strengthtraining.traditional")
-                    .font(.system(size: 36, weight: .semibold))
-                    .foregroundColor(IronTheme.accent)
-                Text("No muscle load yet")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Complete a working set and Iron will map your weekly distribution here.")
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 24)
-        }
-    }
-
-    private var summaryCard: some View {
-        IronCard {
-            HStack(spacing: 14) {
-                Image(systemName: "figure.strengthtraining.traditional")
-                    .font(.system(size: 24, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 52, height: 52)
-                    .background(Circle().fill(IronTheme.accentSoft))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("LAST 7 DAYS")
-                        .font(.caption2.weight(.bold))
-                        .tracking(0.9)
-                        .foregroundColor(IronTheme.secondaryText)
-                    Text("\(totalTargetedSets) targeted \(totalTargetedSets == 1 ? "set" : "sets")")
-                        .font(.title3.weight(.bold).monospacedDigit())
-                        .foregroundColor(IronTheme.primaryText)
-                    if let leading = items.first {
-                        Text("Most trained: \(leading.title)")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
-                }
-
-                Spacer()
-            }
-        }
-    }
-
-    private var distributionCard: some View {
-        IronCard {
-            VStack(alignment: .leading, spacing: 16) {
-                IronSectionTitle(title: "Distribution", detail: "SETS")
-
-                ForEach(items) { item in
-                    VStack(alignment: .leading, spacing: 7) {
-                        HStack {
-                            Text(item.title)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Spacer()
-                            Text("\(item.sets)")
-                                .font(.subheadline.weight(.bold).monospacedDigit())
-                                .foregroundColor(IronTheme.accent)
-                        }
-
-                        GeometryReader { proxy in
-                            ZStack(alignment: .leading) {
-                                Capsule(style: .continuous)
-                                    .fill(IronTheme.raisedSurface)
-                                Capsule(style: .continuous)
-                                    .fill(IronTheme.accent)
-                                    .frame(width: max(8, proxy.size.width * CGFloat(item.fraction)))
-                            }
-                        }
-                        .frame(height: 8)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel("\(item.title), \(item.sets) sets")
-                    }
+                    Button("Done") { dismiss() }
                 }
             }
         }
     }
 }
+private struct HistoryWorkoutWeek: Identifiable {
+    let id: Date
+    let workouts: [Workout]
 
-private struct WorkoutProgressCard: View {
+    var volume: Double { workouts.reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) } }
+
+    var title: String {
+        guard id != .distantPast else { return "Unknown date" }
+        let calendar = Calendar.current
+        if calendar.isDate(id, equalTo: Date(), toGranularity: .weekOfYear) { return "This Week" }
+        if let lastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: Date()),
+           calendar.isDate(id, equalTo: lastWeek, toGranularity: .weekOfYear) { return "Last Week" }
+        return "Week of \(id.formatted(.dateTime.month(.abbreviated).day().year()))"
+    }
+
+    static func group(_ workouts: [Workout]) -> [Self] {
+        let grouped = Dictionary(grouping: workouts) { workout in
+            workout.start.flatMap { Calendar.current.dateInterval(of: .weekOfYear, for: $0)?.start } ?? .distantPast
+        }
+        return grouped.keys.sorted(by: >).map { Self(id: $0, workouts: grouped[$0] ?? []) }
+    }
+}
+
+/// A small Pareto frontier of weight/repetition pairs, matching the model's
+/// "no earlier set with both weight and reps >= this set" record rule.
+private struct HistoryRecordFrontier {
+    private var pairs: [(weight: Double, reps: Int16)] = []
+
+    func dominates(weight: Double, reps: Int16) -> Bool {
+        pairs.contains { $0.weight >= weight && $0.reps >= reps }
+    }
+
+    mutating func insert(weight: Double, reps: Int16) {
+        guard !dominates(weight: weight, reps: reps) else { return }
+        pairs.removeAll { weight >= $0.weight && reps >= $0.reps }
+        pairs.append((weight, reps))
+    }
+}
+
+private enum HistoryRecordIndex {
+    static func recordSetIDs(in workouts: [Workout]) -> Set<NSManagedObjectID> {
+        var records: Set<NSManagedObjectID> = []
+        var trained: Set<UUID> = []
+        var previous: [UUID: HistoryRecordFrontier] = [:]
+        let dated = Dictionary(grouping: workouts.filter { $0.start != nil }, by: { $0.start! })
+
+        // Workouts sharing a start are peers, never each other's prior history.
+        for date in dated.keys.sorted() {
+            let batch = dated[date] ?? []
+            for workout in batch {
+                for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
+                    guard let uuid = exercise.exerciseUuid else { continue }
+                    var earlier = HistoryRecordFrontier()
+                    for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] {
+                        if set.isCompleted, set.weight != nil, set.repetitions != nil,
+                           set.repetitionsValue > 0, trained.contains(uuid),
+                           !(previous[uuid]?.dominates(weight: set.weightValue, reps: set.repetitionsValue) ?? false),
+                           !earlier.dominates(weight: set.weightValue, reps: set.repetitionsValue) {
+                            records.insert(set.objectID)
+                        }
+                        // The model also considers earlier uncompleted sets in
+                        // the same exercise when suppressing duplicate records.
+                        earlier.insert(weight: set.weightValue, reps: set.repetitionsValue)
+                    }
+                }
+            }
+            for workout in batch {
+                for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
+                    guard let uuid = exercise.exerciseUuid else { continue }
+                    for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
+                        trained.insert(uuid)
+                        if let weight = set.weight, let reps = set.repetitions {
+                            previous[uuid, default: HistoryRecordFrontier()].insert(
+                                weight: weight.doubleValue, reps: reps.int16Value
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        return records
+    }
+}
+
+private struct WorkoutHistoryRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @ObservedObject var workout: Workout
+    let recordSetIDs: Set<NSManagedObjectID>
 
     private var exercises: [WorkoutExercise] {
         workout.workoutExercises?.array as? [WorkoutExercise] ?? []
@@ -1366,54 +1095,258 @@ private struct WorkoutProgressCard: View {
         return Workout.durationFormatter.string(from: duration) ?? "—"
     }
 
-    private var volumeText: String {
+    private var volumeNumber: String {
         guard let volume = workout.totalCompletedWeight else { return "—" }
-        return WeightUnit.format(weight: volume, from: .metric, to: settingsStore.weightUnit)
+        let value = WeightUnit.convert(weight: volume, from: .metric, to: settingsStore.weightUnit)
+        return value.formatted(.number.precision(.fractionLength(0)))
+    }
+
+    private var metadata: String {
+        let date = Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date")
+        let muscles = workout.muscleGroups(in: exerciseStore.exercises)
+            .filter { !$0.isEmpty && $0.lowercased() != "other" }
+            .map { Exercise.displayName(forMuscleGroup: $0) }.joined(separator: ", ")
+        return muscles.isEmpty ? date : "\(date) · \(muscles)"
+    }
+
+    private var breakdownItems: [WorkoutExerciseBreakdown.Item] {
+        // Ordered relationships and the shared record index need no row fetches.
+        exercises.map { exercise in
+            var setCount = 0
+            var volume = 0.0
+            var recordCount = 0
+            for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
+                setCount += 1
+                let setVolume = set.weightValue * Double(set.repetitionsValue)
+                if setVolume.isFinite, setVolume > 0 { volume += setVolume }
+                if recordSetIDs.contains(set.objectID) { recordCount += 1 }
+            }
+            return .init(
+                id: exercise.objectID,
+                name: exercise.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise",
+                setCount: setCount,
+                volume: volume,
+                recordCount: recordCount
+            )
+        }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            HStack(alignment: .top) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(workout.displayTitle(in: exerciseStore.exercises))
-                        .font(.headline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
+        let items = breakdownItems
+        let records = items.reduce(0) { $0 + $1.recordCount }
+        VStack(alignment: .leading, spacing: 6) {
+            if dynamicTypeSize.isAccessibilitySize {
+                title
+                badges(records: records)
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        title
+                        Spacer(minLength: 0)
+                        badges(records: records)
+                    }
+                    VStack(alignment: .leading, spacing: 6) {
+                        title
+                        badges(records: records)
+                    }
                 }
-                Spacer()
-                workout.muscleGroupImage(in: exerciseStore.exercises)
-                    .font(.title2)
             }
 
-            HStack(spacing: 14) {
-                Label(durationText, systemImage: "clock")
-                Label("\(workout.numberOfCompletedSets ?? 0) sets", systemImage: "checkmark.circle")
-                Label(volumeText, systemImage: "scalemass")
-            }
-            .font(.caption.weight(.semibold))
-            .foregroundColor(IronTheme.secondaryText)
-            .lineLimit(1)
-            .minimumScaleFactor(0.7)
-
-            Text(exercises.compactMap { $0.exercise(in: exerciseStore.exercises)?.title }.joined(separator: " • "))
+            Text(metadata)
                 .font(.caption)
-                .foregroundColor(IronTheme.tertiaryText)
-                .lineLimit(2)
+                .foregroundStyle(IronTheme.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
 
-            if let effort = workout.sessionEffortValue {
-                HStack(spacing: 6) {
-                    Image(systemName: "flame.fill")
-                    Text("Session effort \(Int(effort))/10")
-                }
-                .font(.caption.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
+            (Text(durationText).foregroundColor(IronTheme.metricTime)
+             + Text(" · ").foregroundColor(IronTheme.secondaryText)
+             + Text("\(workout.numberOfCompletedSets ?? 0) sets").foregroundColor(IronTheme.metricSets)
+             + Text(" · ").foregroundColor(IronTheme.secondaryText)
+             + Text(volumeNumber).foregroundColor(IronTheme.metricVolume)
+             + Text(" \(settingsStore.weightUnit.unit.symbol)")
+                .font(.caption2).foregroundColor(IronTheme.secondaryText))
+                .font(.ironMetric(.caption))
+                .fixedSize(horizontal: false, vertical: true)
+
+            WorkoutExerciseBreakdown(items: items)
+        }
+        .padding(.vertical, 4)
+    }
+
+    private var title: some View {
+        Text(workout.displayTitle(in: exerciseStore.exercises))
+            .font(.body.weight(.semibold))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+
+    private func badges(records: Int) -> some View {
+        HStack(spacing: 6) {
+            if records > 0 {
+                Label("\(records) PR\(records == 1 ? "" : "s")", systemImage: "trophy.fill")
+                    .foregroundStyle(IronTheme.metricRecord)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(IronTheme.metricRecordContainer, in: Capsule())
+                    .accessibilityLabel("\(records) personal record\(records == 1 ? "" : "s")")
+            }
+            if let effort = workout.sessionEffortValue, effort > 0 {
+                Text("RPE \(Int(effort))")
+                    .foregroundStyle(IronTheme.metricEffort)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(IronTheme.metricEffortContainer, in: Capsule())
+                    .accessibilityLabel("Session effort \(Int(effort)) out of 10")
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 15)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .font(.ironMetric(.caption, weight: .semibold))
+        .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct WorkoutExerciseBreakdown: View {
+    struct Item: Identifiable {
+        let id: NSManagedObjectID
+        let name: String
+        let setCount: Int
+        let volume: Double
+        let recordCount: Int
+
+        var shortName: String {
+            // Same equipment-suffix rule as the session strip's private helper.
+            name.components(separatedBy: ":").first?.trimmingCharacters(in: .whitespacesAndNewlines) ?? name
+        }
+    }
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    @State private var hasAppeared = false
+
+    let items: [Item]
+    private let shares: [Double]
+    private let usesVolume: Bool
+
+    init(items: [Item]) {
+        self.items = items
+        let usesVolume = items.contains { $0.volume > 0 }
+        self.usesVolume = usesVolume
+        let weights = items.map { usesVolume ? $0.volume : Double($0.setCount) }
+        let total = weights.reduce(0, +)
+        shares = weights.map { total > 0 ? $0 / total : 0 }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            WorkoutExerciseTrackLayout(shares: shares, layoutDirection: layoutDirection) {
+                ForEach(items.indices, id: \.self) { index in
+                    Rectangle()
+                        .fill(segmentColor(at: index))
+                        .scaleEffect(x: hasAppeared || reduceMotion ? 1 : 0, anchor: .leading)
+                        .opacity(hasAppeared ? 1 : 0)
+                }
+            }
+            .frame(height: 8)
+            .clipShape(Capsule())
+
+            ViewThatFits(in: .horizontal) {
+                ForEach((0...min(4, items.count)).reversed(), id: \.self) { count in
+                    legend(visibleCount: count)
+                        .fixedSize(horizontal: true, vertical: true)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(accessibilitySummary))
+        .onAppear {
+            guard !hasAppeared else { return }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                hasAppeared = true
+            }
+        }
+    }
+
+    private func segmentColor(at index: Int) -> Color {
+        IronTheme.accent.opacity([1.0, 0.7, 0.5, 0.35][index % 4])
+    }
+
+    private func legend(visibleCount: Int) -> some View {
+        HStack(spacing: 10) {
+            ForEach(0..<visibleCount, id: \.self) { index in
+                let item = items[index]
+                HStack(spacing: 4) {
+                    Circle().fill(segmentColor(at: index)).frame(width: 6, height: 6)
+                    Text(item.shortName)
+                    Text("\(item.setCount)")
+                        .font(.ironMetric(.caption, weight: .semibold))
+                        .foregroundStyle(IronTheme.metricSets)
+                    if item.recordCount > 0 {
+                        Image(systemName: "trophy.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(IronTheme.metricRecord)
+                    }
+                }
+            }
+            if visibleCount < items.count {
+                Text("+\(items.count - visibleCount) more")
+                    .font(.ironMetric(.caption, weight: .semibold))
+            }
+        }
+        .font(.caption)
+        .foregroundStyle(IronTheme.secondaryText)
+        .lineLimit(1)
+    }
+
+    private var accessibilitySummary: String {
+        let basis = usesVolume ? "volume" : "completed sets"
+        let descriptions = items.indices.map { index in
+            let item = items[index]
+            let percent = (shares[index] * 100).formatted(.number.precision(.fractionLength(0)))
+            let record = item.recordCount > 0 ? ", personal record" : ""
+            return "\(item.shortName), \(item.setCount) set\(item.setCount == 1 ? "" : "s"), \(percent) percent of \(basis)\(record)"
+        }
+        return "Exercises: " + descriptions.joined(separator: "; ")
+    }
+}
+
+/// Plain segment views, sized proportionally while keeping tiny contributions visible.
+private struct WorkoutExerciseTrackLayout: Layout {
+    let shares: [Double]
+    let layoutDirection: LayoutDirection
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        CGSize(width: proposal.width ?? CGFloat(subviews.count) * 8, height: 8)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let count = subviews.count
+        let gap = min(2, bounds.width / CGFloat(max(1, count * 2 - 1)))
+        var remainingWidth = max(0, bounds.width - CGFloat(count - 1) * gap)
+        let minimumWidth = min(6, remainingWidth / CGFloat(count))
+        var remainingShare = shares.reduce(0, +)
+        var widths = [CGFloat](repeating: 0, count: count)
+
+        // Clamp the smallest shares first; the remaining widths keep their ratios.
+        for (offset, index) in shares.indices.sorted(by: { shares[$0] < shares[$1] }).enumerated() {
+            let proportionalWidth = remainingShare > 0
+                ? remainingWidth * CGFloat(shares[index] / remainingShare)
+                : remainingWidth / CGFloat(count - offset)
+            let width = min(remainingWidth, max(minimumWidth, proportionalWidth))
+            widths[index] = width
+            remainingWidth -= width
+            remainingShare -= shares[index]
+        }
+
+        var offset: CGFloat = 0
+        for index in subviews.indices {
+            let width = widths[index]
+            let x = layoutDirection == .rightToLeft ? bounds.maxX - offset - width : bounds.minX + offset
+            subviews[index].place(
+                at: CGPoint(x: x, y: bounds.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: width, height: bounds.height)
+            )
+            offset += width + gap
+        }
     }
 }
 

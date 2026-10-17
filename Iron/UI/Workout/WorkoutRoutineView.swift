@@ -14,6 +14,7 @@ import WorkoutDataKit
 /// Editable values stay close to the exercise they describe, using a dense
 /// separator-led canvas with Cupertino controls for direct input.
 struct WorkoutRoutineView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var exerciseStore: ExerciseStore
     @EnvironmentObject var settingsStore: SettingsStore
     @Environment(\.managedObjectContext) var managedObjectContext
@@ -160,110 +161,59 @@ struct WorkoutRoutineView: View {
         recordDraftChange()
     }
 
-    private func exerciseCard(_ routineExercise: WorkoutRoutineExercise, index: Int) -> some View {
-        WorkoutRoutineExerciseCard(
-            routineExercise: routineExercise,
-            exercise: routineExercise.exercise(in: exerciseStore.exercises),
-            sets: sets(for: routineExercise),
-            index: index,
-            exerciseCount: workoutRoutineExercises.count,
-            onSave: recordDraftChange,
-            onMoveUp: { moveExercise(from: index, to: index - 1) },
-            onMoveDown: { moveExercise(from: index, to: index + 1) },
-            onDelete: { routineExerciseToDelete = routineExercise },
-            onAddSet: { addSet(to: routineExercise) },
-            onDeleteSet: { deleteSet($0) },
-            onMoveSet: { source, destination in
-                moveSet(in: routineExercise, from: source, to: destination)
-            }
-        )
-    }
-
     var body: some View {
-        ZStack {
-            IronScreenBackground()
+        List {
+            Section("Workout Details") {
+                TextField("Title", text: workoutRoutineTitle)
+                    .textInputAutocapitalization(.words)
+                    .onSubmit(saveRoutineFields)
 
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("WORKOUT DETAILS")
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(1.1)
-                            .foregroundColor(IronTheme.secondaryText)
+                TextField("Notes", text: workoutRoutineComment, axis: .vertical)
+                    .lineLimit(1...5)
+            }
 
-                        TextField("Workout title", text: workoutRoutineTitle, onEditingChanged: { isEditing in
-                            if !isEditing { saveRoutineFields() }
-                        })
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(IronTheme.primaryText)
-                        .textInputAutocapitalization(.words)
-                        .frame(minHeight: 52)
-
-                        TextEditor(text: workoutRoutineComment)
-                            .scrollContentBackground(.hidden)
-                            .font(.system(size: 15, weight: .regular))
-                            .foregroundColor(IronTheme.primaryText)
-                            .frame(minHeight: 72, maxHeight: 108)
-                            .padding(8)
-                            .background(
-                                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                    .fill(IronTheme.raisedSurface)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                    .stroke(IronTheme.outline.opacity(0.45), lineWidth: 1)
-                            )
-                            .overlay(alignment: .topLeading) {
-                                if workoutRoutineComment.wrappedValue.isEmpty {
-                                    Text("Workout notes")
-                                        .font(.system(size: 15))
-                                        .foregroundColor(IronTheme.tertiaryText)
-                                        .padding(.horizontal, 13)
-                                        .padding(.vertical, 16)
-                                        .allowsHitTesting(false)
-                                }
-                            }
+            if workoutRoutineExercises.isEmpty {
+                Section {
+                    ContentUnavailableView {
+                        Label("No Exercises", systemImage: "dumbbell")
+                    } description: {
+                        Text("Add an exercise to start setting targets and rest times.")
+                    } actions: {
+                        Button("Add Exercise") { showExerciseSelector = true }
+                            .buttonStyle(.borderedProminent)
                     }
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.top, 16)
-                    .padding(.bottom, 18)
-                    .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
-
-                    IronSectionTitle(
-                        title: "Exercises",
-                        detail: workoutRoutineExercises.isEmpty ? nil : "\(workoutRoutineExercises.count)"
-                    )
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.top, 20)
-                    .padding(.bottom, 8)
-
-                    if workoutRoutineExercises.isEmpty {
-                        emptyExercisesCard
-                            .padding(.horizontal, IronTheme.horizontalPadding)
-                    } else {
-                        ForEach(Array(workoutRoutineExercises.enumerated()), id: \.element.id) { index, routineExercise in
-                            exerciseCard(routineExercise, index: index)
-                        }
-                    }
+                    .listRowBackground(Color.clear)
                 }
-                // The primary Add Exercise action is inset over the bottom of
-                // the editor. Keep the final Add Set control fully scrollable
-                // above it instead of letting the two actions visually stack.
-                .padding(.bottom, 104)
+            } else {
+                ForEach(Array(workoutRoutineExercises.enumerated()), id: \.element.id) { index, routineExercise in
+                    WorkoutRoutineExerciseSection(
+                        routineExercise: routineExercise,
+                        exercise: routineExercise.exercise(in: exerciseStore.exercises),
+                        sets: sets(for: routineExercise),
+                        index: index,
+                        exerciseCount: workoutRoutineExercises.count,
+                        onSave: recordDraftChange,
+                        onMoveUp: { moveExercise(from: index, to: index - 1) },
+                        onMoveDown: { moveExercise(from: index, to: index + 1) },
+                        onDelete: { routineExerciseToDelete = routineExercise },
+                        onAddSet: { addSet(to: routineExercise) },
+                        onDeleteSet: { deleteSet($0) },
+                        onMoveSet: { source, destination in
+                            moveSet(in: routineExercise, from: source, to: destination)
+                        }
+                    )
+                }
             }
-            .scrollDismissesKeyboard(.interactively)
-        }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
-            Button(action: { showExerciseSelector = true }) {
-                Label("Add Exercise", systemImage: "plus")
+
+            Section {
+                Button("Add Exercise", systemImage: "plus") {
+                    showExerciseSelector = true
+                }
             }
-            .buttonStyle(IronPrimaryButtonStyle())
-            .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.top, 10)
-            .padding(.bottom, 8)
-            .background(IronTheme.background.opacity(0.96))
-            .overlay(IronHairline(), alignment: .top)
         }
+        .listStyle(.insetGrouped)
+        .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: workoutRoutineExercises.map(\.objectID))
+        .scrollDismissesKeyboard(.interactively)
         .navigationTitle(isNew ? "New Workout" : "Edit Workout")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -279,7 +229,6 @@ struct WorkoutRoutineView: View {
             exerciseSelectorSheet
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
         }
         .confirmationDialog(
             "Remove exercise from workout?",
@@ -300,7 +249,6 @@ struct WorkoutRoutineView: View {
         } message: {
             Text("Its target sets, rest timer, and workout notes will be removed. Completed workout history is not affected.")
         }
-        .ironScreen()
     }
 
     private func cancelEditor() {
@@ -321,34 +269,10 @@ struct WorkoutRoutineView: View {
         }
     }
 
-    private var emptyExercisesCard: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "plus.circle")
-                .font(.system(size: 25, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-            Text("No exercises yet")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Add an exercise to start setting targets and rest times.")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .padding(.horizontal, 18)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .stroke(IronTheme.outline.opacity(0.36), lineWidth: 1)
-        )
-    }
 }
 
-private struct WorkoutRoutineExerciseCard: View {
+private struct WorkoutRoutineExerciseSection: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
 
     @ObservedObject var routineExercise: WorkoutRoutineExercise
@@ -392,46 +316,6 @@ private struct WorkoutRoutineExerciseCard: View {
         }
     }
 
-    private var trackingTitle: String {
-        usesDuration ? "Track duration" : "Track weight & reps"
-    }
-
-    private var exercisePopupActions: [IronPopupAction] {
-        var actions: [IronPopupAction] = []
-        if index > 0 {
-            actions.append(IronPopupAction(title: "Move Up", systemImage: "arrow.up", action: onMoveUp))
-        }
-        if index < exerciseCount - 1 {
-            actions.append(IronPopupAction(title: "Move Down", systemImage: "arrow.down", action: onMoveDown))
-        }
-        actions.append(IronPopupAction(
-            title: "Delete Exercise",
-            systemImage: "trash",
-            role: .destructive,
-            action: onDelete
-        ))
-        return actions
-    }
-
-    private var trackingPopupActions: [IronPopupAction] {
-        [
-            IronPopupAction(
-                title: "Weight & Reps",
-                systemImage: "dumbbell.fill",
-                isSelected: !usesDuration
-            ) {
-                setTrackingMode(usesDuration: false)
-            },
-            IronPopupAction(
-                title: "Duration",
-                systemImage: "stopwatch.fill",
-                isSelected: usesDuration
-            ) {
-                setTrackingMode(usesDuration: true)
-            }
-        ]
-    }
-
     private func setTrackingMode(usesDuration: Bool) {
         for set in sets {
             if usesDuration {
@@ -451,177 +335,103 @@ private struct WorkoutRoutineExerciseCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .top, spacing: 10) {
-                if let exercise = exercise {
-                    NavigationLink(destination: ExerciseDetailView(exercise: exercise).ironScreen()) {
-                        HStack(spacing: 11) {
-                            ExerciseDiagramThumbnail(exercise: exercise, size: 52)
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(exercise.title)
-                                    .font(.system(size: 18, weight: .semibold))
-                                    .foregroundColor(IronTheme.accent)
-                                    .multilineTextAlignment(.leading)
-                                    .lineLimit(2)
-                                Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                                    .font(.system(size: 12, weight: .medium))
-                                    .foregroundColor(IronTheme.secondaryText)
-                            }
+        Section {
+            if let exercise {
+                NavigationLink {
+                    ExerciseDetailView(exercise: exercise)
+                } label: {
+                    HStack(spacing: 12) {
+                        ExerciseDiagramThumbnail(exercise: exercise, size: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(exercise.title)
+                                .lineLimit(2)
+                            Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
                         }
-                        .contentShape(Rectangle())
-                    }
-                    .buttonStyle(.plain)
-                } else {
-                    HStack(spacing: 11) {
-                        Circle()
-                            .fill(IronTheme.accentSoft)
-                            .frame(width: 52, height: 52)
-                            .overlay(
-                                Image(systemName: "dumbbell.fill")
-                                    .foregroundColor(IronTheme.accent)
-                            )
-                        Text("Unknown Exercise")
-                            .font(.system(size: 18, weight: .bold))
-                            .foregroundColor(IronTheme.primaryText)
                     }
                 }
+            }
 
-                Spacer(minLength: 4)
+            TextField("Exercise Notes", text: notes, axis: .vertical)
+                .lineLimit(1...4)
+                .onSubmit(onSave)
 
-                IronPopupMenu(title: "Exercise actions", actions: exercisePopupActions) {
+            Button {
+                showingRestTimerEditor = true
+            } label: {
+                LabeledContent("Rest Timer") {
+                    Text(restTimerTitle)
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                        .foregroundStyle(IronTheme.metricTime)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                }
+            }
+            .accessibilityHint("Opens the rest duration picker")
+
+            if !sets.isEmpty {
+                Picker("Target", selection: Binding(
+                    get: { usesDuration },
+                    set: { setTrackingMode(usesDuration: $0) }
+                )) {
+                    Text("Weight & Reps").tag(false)
+                    Text("Duration").tag(true)
+                }
+            }
+
+            ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, routineSet in
+                WorkoutRoutineSetRow(
+                    routineSet: routineSet,
+                    index: setIndex,
+                    usesDuration: usesDuration,
+                    onSave: onSave,
+                    onDelete: { onDeleteSet(routineSet) }
+                )
+                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+            }
+            .onMove { source, destination in
+                guard let from = source.first else { return }
+                onMoveSet(from, destination > from ? destination - 1 : destination)
+            }
+            .onDelete { offsets in
+                for offset in offsets where sets.indices.contains(offset) {
+                    onDeleteSet(sets[offset])
+                }
+            }
+
+            Button("Add Set", systemImage: "plus", action: onAddSet)
+        } header: {
+            HStack {
+                Text(exercise?.title ?? "Unknown Exercise")
+                Spacer()
+                Menu {
+                    if index > 0 {
+                        Button("Move Up", systemImage: "arrow.up", action: onMoveUp)
+                    }
+                    if index < exerciseCount - 1 {
+                        Button("Move Down", systemImage: "arrow.down", action: onMoveDown)
+                    }
+                    Divider()
+                    Button("Delete Exercise", systemImage: "trash", role: .destructive, action: onDelete)
+                } label: {
                     Image(systemName: "ellipsis.circle")
-                        .font(.title3.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                        .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
+                        .font(.body)
                 }
                 .accessibilityLabel("Actions for \(exercise?.title ?? "exercise")")
             }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text("EXERCISE NOTES")
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(0.9)
-                    .foregroundColor(IronTheme.secondaryText)
-                TextEditor(text: notes)
-                    .scrollContentBackground(.hidden)
-                    .font(.system(size: 14))
-                    .foregroundColor(IronTheme.primaryText)
-                    .frame(minHeight: 48, maxHeight: 78)
-                    .padding(6)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .fill(IronTheme.raisedSurface)
-                    )
-                    .overlay(
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .stroke(IronTheme.outline.opacity(0.45), lineWidth: 1)
-                    )
-                    .overlay(alignment: .topLeading) {
-                        if notes.wrappedValue.isEmpty {
-                            Text("Add a cue or setup note")
-                                .font(.system(size: 14))
-                                .foregroundColor(IronTheme.tertiaryText)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 14)
-                                .allowsHitTesting(false)
-                        }
-                    }
-            }
-
-            Button(action: { showingRestTimerEditor = true }) {
-                HStack(spacing: 7) {
-                    Image(systemName: "timer")
-                    Text(restTimerTitle)
-                    Spacer()
-                    Image(systemName: "chevron.up")
-                        .font(.caption.weight(.bold))
-                }
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-                .frame(minHeight: IronTheme.controlHeight)
-                .padding(.horizontal, 12)
-                .background(Capsule(style: .continuous).fill(IronTheme.accentSoft))
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens a radial rest-duration picker")
-
-            if !sets.isEmpty {
-                IronPopupMenu(title: "Track sets by", actions: trackingPopupActions, arrowEdge: .bottom) {
-                    HStack(spacing: 7) {
-                        Image(systemName: usesDuration ? "stopwatch.fill" : "dumbbell.fill")
-                        Text(trackingTitle)
-                        Spacer()
-                        Image(systemName: "chevron.down")
-                            .font(.caption.weight(.bold))
-                    }
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .frame(minHeight: IronTheme.controlHeight)
-                    .padding(.horizontal, 12)
-                    .background(Capsule(style: .continuous).fill(IronTheme.raisedSurface))
-                    .contentShape(Rectangle())
-                }
-            }
-
+        } footer: {
             if sets.isEmpty {
-                Text("No target sets")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(IronTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                HStack(spacing: 8) {
-                    Text("SET")
-                        .frame(width: 45, alignment: .center)
-                    if usesDuration {
-                        Text("DURATION")
-                            .frame(maxWidth: .infinity, alignment: .center)
-                    } else {
-                        Text(settingsStore.weightUnit.unit.symbol.uppercased())
-                            .frame(maxWidth: .infinity, alignment: .center)
-                        Text("REPS")
-                            .frame(width: 78, alignment: .center)
-                    }
-                    Text("")
-                        .frame(width: 44)
-                }
-                .font(.system(size: 10, weight: .bold))
-                .tracking(0.7)
-                .foregroundColor(IronTheme.secondaryText)
-
-                ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, routineSet in
-                    WorkoutRoutineSetRow(
-                        routineSet: routineSet,
-                        index: setIndex,
-                        usesDuration: usesDuration,
-                        onSave: onSave,
-                        onDelete: { onDeleteSet(routineSet) },
-                        onMoveUp: { onMoveSet(setIndex, setIndex - 1) },
-                        onMoveDown: { onMoveSet(setIndex, setIndex + 1) },
-                        setCount: sets.count
-                    )
-                }
+                Text("No target sets yet.")
             }
-
-            Button(action: onAddSet) {
-                Label("Add Set", systemImage: "plus")
-            }
-            .buttonStyle(IronSecondaryButtonStyle())
         }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.top, 16)
-        .padding(.bottom, 20)
-        .background(IronTheme.background)
-        .overlay(IronHairline(opacity: 0.48), alignment: .bottom)
+        .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: sets.map(\.objectID))
         .onDisappear(perform: onSave)
         .sheet(isPresented: $showingRestTimerEditor) {
             RestTimerConfigurationSheet(
-                title: "Rest timer",
+                title: "Rest Timer",
                 subtitle: "Recovery after each completed set",
                 initialDuration: routineExercise.restTimerDurationValue ?? workoutDefaultRestTimerDuration,
-                secondaryActionTitle: routineExercise.restTimerDurationValue == nil
-                    ? "Keep workout default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")"
-                    : "Use workout default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")",
+                secondaryActionTitle: "Use Workout Default · \(restTimerDurationFormatter.string(from: workoutDefaultRestTimerDuration) ?? "0:00")",
                 onSecondaryAction: {
                     routineExercise.restTimerDurationValue = nil
                     onSave()
@@ -636,6 +446,7 @@ private struct WorkoutRoutineExerciseCard: View {
 }
 
 private struct WorkoutRoutineSetRow: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var settingsStore: SettingsStore
 
     @ObservedObject var routineSet: WorkoutRoutineSet
@@ -648,9 +459,6 @@ private struct WorkoutRoutineSetRow: View {
     let usesDuration: Bool
     let onSave: () -> Void
     let onDelete: () -> Void
-    let onMoveUp: () -> Void
-    let onMoveDown: () -> Void
-    let setCount: Int
 
     private enum EntryField: Hashable {
         case weight
@@ -664,7 +472,8 @@ private struct WorkoutRoutineSetRow: View {
             from: .metric,
             to: settingsStore.weightUnit
         )
-        return settingsStore.weightUnit.numberFormatter.string(from: NSNumber(value: displayWeight)) ?? ""
+        let formatter = focusedField == .weight ? settingsStore.weightUnit.numberFormatter : settingsStore.weightUnit.displayNumberFormatter
+        return formatter.string(from: NSNumber(value: displayWeight)) ?? ""
     }
 
     private var weightText: Binding<String> {
@@ -788,91 +597,37 @@ private struct WorkoutRoutineSetRow: View {
         routineSet.maxRepetitionsValue = repetitions
     }
 
-    private var tagTitle: String {
-        routineSet.tagValue?.title.capitalized ?? "Tag"
-    }
-
-    private var tagColor: Color {
+    private var setLabel: String {
         switch routineSet.tagValue {
-        case .warmUp: return IronTheme.warning
-        case .dropSet: return IronTheme.accent
-        default: return IronTheme.secondaryText
-        }
-    }
-
-    private var setPopupActions: [IronPopupAction] {
-        var actions: [IronPopupAction] = []
-        if index > 0 {
-            actions.append(IronPopupAction(title: "Move Set Up", systemImage: "arrow.up", action: onMoveUp))
-        }
-        if index < setCount - 1 {
-            actions.append(IronPopupAction(title: "Move Set Down", systemImage: "arrow.down", action: onMoveDown))
-        }
-
-        actions.append(IronPopupAction(
-            title: "Normal Set",
-            systemImage: "number",
-            isSelected: routineSet.tagValue == nil
-        ) {
-            routineSet.tagValue = nil
-            onSave()
-        })
-        actions += WorkoutRoutineSet.supportedTags.map { tag in
-            IronPopupAction(
-                id: "tag-\(tag.rawValue)",
-                title: tag.title.capitalized,
-                systemImage: tagIcon(for: tag),
-                isSelected: routineSet.tagValue == tag
-            ) {
-                routineSet.tagValue = tag
-                onSave()
-            }
-        }
-        actions.append(IronPopupAction(
-            title: "Delete Set",
-            systemImage: "trash",
-            role: .destructive,
-            action: onDelete
-        ))
-        return actions
-    }
-
-    private func tagIcon(for tag: WorkoutSetTag) -> String {
-        switch tag {
-        case .warmUp: return "flame"
-        case .dropSet: return "arrow.down.right"
-        case .failure: return "bolt.fill"
+        case .warmUp: return "Warm-Up"
+        case .dropSet: return "Drop Set"
+        case .failure: return "Failure"
+        case nil: return "Set \(index + 1)"
         }
     }
 
     var body: some View {
-        HStack(spacing: 8) {
-            Text(routineSet.tagValue == .warmUp ? "W" : "\(index + 1)")
-                .font(.system(size: 15, weight: .bold).monospacedDigit())
-                .foregroundColor(routineSet.tagValue == .warmUp ? IronTheme.warning : IronTheme.primaryText)
-                .frame(width: 45, height: IronTheme.controlHeight, alignment: .center)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                        .fill(routineSet.tagValue == .warmUp ? IronTheme.warning.opacity(0.14) : IronTheme.raisedSurface)
-                )
+        HStack(spacing: 12) {
+            Text(setLabel)
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(IronTheme.metricSets)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
 
             if usesDuration {
-                Button(action: { showingDurationPicker = true }) {
-                    HStack(spacing: 7) {
-                        Image(systemName: "stopwatch")
-                            .font(.system(size: 13, weight: .bold))
-                            .foregroundColor(IronTheme.accent)
-                        Text(restTimerDurationFormatter.string(from: routineSet.durationValue ?? 60) ?? "1:00")
-                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                            .foregroundColor(IronTheme.primaryText)
-                    }
-                    .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(IronTheme.raisedSurface)
-                    )
+                Button {
+                    showingDurationPicker = true
+                } label: {
+                    Text(restTimerDurationFormatter.string(from: routineSet.durationValue ?? 60) ?? "1:00")
+                        .font(.ironMetric(.body, weight: .semibold))
+                        .foregroundStyle(IronTheme.metricTime)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: routineSet.durationValue)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.capsule)
+                .controlSize(.small)
                 .accessibilityLabel("Set duration")
             } else {
                 TextField("—", text: weightText, onEditingChanged: { isEditing in
@@ -883,17 +638,16 @@ private struct WorkoutRoutineSetRow: View {
                         onSave()
                     }
                 })
-                .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
+                .font(.ironMetric(.body, weight: .semibold))
+                .foregroundStyle(IronTheme.metricVolume)
                 .keyboardType(.decimalPad)
                 .focused($focusedField, equals: .weight)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 9)
-                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                        .fill(IronTheme.raisedSurface)
-                )
+                .multilineTextAlignment(.trailing)
+                .frame(width: 62)
+
+                Text(settingsStore.weightUnit.unit.symbol)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
 
                 TextField("—", text: repetitionsText, onEditingChanged: { isEditing in
                     if isEditing {
@@ -903,31 +657,33 @@ private struct WorkoutRoutineSetRow: View {
                         onSave()
                     }
                 })
-                .font(.system(size: 16, weight: .semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
+                .font(.ironMetric(.body, weight: .semibold))
+                .foregroundStyle(IronTheme.metricSets)
                 .keyboardType(.numberPad)
                 .focused($focusedField, equals: .repetitions)
-                .multilineTextAlignment(.center)
-                .padding(.horizontal, 9)
-                .frame(width: 78)
-                .frame(minHeight: IronTheme.controlHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                        .fill(IronTheme.raisedSurface)
-                )
-            }
+                .multilineTextAlignment(.trailing)
+                .frame(width: 46)
 
-            IronPopupMenu(title: "Set actions", actions: setPopupActions, arrowEdge: .bottom) {
-                Image(systemName: routineSet.tagValue == nil ? "tag" : "tag.fill")
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundColor(tagColor)
-                    .frame(width: 44, height: IronTheme.controlHeight)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                            .fill(IronTheme.raisedSurface)
-                    )
+                Text("reps")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .accessibilityLabel(tagTitle)
+        }
+        .contextMenu {
+            Picker("Set Type", selection: Binding(
+                get: { routineSet.tagValue },
+                set: { newValue in
+                    routineSet.tagValue = newValue
+                    onSave()
+                }
+            )) {
+                Text("Normal").tag(WorkoutSetTag?.none)
+                ForEach(WorkoutRoutineSet.supportedTags, id: \.self) { tag in
+                    Text(tag.title.capitalized).tag(WorkoutSetTag?.some(tag))
+                }
+            }
+            Divider()
+            Button("Delete Set", systemImage: "trash", role: .destructive, action: onDelete)
         }
         .sheet(isPresented: $showingDurationPicker) {
             IronDurationPickerSheet(
@@ -939,9 +695,9 @@ private struct WorkoutRoutineSetRow: View {
         }
         .sheet(isPresented: $showingPlateCalculator) {
             IronUtilitySheet(
-                title: "Plate calculator",
-                subtitle: "Load each side of the bar",
-                systemImage: "circle.grid.cross",
+                title: "Plate Calculator",
+                subtitle: "",
+                systemImage: "plusminus",
                 onClose: { showingPlateCalculator = false }
             ) {
                 PlateCalculatorView(
@@ -959,37 +715,22 @@ private struct WorkoutRoutineSetRow: View {
                     }
                 )
             }
-            .presentationDetents([.fraction(0.78)])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.scrolls)
-            .presentationBackground(IronTheme.modalSurface)
         }
         .toolbar {
             if focusedField != nil {
                 ToolbarItemGroup(placement: .keyboard) {
                     if focusedField == .weight {
-                        Button(action: openPlateCalculator) {
-                            Image(systemName: "circle.grid.cross")
-                                .font(.system(size: 17, weight: .semibold))
-                                .frame(width: 44, height: 44)
-                        }
-                        .buttonStyle(
-                            IronKeyboardAccessoryButtonStyle(
-                                tint: IronTheme.accent
-                            )
-                        )
-                        .accessibilityLabel("Plate calculator")
-                        .accessibilityHint("Calculates the plates to load for this set")
+                        Button("Plate Calculator", systemImage: "plusminus", action: openPlateCalculator)
+                            .labelStyle(.iconOnly)
+                            .accessibilityHint("Calculates the plates to load for this set")
                     }
 
                     Spacer()
 
-                    Button(action: { focusedField = nil }) {
-                        Image(systemName: "keyboard.chevron.compact.down")
-                            .frame(width: 44, height: 44)
-                    }
-                    .buttonStyle(IronKeyboardAccessoryButtonStyle())
-                    .accessibilityLabel("Dismiss number pad")
+                    Button("Done") { focusedField = nil }
+                        .fontWeight(.semibold)
                 }
             }
         }

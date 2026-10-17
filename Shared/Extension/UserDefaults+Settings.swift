@@ -19,6 +19,17 @@ extension UserDefaults {
         case maxRepetitionsOneRepMax
         case autoBackup
         case watchCompanion
+        case autoStartRestTimer
+        case keepScreenAwakeDuringWorkout
+        case showPlateCalculator
+        case showWarmUpCalculator
+        case logRPE
+        case prefillPreviousValues
+        case supersetAutoScroll
+        case inlineSetTimer
+        case workoutSounds
+        case workoutHaptics
+        case personalRecordAlerts
     }
 
     var weightUnit: WeightUnit {
@@ -110,6 +121,105 @@ extension UserDefaults {
         }
         get {
             self.value(forKey: SettingsKeys.watchCompanion.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var autoStartRestTimer: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.autoStartRestTimer.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.autoStartRestTimer.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var keepScreenAwakeDuringWorkout: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.keepScreenAwakeDuringWorkout.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.keepScreenAwakeDuringWorkout.rawValue) as? Bool ?? false // default false
+        }
+    }
+
+    var showPlateCalculator: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.showPlateCalculator.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.showPlateCalculator.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var showWarmUpCalculator: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.showWarmUpCalculator.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.showWarmUpCalculator.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var logRPE: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.logRPE.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.logRPE.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var prefillPreviousValues: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.prefillPreviousValues.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.prefillPreviousValues.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var supersetAutoScroll: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.supersetAutoScroll.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.supersetAutoScroll.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var inlineSetTimer: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.inlineSetTimer.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.inlineSetTimer.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var workoutSounds: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.workoutSounds.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.workoutSounds.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var workoutHaptics: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.workoutHaptics.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.workoutHaptics.rawValue) as? Bool ?? true // default true
+        }
+    }
+
+    var personalRecordAlerts: Bool {
+        set {
+            self.set(newValue, forKey: SettingsKeys.personalRecordAlerts.rawValue)
+        }
+        get {
+            self.value(forKey: SettingsKeys.personalRecordAlerts.rawValue) as? Bool ?? true // default true
         }
     }
 }

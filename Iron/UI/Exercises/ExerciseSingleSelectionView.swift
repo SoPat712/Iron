@@ -14,55 +14,20 @@ struct ExerciseSingleSelectionView: View {
     var onSelection: (Exercise) -> Void
     
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(exerciseGroups) { exerciseGroup in
-                        Text(exerciseGroup.title.capitalized)
-                            .font(.system(size: 20, weight: .bold))
-                            .foregroundColor(IronTheme.primaryText)
-                            .padding(.horizontal, IronTheme.horizontalPadding)
-                            .padding(.top, 20)
-                            .padding(.bottom, 8)
-
-                        ForEach(exerciseGroup.exercises, id: \.self) { exercise in
-                            Button {
-                                onSelection(exercise)
-                            } label: {
-                                selectionRow(exercise)
-                            }
-                            .buttonStyle(.plain)
+        List {
+            ForEach(exerciseGroups) { exerciseGroup in
+                Section(exerciseGroup.title.capitalized) {
+                    ForEach(exerciseGroup.exercises, id: \.self) { exercise in
+                        Button {
+                            onSelection(exercise)
+                        } label: {
+                            ExerciseLibraryRow(exercise: exercise)
                         }
                     }
                 }
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
             }
         }
-    }
-
-    private func selectionRow(_ exercise: Exercise) -> some View {
-        HStack(spacing: 13) {
-            ExerciseDiagramThumbnail(exercise: exercise, size: 54)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(exercise.title)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .lineLimit(2)
-                Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                    .font(.system(size: 12))
-                    .foregroundColor(IronTheme.secondaryText)
-                    .lineLimit(1)
-            }
-            Spacer(minLength: 8)
-            Image(systemName: "plus.circle.fill")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.vertical, 9)
-        .background(IronTheme.background)
-        .overlay(IronHairline(), alignment: .bottom)
+        .listStyle(.insetGrouped)
     }
 }
 

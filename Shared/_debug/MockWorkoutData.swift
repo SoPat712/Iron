@@ -109,6 +109,52 @@ extension MockWorkoutData {
     private static func toUuid(_ ids: [[Int]]) -> [[UUID]] {
         ids.map { toUuid($0) }
     }
+
+    /// Gives every completed set a reproducible timeline without changing the
+    /// generated workout's exercise, set, or performance values.
+    private static func populateCompletedSetTimestamps(in workout: Workout, latestCompletion: Date? = nil) {
+        guard var start = workout.start else { return }
+
+        var elapsed: TimeInterval = 0
+        var previousExerciseIndex: Int?
+        var timedSets: [(set: WorkoutSet, elapsed: TimeInterval)] = []
+        let exercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+        for (exerciseIndex, exercise) in exercises.enumerated() {
+            let sets = exercise.workoutSets?.array as? [WorkoutSet] ?? []
+            for (setIndex, set) in sets.enumerated() {
+                guard set.isCompleted else {
+                    set.completedAt = nil
+                    continue
+                }
+
+                if let previousExerciseIndex = previousExerciseIndex {
+                    let rest = previousExerciseIndex == exerciseIndex
+                        ? 90 + (exerciseIndex * 31 + setIndex * 17) % 91
+                        : 150 + (exerciseIndex * 29 + setIndex * 13) % 91
+                    elapsed += TimeInterval(rest)
+                }
+                let work = 40 + (exerciseIndex * 7 + setIndex * 11) % 21
+                elapsed += TimeInterval(work)
+                timedSets.append((set, elapsed))
+                previousExerciseIndex = exerciseIndex
+            }
+        }
+
+        // A large current workout may need to begin earlier to keep every
+        // completion in the past. Its end remains nil.
+        if workout.end == nil, let latestCompletion = latestCompletion,
+           start.addingTimeInterval(elapsed) > latestCompletion {
+            start = latestCompletion.addingTimeInterval(-elapsed)
+            workout.start = start
+        }
+        for entry in timedSets {
+            entry.set.completedAt = start.addingTimeInterval(entry.elapsed)
+        }
+        if let end = workout.end, let lastCompletion = timedSets.last?.set.completedAt,
+           lastCompletion > end {
+            workout.end = lastCompletion
+        }
+    }
     
     private static func createRandomWorkoutData(context: NSManagedObjectContext, unit: WeightUnit) {
         for i in 1...20 {
@@ -117,6 +163,7 @@ extension MockWorkoutData {
             workout.end = Calendar.current.date(byAdding: .minute, value: Int.random(in: 80...120), to: workout.start!)!
             
             createRandomWorkoutExercises(workout: workout, unit: unit)
+            populateCompletedSetTimestamps(in: workout)
         }
     }
     
@@ -157,9 +204,9 @@ extension MockWorkoutData {
         }
     }
     
-    private static func createRandomCurrentWorkout(context: NSManagedObjectContext, unit: WeightUnit) -> Workout {
+    private static func createRandomCurrentWorkout(context: NSManagedObjectContext, unit: WeightUnit, referenceDate: Date = Date()) -> Workout {
         let workout = Workout.create(context: context)
-        workout.start = Calendar.current.date(byAdding: .minute, value: -71, to: Date())!
+        workout.start = Calendar.current.date(byAdding: .minute, value: -71, to: referenceDate)!
         workout.isCurrentWorkout = true
         
         for uuid in toUuid([42, 48, 206]) { // bench press, cable crossover, triceps pushdown
@@ -207,6 +254,7 @@ extension MockWorkoutData {
                 workoutSet.isCompleted = false
             }
         }
+        populateCompletedSetTimestamps(in: workout, latestCompletion: referenceDate)
         return workout
     }
 }
@@ -236,6 +284,7 @@ extension MockWorkoutData {
                 workout.start = Calendar.current.date(byAdding: .minute, value: Int(sin(Double(number)) * 60), to: Calendar.current.date(byAdding: .day, value: -number + dayOffset, to: referenceDate)!)!
                 workout.end = Calendar.current.date(byAdding: .minute, value: 70 + Int(sin(Double(number)) * 30) , to: workout.start!)!
                 createWorkoutExercises(workout: workout, exerciseUuids: exerciseUuids[(j + indexOffset) % exerciseUuids.count], unit: unit)
+                populateCompletedSetTimestamps(in: workout)
             }
         }
     }
@@ -311,7 +360,30 @@ extension MockWorkoutData {
                 workoutSet.isCompleted = false
             }
         }
+        populateCompletedSetTimestamps(in: workout, latestCompletion: referenceDate)
         return workout
+    }
+}
+
+// MARK: Seeding a Real Store
+
+extension MockWorkoutData {
+    /// Writes the deterministic sample history into an arbitrary context so a
+    /// development build can be populated for visual review. Uses the same
+    /// generators as the previews, so screenshots match preview expectations.
+    static func seedHistory(
+        into context: NSManagedObjectContext,
+        unit: WeightUnit,
+        includeSavedWorkouts: Bool = true,
+        includeActiveWorkout: Bool = false
+    ) {
+        createWorkoutData(context: context, unit: unit)
+        if includeSavedWorkouts {
+            createWorkoutPlanStrongLifts(context: context, unit: unit)
+        }
+        if includeActiveWorkout {
+            _ = createCurrentWorkout(context: context, unit: unit)
+        }
     }
 }
 

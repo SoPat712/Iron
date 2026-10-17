@@ -9,6 +9,7 @@
 import XCTest
 import CoreData
 import Combine
+import UIKit
 import WorkoutDataKit
 @testable import Iron
 
@@ -319,6 +320,37 @@ class WorkoutDataTests: XCTestCase {
         XCTAssertEqual(workout.title, "Workout A")
         XCTAssertEqual(workout.displayTitle(in: []), "Workout A")
     }
+
+    func testGeneratedTitleUsesTimeOfDayAndSplit() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+        func date(hour: Int) -> Date {
+            calendar.date(from: DateComponents(year: 2026, month: 8, day: 30, hour: hour))!
+        }
+
+        XCTAssertEqual(
+            Workout.generatedTitle(muscleGroups: ["legs"], at: date(hour: 6), calendar: calendar),
+            "Early Morning Leg Day"
+        )
+        XCTAssertEqual(
+            Workout.generatedTitle(muscleGroups: ["chest", "arms"], at: date(hour: 22), calendar: calendar),
+            "Late Night Chest + Arms"
+        )
+        XCTAssertEqual(
+            Workout.generatedTitle(muscleGroups: ["back", "arms"], at: date(hour: 18), calendar: calendar),
+            "Evening Pull Day"
+        )
+        XCTAssertEqual(
+            Workout.generatedTitle(muscleGroups: ["chest", "shoulders"], at: date(hour: 10), calendar: calendar),
+            "Morning Push Day"
+        )
+        XCTAssertEqual(
+            Workout.generatedTitle(muscleGroups: ["legs", "chest", "back"], at: date(hour: 14), calendar: calendar),
+            "Afternoon Full Body"
+        )
+        XCTAssertNil(Workout.generatedTitle(muscleGroups: [], at: date(hour: 10), calendar: calendar))
+    }
     
     func testSendObjectsWillChange() {
         let workout = Workout.create(context: persistenContainer.viewContext)
@@ -408,6 +440,67 @@ class WorkoutDataTests: XCTestCase {
             $0.0.objectWillChange.sink { _ in expectation.fulfill() }.store(in: &store)
             return expectation
         }
+    }
+}
+
+final class WorkoutLiveActivityArtworkTests: XCTestCase {
+    func testLegacySetSnapshotDecodesWithoutArtwork() throws {
+        let data = Data(#"{"setID":"set","exerciseName":"Bench Press","setNumber":1,"setCount":4,"result":"135 lb × 8"}"#.utf8)
+        let snapshot = try JSONDecoder().decode(WorkoutActivityAttributes.SetSnapshot.self, from: data)
+        XCTAssertNil(snapshot.artworkFileName)
+        XCTAssertEqual(snapshot.setNumber, 1)
+    }
+
+    func testArtworkSnapshotRoundTripsWithinActivityPayloadBudget() throws {
+        let set = WorkoutActivityAttributes.SetSnapshot(
+            setID: UUID().uuidString,
+            exerciseName: "Bench Press: Barbell",
+            setNumber: 1,
+            setCount: 4,
+            result: "135 lb × 8",
+            artworkFileName: "exercise.gif.png"
+        )
+        let state = WorkoutActivityAttributes.ContentState(
+            phase: .currentSet, displaySet: set, nextSet: set,
+            confirmationUntil: nil, restTimerStart: nil, restTimerEnd: nil,
+            completedSets: 0, totalSets: 20
+        )
+        let data = try JSONEncoder().encode(state)
+        let decoded = try JSONDecoder().decode(WorkoutActivityAttributes.ContentState.self, from: data)
+        XCTAssertEqual(decoded.displaySet?.artworkFileName, "exercise.gif.png")
+        XCTAssertEqual(decoded, state)
+        XCTAssertLessThan(data.count, 2_048, "Leave room for ActivityKit attributes and longer exercise labels")
+    }
+
+    func testArtworkRejectsUntrustedFilePaths() {
+        for name in ["", "../image.png", "/tmp/image.png", "a\\image.png", "image.gif", "a\u{0}.png", "https://example.com/image.png"] {
+            XCTAssertNil(WorkoutLiveActivityArtwork.fileURL(for: name), name)
+        }
+    }
+
+    @MainActor
+    func testCachedArtworkIsReadyBeforeActivityPublication() async throws {
+        let remoteURL = try XCTUnwrap(URL(string: "https://static.exercisedb.dev/media/iron-test-\(UUID().uuidString).gif"))
+        let store = ExerciseMediaStore.shared
+        let sourceURL = store.fileURL(for: remoteURL)
+        let fileName = remoteURL.lastPathComponent + ".png"
+        guard let artworkURL = WorkoutLiveActivityArtwork.fileURL(for: fileName) else {
+            throw XCTSkip("This signing configuration has no shared artwork container")
+        }
+        defer {
+            try? FileManager.default.removeItem(at: sourceURL)
+            try? FileManager.default.removeItem(at: artworkURL)
+        }
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 256, height: 192)).image { context in
+            UIColor.blue.setFill()
+            context.fill(CGRect(x: 0, y: 0, width: 256, height: 192))
+        }
+        try XCTUnwrap(image.pngData()).write(to: sourceURL, options: .atomic)
+        XCTAssertEqual(store.liveActivityArtworkFileName(for: remoteURL), fileName)
+        await store.prepareLiveActivityArtwork(fileNames: [fileName, fileName])
+        let thumbnail = try XCTUnwrap(UIImage(contentsOfFile: artworkURL.path))
+        XCTAssertLessThanOrEqual(max(thumbnail.size.width, thumbnail.size.height), 128)
+        XCTAssertEqual(thumbnail.size.width / thumbnail.size.height, 256.0 / 192.0, accuracy: 0.02)
     }
 }
 

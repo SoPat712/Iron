@@ -528,7 +528,7 @@ struct ExerciseDetailView : View {
     private func instructionRow(number: Int, step: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
-                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .font(.ironMetric(.subheadline, weight: .semibold))
                 .foregroundStyle(.secondary)
                 .frame(minWidth: 18, alignment: .trailing)
             Text(step)

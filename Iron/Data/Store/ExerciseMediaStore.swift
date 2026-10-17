@@ -8,7 +8,9 @@
 //
 
 import Foundation
+import ImageIO
 import os.log
+import UniformTypeIdentifiers
 import WorkoutDataKit
 
 final class ExerciseMediaStore {
@@ -58,6 +60,18 @@ final class ExerciseMediaStore {
         let url = fileURL(for: remoteURL)
         guard fileManager.fileExists(atPath: url.path) else { return nil }
         return try? Data(contentsOf: url)
+    }
+
+    /// The activity publisher prepares this file before delivering the snapshot.
+    /// Only cached media is eligible; widget rendering never depends on a download.
+    func liveActivityArtworkFileName(for remoteURL: URL) -> String? {
+        let fileName = liveActivityArtworkFileNameValue(for: remoteURL)
+        guard let artworkURL = WorkoutLiveActivityArtwork.fileURL(for: fileName) else {
+            return nil
+        }
+        guard fileManager.fileExists(atPath: artworkURL.path)
+            || fileManager.fileExists(atPath: fileURL(for: remoteURL).path) else { return nil }
+        return fileName
     }
 
     /// Returns persisted bytes, downloading and storing them when missing.
@@ -135,6 +149,80 @@ final class ExerciseMediaStore {
                 os_log("Could not persist exercise media: %{public}@", log: log, type: .error, error.localizedDescription)
             }
         }
+    }
+
+    /// Prepare only the current/next exercise, off the main thread. Waiting here
+    /// keeps the first activity render from racing the thumbnail write without
+    /// pre-rendering the whole exercise catalogue or delaying on network access.
+    func prepareLiveActivityArtwork(fileNames: [String]) async {
+        guard !fileNames.isEmpty else { return }
+        let sourceDirectory = directoryURL
+        await withCheckedContinuation { continuation in
+            ioQueue.async {
+                let fileManager = FileManager.default
+                for fileName in Set(fileNames) {
+                    guard fileName.hasSuffix(".png"),
+                          let destination = WorkoutLiveActivityArtwork.fileURL(for: fileName),
+                          !fileManager.fileExists(atPath: destination.path) else { continue }
+                    let sourceName = String(fileName.dropLast(4))
+                    let source = sourceDirectory.appendingPathComponent(sourceName)
+                    guard let data = try? Data(contentsOf: source) else { continue }
+                    Self.persistLiveActivityArtwork(data, to: destination)
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    private static func persistLiveActivityArtwork(_ data: Data, to destination: URL) {
+        let fileManager = FileManager.default
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil) else { return }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: 128
+        ]
+        guard let thumbnail = CGImageSourceCreateThumbnailAtIndex(
+            source,
+            0,
+            options as CFDictionary
+        ) else { return }
+
+        do {
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let temporary = destination.appendingPathExtension("tmp")
+            try? fileManager.removeItem(at: temporary)
+            guard let imageDestination = CGImageDestinationCreateWithURL(
+                temporary as CFURL,
+                UTType.png.identifier as CFString,
+                1,
+                nil
+            ) else { return }
+            CGImageDestinationAddImage(imageDestination, thumbnail, nil)
+            guard CGImageDestinationFinalize(imageDestination) else {
+                try? fileManager.removeItem(at: temporary)
+                return
+            }
+            if fileManager.fileExists(atPath: destination.path) {
+                try? fileManager.removeItem(at: temporary)
+                return
+            }
+            try fileManager.moveItem(at: temporary, to: destination)
+        } catch {
+            os_log(
+                "Could not persist Live Activity artwork: %{public}@",
+                log: OSLog(subsystem: "com.joshpatra.Iron", category: "exercise-media"),
+                type: .error,
+                error.localizedDescription
+            )
+        }
+    }
+
+    private func liveActivityArtworkFileNameValue(for remoteURL: URL) -> String {
+        cacheFileName(for: remoteURL) + ".png"
     }
 
     private func cacheFileName(for remoteURL: URL) -> String {

@@ -113,10 +113,9 @@ struct ContentView : View {
             .sheet(item: $hevyImportOutcome) { outcome in
                 HevyCSVImportResultSheet(outcome: outcome)
             }
-            .confirmationDialog(
+            .alert(
                 "Discard the active workout?",
-                isPresented: $showingDiscardWorkoutConfirmation,
-                titleVisibility: .visible
+                isPresented: $showingDiscardWorkoutConfirmation
             ) {
                 Button("Discard Workout", role: .destructive, action: discardCurrentWorkout)
                 Button("Cancel", role: .cancel) {
@@ -167,6 +166,25 @@ struct ContentView : View {
             NavigationStack {
                 GeneralSettingsView()
                     .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectUnits") {
+            NavigationStack {
+                UnitsSettingsView()
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectSounds") {
+            NavigationStack {
+                SoundsSettingsView()
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectPlateCalculator") {
+            NavigationStack {
+                PlateCalculatorView(
+                    unit: SettingsStore.shared.weightUnit,
+                    initialTarget: SettingsStore.shared.weightUnit == .metric ? 102.5 : 225
+                ) { _ in }
+                .navigationTitle("Plate Calculator")
+                .productionEnvironment()
             }
         } else if ProcessInfo.processInfo.arguments.contains("-ironInspectAbout") {
             NavigationStack {
@@ -230,17 +248,17 @@ struct ContentView : View {
                     .matchedGeometryEffect(
                         id: "active-workout-surface",
                         in: activeWorkoutNamespace,
-                        properties: .frame,
+                        properties: reduceMotion ? [] : .frame,
                         anchor: .bottom
                     )
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
                     .zIndex(10)
                 } else if #unavailable(iOS 26.1) {
                     collapsedActiveWorkoutPill(workout)
                         .matchedGeometryEffect(
                             id: "active-workout-surface",
                             in: activeWorkoutNamespace,
-                            properties: .frame,
+                            properties: reduceMotion ? [] : .frame,
                             anchor: .bottom
                         )
                         .transition(.opacity)
@@ -283,9 +301,7 @@ struct ContentView : View {
     }
 
     private var activeWorkoutTransition: Animation {
-        reduceMotion
-            ? .easeOut(duration: 0.01)
-            : .interactiveSpring(response: 0.34, dampingFraction: 0.88, blendDuration: 0.05)
+        IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)
     }
 
     private func collapsedActiveWorkoutPill(_ workout: Workout) -> some View {
@@ -316,16 +332,27 @@ struct ContentView : View {
 
                             HStack(spacing: 4) {
                                 Circle()
-                                    .fill(IronTheme.success)
+                                    .fill(IronTheme.accent)
                                     .frame(width: 5, height: 5)
                                     .accessibilityHidden(true)
                                 Text(activeWorkoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
+                                    .foregroundStyle(IronTheme.metricTime)
+                                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
                                 Text("•").foregroundColor(IronTheme.tertiaryText)
-                                Text(activeWorkoutVolumeTitle(workout))
+                                (Text(activeWorkoutVolumeTitle(workout))
+                                 + Text(" " + settingsStore.weightUnit.unit.symbol)
+                                    .font(.caption2).foregroundColor(IronTheme.secondaryText))
+                                    .foregroundStyle(IronTheme.metricVolume)
+                                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.totalCompletedWeight)
                                 Text("•").foregroundColor(IronTheme.tertiaryText)
                                 Text("\(workout.numberOfCompletedSets ?? 0) sets")
+                                    .foregroundStyle(IronTheme.metricSets)
+                                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.numberOfCompletedSets)
                             }
-                            .font(.caption2.weight(.medium).monospacedDigit())
+                            .font(.ironMetric(.caption2, weight: .semibold))
                             .foregroundColor(IronTheme.secondaryText)
                             .lineLimit(1)
                             .minimumScaleFactor(0.72)
@@ -377,8 +404,10 @@ struct ContentView : View {
                             .lineLimit(1)
 
                         Text(activeWorkoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
-                            .font(.caption2.monospacedDigit())
-                            .foregroundColor(IronTheme.secondaryText)
+                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .foregroundColor(IronTheme.metricTime)
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
+                            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
                             .lineLimit(1)
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -423,11 +452,8 @@ struct ContentView : View {
     }
 
     private func activeWorkoutVolumeTitle(_ workout: Workout) -> String {
-        WeightUnit.format(
-            weight: workout.totalCompletedWeight ?? 0,
-            from: .metric,
-            to: settingsStore.weightUnit
-        )
+        let value = WeightUnit.convert(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
+        return settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "0"
     }
 
     private func discardCurrentWorkout() {
@@ -571,6 +597,7 @@ private extension View {
             .environmentObject(SettingsStore.shared)
             .environmentObject(RestTimerStore.shared)
             .environmentObject(ExerciseStore.shared)
+            .environmentObject(PinnedChartsStore.shared)
             .environment(\.managedObjectContext, WorkoutDataStorage.shared.persistentContainer.viewContext)
     }
 }

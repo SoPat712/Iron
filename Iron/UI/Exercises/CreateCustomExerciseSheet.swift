@@ -12,7 +12,6 @@ import WorkoutDataKit
 struct CreateCustomExerciseSheet: View {
     @Environment(\.dismiss) private var systemDismiss
     @EnvironmentObject var exerciseStore: ExerciseStore
-    private let usesModalSurface: Bool
     private let onDismiss: (() -> Void)?
     @State private var exerciseValues = EditCustomExerciseView.ExerciseValues(
         title: "",
@@ -26,10 +25,8 @@ struct CreateCustomExerciseSheet: View {
     @State private var isSelectingMuscles = false
 
     init(
-        usesModalSurface: Bool = false,
         onDismiss: (() -> Void)? = nil
     ) {
-        self.usesModalSurface = usesModalSurface
         self.onDismiss = onDismiss
     }
 
@@ -100,15 +97,11 @@ struct CreateCustomExerciseSheet: View {
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                shellBackground
-                EditCustomExerciseView(
-                    exerciseValues: $exerciseValues,
-                    titleValidationMessage: titleValidationMessage,
-                    onSelectMuscles: { isSelectingMuscles = true },
-                    usesModalSurface: usesModalSurface
-                )
-            }
+            EditCustomExerciseView(
+                exerciseValues: $exerciseValues,
+                titleValidationMessage: titleValidationMessage,
+                onSelectMuscles: { isSelectingMuscles = true }
+            )
             .navigationTitle("Create Exercise")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -122,42 +115,22 @@ struct CreateCustomExerciseSheet: View {
                 }
             }
             .navigationDestination(isPresented: $isSelectingMuscles) {
-                ZStack {
-                    shellBackground
-                    MuscleSelectionView(
-                        muscles: Exercise.muscleNames,
-                        selection: $exerciseValues.muscles,
-                        usesModalSurface: usesModalSurface
-                    )
-                }
+                MuscleSelectionView(
+                    muscles: Exercise.muscleNames,
+                    selection: $exerciseValues.muscles
+                )
                 .navigationTitle("Select Muscles")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { isSelectingMuscles = false }
-                            .fontWeight(.semibold)
-                    }
-                }
             }
         }
-        .ironScreen()
         .sheet(item: $saveFailure) { failure in
             IronStatusSheet(
                 headerTitle: "Create Exercise",
                 title: "Could not save exercise",
                 message: failure.error.localizedDescription,
                 systemImage: "exclamationmark.triangle.fill",
-                tint: IronTheme.danger
+                tint: .red
             )
-        }
-    }
-
-    @ViewBuilder
-    private var shellBackground: some View {
-        if usesModalSurface {
-            IronModalBackground()
-        } else {
-            IronScreenBackground()
         }
     }
 }

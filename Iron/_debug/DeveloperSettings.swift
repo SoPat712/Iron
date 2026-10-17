@@ -9,6 +9,7 @@
 #if DEBUG
 
 import SwiftUI
+import CoreData
 import WorkoutDataKit
 
 struct DeveloperSettings: View {
@@ -17,44 +18,46 @@ struct DeveloperSettings: View {
     @State private var statusMessage: String?
 
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Developer tools")
-                            .font(.title2.weight(.bold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text("Create repeatable test data and inspect Iron's local store.")
-                            .font(.subheadline)
-                            .foregroundColor(IronTheme.secondaryText)
+        List {
+            if let statusMessage {
+                Section {
+                    LabeledContent {
+                        Button("Dismiss", systemImage: "xmark") { self.statusMessage = nil }
+                            .labelStyle(.iconOnly)
+                    } label: {
+                        Label(statusMessage, systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.green)
                     }
-
-                    if let statusMessage {
-                        statusBanner(statusMessage)
-                    }
-
-                    sampleDataSection
-                    diagnosticsSection
-
-                    Label {
-                        Text("These controls are available only in development builds. Exported databases can contain your complete local training history.")
-                    } icon: {
-                        Image(systemName: "exclamationmark.shield.fill")
-                            .foregroundColor(IronTheme.warning)
-                    }
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .padding(.horizontal, 4)
                 }
-                .padding(IronTheme.horizontalPadding)
-                .padding(.bottom, 112)
+            }
+
+            Section {
+                Button("Create Sample Workouts", systemImage: "plus") {
+                    showingPlanConfirmation = true
+                }
+
+                Button("Seed Sample History", systemImage: "clock.arrow.circlepath") {
+                    seedSampleHistory()
+                }
+            } header: {
+                Text("Sample Data")
+            } footer: {
+                Text("Sample workouts adds Workout A and Workout B with ready-to-edit 5×5 sets. Seed history fills completed workouts and body measurements so populated screens can be reviewed.")
+            }
+
+            Section {
+                LabeledContent("Database", value: databaseSummary)
+                Button("Share Database Snapshot", systemImage: "square.and.arrow.up") {
+                    shareFile(url: WorkoutDataStorage.groupStoreURL)
+                }
+            } header: {
+                Text("Diagnostics")
+            } footer: {
+                Text("These controls are available only in development builds. Exported databases can contain your complete local training history.")
             }
         }
-        .ironDestinationScreen(title: "Developer")
-        .ironScreen()
+        .listStyle(.insetGrouped)
+        .navigationTitle("Developer")
         .ironActivitySheet(activityItems: $activityItems)
         .sheet(isPresented: $showingPlanConfirmation) {
             IronConfirmationSheet(
@@ -70,79 +73,14 @@ struct DeveloperSettings: View {
                     statusMessage = "StrongLifts 5×5 sample workouts were added."
                 }
             )
-            .presentationDetents([.height(410), .medium])
+            .presentationDetents([.medium])
             .presentationDragIndicator(.visible)
-            .presentationCornerRadius(30)
         }
     }
 
-    private var sampleDataSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            IronSectionTitle(title: "Sample data", detail: "WORKOUTS")
-            IronCard {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "square.stack.3d.up.fill")
-                            .font(.system(size: 19, weight: .bold))
-                            .foregroundColor(IronTheme.accent)
-                            .frame(width: 42, height: 42)
-                            .background(IronTheme.accentSoft)
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("StrongLifts test workouts")
-                                .font(.headline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("Adds Workout A and Workout B with ready-to-edit 5×5 sets for exercising saved-workout and live-session flows.")
-                                .font(.subheadline)
-                                .foregroundColor(IronTheme.secondaryText)
-                                .fixedSize(horizontal: false, vertical: true)
-                        }
-                    }
-
-                    Button {
-                        showingPlanConfirmation = true
-                    } label: {
-                        Label("Create sample workouts", systemImage: "plus")
-                    }
-                    .buttonStyle(IronSecondaryButtonStyle())
-                }
-            }
-        }
-    }
-
-    private var diagnosticsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            IronSectionTitle(title: "Diagnostics", detail: "LOCAL DATA")
-            IronCard {
-                VStack(alignment: .leading, spacing: 16) {
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: "cylinder.split.1x2.fill")
-                            .font(.system(size: 19, weight: .bold))
-                            .foregroundColor(IronTheme.success)
-                            .frame(width: 42, height: 42)
-                            .background(IronTheme.success.opacity(0.14))
-                            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text("Core Data database")
-                                .font(.headline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text(databaseSummary)
-                                .font(.subheadline.monospacedDigit())
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-                    }
-
-                    Button {
-                        shareFile(url: WorkoutDataStorage.groupStoreURL)
-                    } label: {
-                        Label("Share database snapshot", systemImage: "square.and.arrow.up")
-                    }
-                    .buttonStyle(IronPrimaryButtonStyle())
-                }
-            }
-        }
+    private func seedSampleHistory() {
+        IronSampleDataSeeder.seed(reset: false)
+        statusMessage = "Sample history and measurements were added."
     }
 
     private var databaseSummary: String {
@@ -152,30 +90,6 @@ struct DeveloperSettings: View {
             return url.lastPathComponent
         }
         return "\(url.lastPathComponent) · \(ByteCountFormatter.string(fromByteCount: size.int64Value, countStyle: .file))"
-    }
-
-    private func statusBanner(_ message: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: "checkmark.circle.fill")
-                .foregroundColor(IronTheme.success)
-            Text(message)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Spacer(minLength: 0)
-            Button {
-                statusMessage = nil
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.caption.weight(.bold))
-                    .foregroundColor(IronTheme.secondaryText)
-            }
-            .buttonStyle(.plain)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(IronTheme.success.opacity(0.12))
-        )
     }
 
     private func shareFile(url: URL) {
@@ -242,6 +156,68 @@ func createDefaultWorkoutPlans() {
     workoutPlan.title = "StrongLifts 5x5"
     workoutPlan.workoutRoutines = NSOrderedSet(arrayLiteral: workoutRoutineA, workoutRoutineB)
     context.saveOrCrash()
+}
+
+/// Populates a development build with training history and body measurements so
+/// every screen can be reviewed with realistic content.
+enum IronSampleDataSeeder {
+    static func seed(reset: Bool, includeActiveWorkout: Bool = false) {
+        let context = WorkoutDataStorage.shared.persistentContainer.viewContext
+        let unit = SettingsStore.shared.weightUnit
+
+        if reset {
+            deleteAllWorkouts(in: context)
+        }
+
+        MockWorkoutData.seedHistory(
+            into: context,
+            unit: unit,
+            includeActiveWorkout: includeActiveWorkout
+        )
+        context.saveOrCrash()
+        seedBodyMeasurements(reset: reset)
+    }
+
+    private static func deleteAllWorkouts(in context: NSManagedObjectContext) {
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        for workout in (try? context.fetch(request)) ?? [] {
+            context.delete(workout)
+        }
+        let planRequest: NSFetchRequest<WorkoutPlan> = WorkoutPlan.fetchRequest()
+        for plan in (try? context.fetch(planRequest)) ?? [] {
+            context.delete(plan)
+        }
+        context.saveOrCrash()
+    }
+
+    private static func seedBodyMeasurements(reset: Bool) {
+        let store = BodyMetricsStore.shared
+        if reset {
+            store.delete(at: IndexSet(store.entries.indices))
+        }
+
+        // Weekly entries over three months so the Home panel shows a current
+        // value and the dashboard chart has a readable slope.
+        for week in 0..<12 {
+            guard let date = Calendar.current.date(
+                byAdding: .day, value: -week * 7, to: Date()
+            ) else { continue }
+
+            let progress = Double(week)
+            let entry = BodyMeasurementEntry(
+                date: date,
+                values: [
+                    BodyMeasurementKind.bodyWeight.rawValue: 84 + progress * 0.35,
+                    BodyMeasurementKind.bodyFat.rawValue: 16 + progress * 0.2,
+                    BodyMeasurementKind.waist.rawValue: 82 + progress * 0.3,
+                    BodyMeasurementKind.chest.rawValue: 104 - progress * 0.15,
+                    BodyMeasurementKind.leftBicep.rawValue: 37 - progress * 0.08,
+                    BodyMeasurementKind.rightBicep.rawValue: 37.2 - progress * 0.08
+                ]
+            )
+            store.save(entry, exportToHealth: false)
+        }
+    }
 }
 
 struct DeveloperSettings_Previews: PreviewProvider {

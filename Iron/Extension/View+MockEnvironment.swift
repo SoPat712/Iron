@@ -16,6 +16,7 @@ extension View {
             .environmentObject(weightUnit == .metric ? SettingsStore.mockMetric : SettingsStore.mockImperial)
             .environmentObject(RestTimerStore.shared)
             .environmentObject(ExerciseStore.shared)
+            .environmentObject(PinnedChartsStore.shared)
             .environmentObject(SceneState())
             .environment(\.managedObjectContext, weightUnit == .metric ? MockWorkoutData.metricRandom.context : MockWorkoutData.imperialRandom.context)
     }

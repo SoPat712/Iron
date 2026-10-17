@@ -488,6 +488,9 @@ final class WorkoutLiveActivityManager {
         )
 
         enqueueActivityOperation {
+            await ExerciseMediaStore.shared.prepareLiveActivityArtwork(
+                fileNames: [state.displaySet?.artworkFileName, state.nextSet?.artworkFileName].compactMap { $0 }
+            )
             if let activity = self.activity(for: attributes.workoutID) {
                 await activity.update(content)
                 return
@@ -811,13 +814,19 @@ final class WorkoutLiveActivityManager {
         let sets = workoutExercise.workoutSets?.array.compactMap { $0 as? WorkoutSet }
             .filter { !$0.isDeleted } ?? []
         let setIndex = sets.firstIndex { $0.objectID == set.objectID } ?? 0
-        let exerciseName = workoutExercise.exercise(in: ExerciseStore.shared.exercises)?.title ?? "Exercise"
+        let exercise = workoutExercise.exercise(in: ExerciseStore.shared.exercises)
+        let exerciseName = exercise?.title ?? "Exercise"
+        let artworkFileName = [exercise?.imageURL, exercise?.animationURL]
+            .compactMap { $0 }
+            .compactMap { ExerciseMediaStore.shared.liveActivityArtworkFileName(for: $0) }
+            .first
         return WorkoutActivityAttributes.SetSnapshot(
             setID: set.uuid?.uuidString ?? set.objectID.uriRepresentation().absoluteString,
             exerciseName: exerciseName,
             setNumber: setIndex + 1,
             setCount: max(sets.count, 1),
-            result: set.resultTitle(weightUnit: SettingsStore.shared.weightUnit)
+            result: set.resultTitle(weightUnit: SettingsStore.shared.weightUnit),
+            artworkFileName: artworkFileName
         )
     }
 

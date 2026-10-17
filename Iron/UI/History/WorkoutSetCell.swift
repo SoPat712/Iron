@@ -33,7 +33,7 @@ struct WorkoutSetCell: View {
                     .foregroundColor(.secondary)
             } else {
                 Text(workoutSet.displayTitle(weightUnit: settingsStore.weightUnit))
-                    .font(Font.body.monospacedDigit())
+                    .font(.ironMetric(.body))
                     .foregroundColor(colorMode == .disabled ? .secondary : .primary)
             }
         }
@@ -50,10 +50,10 @@ struct WorkoutSetCell: View {
         HStack {
             if showUpNextIndicator {
                 Image(systemName: "chevron.right.circle.fill")
-                    .foregroundColor(.accentColor)
+                    .foregroundColor(IronTheme.accent)
             } else if showCompleted && workoutSet.isCompleted {
                 Image(systemName: "checkmark.circle.fill")
-                    .foregroundColor(colorMode == .disabled ? .secondary : .green)
+                    .foregroundColor(colorMode == .disabled ? IronTheme.secondaryText : IronTheme.accent)
             }
             
             VStack(alignment: .leading, spacing: 4) {
@@ -97,20 +97,22 @@ struct WorkoutSetCell: View {
             }
             
             if workoutSet.isPersonalRecord ?? false {
-                // TODO: replace with a trophy symbol
-                Image(systemName: "star.circle.fill")
-                    .foregroundColor(colorMode == .disabled ? .secondary : .yellow)
+                Image(systemName: "trophy.fill")
+                    .foregroundColor(colorMode == .disabled ? IronTheme.secondaryText : IronTheme.metricRecord)
+                    .padding(6)
+                    .background(IronTheme.metricRecordContainer, in: Circle())
+                    .accessibilityLabel("Personal record")
             }
 
             Text("\(index)")
-                .font(Font.body.monospacedDigit())
+                .font(.ironMetric(.body, weight: .semibold))
                 .foregroundColor(workoutSet.tagValue != nil ? .clear : .secondary)
                 .background(
                     Group {
                         workoutSet.tagValue.map {
                             Text($0.title.first!.uppercased())
                                 .fontWeight(.semibold)
-                                .foregroundColor($0.color)
+                                .foregroundColor($0 == .warmUp ? IronTheme.metricSets : IronTheme.secondaryText)
                                 .fixedSize()
                         }
                     }
@@ -122,14 +124,11 @@ struct WorkoutSetCell: View {
 private struct TagStyle: ViewModifier {
     func body(content: Content) -> some View {
         content
-            .font(.caption)
-            .foregroundColor(.secondary)
-            .padding(4)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder()
-                    .foregroundColor(Color(.systemFill))
-            )
+            .font(.ironMetric(.caption, weight: .semibold))
+            .foregroundColor(IronTheme.metricEffort)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(IronTheme.metricEffortContainer, in: Capsule())
     }
 }
 

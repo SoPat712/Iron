@@ -94,14 +94,11 @@ struct EditCustomExerciseSheet: View {
     
     var body: some View {
         NavigationStack {
-            ZStack {
-                IronScreenBackground()
-                EditCustomExerciseView(
-                    exerciseValues: $exerciseValues,
-                    titleValidationMessage: titleValidationMessage,
-                    onSelectMuscles: { isSelectingMuscles = true }
-                )
-            }
+            EditCustomExerciseView(
+                exerciseValues: $exerciseValues,
+                titleValidationMessage: titleValidationMessage,
+                onSelectMuscles: { isSelectingMuscles = true }
+            )
             .navigationTitle("Edit Exercise")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -115,31 +112,21 @@ struct EditCustomExerciseSheet: View {
                 }
             }
             .navigationDestination(isPresented: $isSelectingMuscles) {
-                ZStack {
-                    IronScreenBackground()
-                    MuscleSelectionView(
-                        muscles: Exercise.muscleNames,
-                        selection: $exerciseValues.muscles
-                    )
-                }
+                MuscleSelectionView(
+                    muscles: Exercise.muscleNames,
+                    selection: $exerciseValues.muscles
+                )
                 .navigationTitle("Select Muscles")
                 .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .confirmationAction) {
-                        Button("Done") { isSelectingMuscles = false }
-                            .fontWeight(.semibold)
-                    }
-                }
             }
         }
-        .ironScreen()
         .sheet(item: $saveFailure) { failure in
             IronStatusSheet(
                 headerTitle: "Edit Exercise",
                 title: "Could not save changes",
                 message: failure.error.localizedDescription,
                 systemImage: "exclamationmark.triangle.fill",
-                tint: IronTheme.danger
+                tint: .red
             )
         }
     }

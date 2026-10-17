@@ -7,7 +7,7 @@
 //
 
 import SwiftUI
-import AVKit
+import UIKit
 
 struct Dragger : View {
     // public
@@ -154,7 +154,7 @@ struct Dragger : View {
                     if self.tmpValueInitialized { // no feedback on init
                         self.selectionFeedbackGenerator?.selectionChanged()
                         self.selectionFeedbackGenerator?.prepare()
-                        AudioServicesPlaySystemSound(1157) // picker sound
+                        IronSoundPlayer.shared.play(.tick)
                     }
                     self.tmpValue = newTmpValue
                     self.tmpValueInitialized = true
@@ -218,7 +218,6 @@ struct Dragger : View {
                 .offset(y: draggerOffset)
                 /// disable for now, crashes on iOS 13.1.x production builds but not on iOS 13.2 (built with Xcode 11.2.1 GM)
 //                .modifier(WiggleModifier(wiggleToggle: wiggleDraggerToggle, wiggleDistance: Self.DRAGGER_MOVEMENT).animation(.linear(duration: 1)))
-                .animation(.interactiveSpring(), value: draggerOffset)
                 .foregroundColor(isDragging ? Color.primary : Color.secondary)
 //                .padding()
                 .imageScale(.large)

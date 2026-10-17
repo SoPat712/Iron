@@ -59,7 +59,6 @@ struct EditCustomExerciseView: View {
     @Binding var exerciseValues: ExerciseValues
     var titleValidationMessage: String? = nil
     var onSelectMuscles: () -> Void = {}
-    var usesModalSurface = false
     
     private var primaryMuscles: [ExerciseValues.ExerciseMuscle] {
         exerciseValues.muscles
@@ -79,284 +78,78 @@ struct EditCustomExerciseView: View {
         !primaryMuscles.isEmpty
     }
 
-    private var typePopupActions: [IronPopupAction] {
-        Exercise.ExerciseType.allCases.map { type in
-            IronPopupAction(
-                id: "type-\(type.title)",
-                title: type.title.capitalized,
-                systemImage: "dumbbell",
-                isSelected: exerciseValues.type == type
-            ) {
-                exerciseValues.type = type
-            }
-        }
-    }
-    
     var body: some View {
-        ZStack {
-            shellBackground
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 16) {
-                    editorCard(title: "Exercise details", detail: "CUSTOM") {
-                        VStack(spacing: 10) {
-                            TextField("Exercise name", text: $exerciseValues.title)
-                                .font(.body.weight(.medium))
-                                .padding(.horizontal, 14)
-                                .frame(minHeight: 50)
-                                .background(editorFieldBackground)
+        Form {
+            Section {
+                TextField("Name", text: $exerciseValues.title)
+                    .textInputAutocapitalization(.words)
 
-                            TextField(
-                                "Description (optional)",
-                                text: $exerciseValues.description,
-                                axis: .vertical
-                            )
-                            .font(.body)
-                            .lineLimit(2...4)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 13)
-                            .frame(minHeight: 54, alignment: .topLeading)
-                            .background(editorFieldBackground)
-
-                            if let titleValidationMessage = titleValidationMessage {
-                                validationRow(
-                                    titleValidationMessage,
-                                    systemImage: "exclamationmark.circle.fill"
-                                )
-                            }
-                        }
-                    }
-
-                    editorCard(title: "Muscles", detail: "PRIMARY + SECONDARY") {
-                        VStack(alignment: .leading, spacing: 14) {
-                            if primaryMuscles.isEmpty && secondaryMuscles.isEmpty {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "figure.strengthtraining.traditional")
-                                        .font(.system(size: 18, weight: .semibold))
-                                        .foregroundColor(IronTheme.accent)
-                                        .frame(width: 42, height: 42)
-                                        .background(Circle().fill(IronTheme.accentSoft))
-
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text("No muscles selected")
-                                            .font(.subheadline.weight(.semibold))
-                                            .foregroundColor(IronTheme.primaryText)
-                                        Text("Choose at least one primary muscle. Secondary muscles are optional.")
-                                            .font(.caption)
-                                            .foregroundColor(IronTheme.secondaryText)
-                                            .fixedSize(horizontal: false, vertical: true)
-                                    }
-                                }
-                            } else {
-                                if !primaryMuscles.isEmpty {
-                                    selectedMuscleChips(title: "Primary", muscles: primaryMuscles)
-                                }
-                                if !secondaryMuscles.isEmpty {
-                                    selectedMuscleChips(title: "Secondary", muscles: secondaryMuscles)
-                                }
-                            }
-
-                            Button {
-                                onSelectMuscles()
-                            } label: {
-                                Label("Select Muscles", systemImage: "slider.horizontal.3")
-                            }
-                            .buttonStyle(IronSecondaryButtonStyle())
-
-                            if !hasPrimaryMuscle {
-                                validationRow(
-                                    "A primary muscle is required to power muscle maps and statistics.",
-                                    systemImage: "figure.strengthtraining.traditional"
-                                )
-                            }
-                        }
-                    }
-
-                    editorCard(title: "Equipment style", detail: "SETUP") {
-                        HStack(spacing: 12) {
-                            Image(systemName: "dumbbell.fill")
-                                .foregroundColor(IronTheme.accent)
-                                .frame(width: 40, height: 40)
-                                .background(IronTheme.accentSoft)
-                                .clipShape(RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text("Equipment style")
-                                    .font(.body.weight(.medium))
-                                    .foregroundColor(IronTheme.primaryText)
-                                Text("Controls rest defaults and barbell tools")
-                                    .font(.caption)
-                                    .foregroundColor(IronTheme.secondaryText)
-                            }
-                            Spacer(minLength: 8)
-                            IronPopupMenu(
-                                title: "Equipment style",
-                                actions: typePopupActions,
-                                arrowEdge: .bottom
-                            ) {
-                                HStack(spacing: 7) {
-                                    Text(exerciseValues.type.title.capitalized)
-                                    Image(systemName: "chevron.down")
-                                        .font(.caption2.weight(.bold))
-                                }
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundColor(IronTheme.accent)
-                                .padding(.horizontal, 12)
-                                .frame(minHeight: IronTheme.controlHeight)
-                                .background(Capsule(style: .continuous).fill(IronTheme.accentSoft))
-                            }
-                        }
-                    }
-
-                    editorCard(title: "How to", detail: "OPTIONAL") {
-                        VStack(alignment: .leading, spacing: 12) {
-                            HStack(alignment: .top, spacing: 12) {
-                                Image(systemName: "list.number")
-                                    .font(.system(size: 17, weight: .bold))
-                                    .foregroundColor(IronTheme.accent)
-                                    .frame(width: 40, height: 40)
-                                    .background(IronTheme.accentSoft)
-                                    .clipShape(RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
-                                VStack(alignment: .leading, spacing: 3) {
-                                    Text("Add your own instructions")
-                                        .font(.body.weight(.semibold))
-                                        .foregroundColor(IronTheme.primaryText)
-                                    Text("Use one line for each step or coaching cue. They appear in the exercise’s How to tab.")
-                                        .font(.caption)
-                                        .foregroundColor(IronTheme.secondaryText)
-                                        .fixedSize(horizontal: false, vertical: true)
-                                }
-                            }
-
-                            instructionField(
-                                title: "Steps",
-                                placeholder: "One instruction per line",
-                                text: $exerciseValues.stepsText,
-                                systemImage: "list.number"
-                            )
-                            instructionField(
-                                title: "Coach cues",
-                                placeholder: "One coaching cue per line",
-                                text: $exerciseValues.tipsText,
-                                systemImage: "lightbulb.fill"
-                            )
-                        }
-                    }
-                }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.top, 14)
-                .padding(.bottom, 32)
-            }
-        }
-        .ironScreen()
-    }
-
-    private var editorFieldBackground: some View {
-        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-            .fill(IronTheme.field)
-            .overlay(
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .stroke(IronTheme.outline.opacity(0.38), lineWidth: 1)
-            )
-    }
-
-    private func editorCard<Content: View>(
-        title: String,
-        detail: String,
-        @ViewBuilder content: () -> Content
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            IronSectionTitle(title: title, detail: detail)
-            content()
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .stroke(IronTheme.outline.opacity(0.36), lineWidth: 1)
-        )
-    }
-
-    private func validationRow(_ message: String, systemImage: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: systemImage)
-                .font(.caption.weight(.bold))
-                .foregroundColor(IronTheme.warning)
-                .padding(.top, 1)
-            Text(message)
-                .font(.caption.weight(.medium))
-                .foregroundColor(IronTheme.secondaryText)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func instructionField(
-        title: String,
-        placeholder: String,
-        text: Binding<String>,
-        systemImage: String
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(title.uppercased(), systemImage: systemImage)
-                .font(.system(size: 10, weight: .bold))
-                .tracking(0.65)
-                .foregroundColor(IronTheme.secondaryText)
-
-            TextField(placeholder, text: text, axis: .vertical)
-                .font(.body)
-                .textInputAutocapitalization(.sentences)
-                .lineLimit(3...7)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 12)
-                .frame(minHeight: 84, alignment: .topLeading)
-                .background(editorFieldBackground)
-        }
-    }
-
-    @ViewBuilder
-    private var shellBackground: some View {
-        if usesModalSurface {
-            IronModalBackground()
-        } else {
-            IronScreenBackground()
-        }
-    }
-
-    private func selectedMuscleChips(
-        title: String,
-        muscles: [ExerciseValues.ExerciseMuscle]
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                Text(title.uppercased())
-                    .font(.system(size: 11, weight: .bold))
-                    .tracking(0.8)
-                    .foregroundColor(IronTheme.secondaryText)
-                Spacer()
-                Text("\(muscles.count)")
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.accent)
-            }
-
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 112), spacing: 8)],
-                alignment: .leading,
-                spacing: 8
-            ) {
-                ForEach(muscles, id: \.self) { muscle in
-                    IronChip(
-                        title: muscle.shortDisplayTitle,
-                        icon: "checkmark",
-                        isSelected: true
-                    )
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                TextField("Description", text: $exerciseValues.description, axis: .vertical)
+                    .lineLimit(1...4)
+            } header: {
+                Text("Exercise")
+            } footer: {
+                if let titleValidationMessage {
+                    Text(titleValidationMessage)
+                        .foregroundStyle(.orange)
                 }
             }
+
+            Section {
+                Button(action: onSelectMuscles) {
+                    LabeledContent("Muscles") {
+                        Text(muscleSummary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                }
+
+                Picker("Equipment", selection: $exerciseValues.type) {
+                    ForEach(Exercise.ExerciseType.allCases, id: \.self) { type in
+                        Text(type.title.capitalized).tag(type)
+                    }
+                }
+            } header: {
+                Text("Classification")
+            } footer: {
+                Text(hasPrimaryMuscle
+                     ? "Equipment controls rest defaults and barbell tools."
+                     : "A primary muscle is required to power muscle maps and statistics.")
+            }
+
+            Section {
+                TextField("One instruction per line", text: $exerciseValues.stepsText, axis: .vertical)
+                    .lineLimit(3...8)
+            } header: {
+                Text("Steps")
+            }
+
+            Section {
+                TextField("One coaching cue per line", text: $exerciseValues.tipsText, axis: .vertical)
+                    .lineLimit(3...8)
+            } header: {
+                Text("Coach Cues")
+            } footer: {
+                Text("Steps and cues appear in the exercise’s How To section.")
+            }
         }
+    }
+
+    private var muscleSummary: String {
+        if primaryMuscles.isEmpty && secondaryMuscles.isEmpty {
+            return "None"
+        }
+
+        var parts: [String] = []
+        if !primaryMuscles.isEmpty {
+            parts.append(primaryMuscles.map(\.shortDisplayTitle).joined(separator: ", "))
+        }
+        if !secondaryMuscles.isEmpty {
+            parts.append("+\(secondaryMuscles.count) secondary")
+        }
+        return parts.joined(separator: " · ")
     }
 }
+
 
 extension EditCustomExerciseView.ExerciseValues.ExerciseMuscle {
     var shortDisplayTitle: String {
@@ -382,7 +175,6 @@ struct MuscleSelectionView: View {
 
     var muscles: [String]
     @Binding var selection: Set<EditCustomExerciseView.ExerciseValues.ExerciseMuscle>
-    var usesModalSurface = false
 
     @State private var activeRole: EditCustomExerciseView.ExerciseValues.ExerciseMuscle.MuscleType = .primary
     @State private var search = ""
@@ -420,232 +212,63 @@ struct MuscleSelectionView: View {
     }
 
     var body: some View {
-        ZStack {
-            shellBackground
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 18) {
-                    selectionSummary
-                    rolePicker
-                    searchField
-                    muscleGrid
-                }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.top, 16)
-                .padding(.bottom, 32)
-            }
-        }
-        .ironScreen()
-    }
-
-    @ViewBuilder
-    private var shellBackground: some View {
-        if usesModalSurface {
-            IronModalBackground()
-        } else {
-            IronScreenBackground()
-        }
-    }
-
-    private var selectionSummary: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Muscle focus")
-                    .font(.title3.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Choose a role, then tap each muscle. A muscle can only have one role.")
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                countTile(
-                    title: "Primary",
-                    count: primaryCount,
-                    icon: "scope",
-                    tint: IronTheme.accent
-                )
-                countTile(
-                    title: "Secondary",
-                    count: secondaryCount,
-                    icon: "circle.dotted",
-                    tint: IronTheme.accent
-                )
-            }
-        }
-    }
-
-    private var rolePicker: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("ADDING AS")
-                .font(.system(size: 11, weight: .bold))
-                .tracking(0.8)
-                .foregroundColor(IronTheme.secondaryText)
-
-            HStack(spacing: 4) {
-                ForEach(EditCustomExerciseView.ExerciseValues.ExerciseMuscle.MuscleType.allCases, id: \.self) { role in
-                    let isActive = activeRole == role
-                    Button {
-                        withAnimation(.easeOut(duration: 0.16)) {
-                            activeRole = role
-                        }
-                    } label: {
-                        HStack(spacing: 7) {
-                            Image(systemName: role == .primary ? "scope" : "circle.dotted")
-                            Text(role.title)
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(isActive ? IronTheme.onAccent : IronTheme.secondaryText)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                        .background(
-                            Capsule(style: .continuous)
-                                .fill(isActive ? roleTint(role) : Color.clear)
-                        )
+        List {
+            Section {
+                Picker("Adding As", selection: $activeRole) {
+                    ForEach(EditCustomExerciseView.ExerciseValues.ExerciseMuscle.MuscleType.allCases, id: \.self) { role in
+                        Text(role.title).tag(role)
                     }
-                    .buttonStyle(.plain)
                 }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            } footer: {
+                Text("\(primaryCount) primary · \(secondaryCount) secondary. A muscle can only have one role.")
             }
-            .padding(4)
-            .background(Capsule(style: .continuous).fill(IronTheme.field))
-        }
-    }
 
-    private var searchField: some View {
-        HStack(spacing: 10) {
-            Image(systemName: "magnifyingglass")
-                .foregroundColor(IronTheme.secondaryText)
-                .accessibilityHidden(true)
-            TextField("Search muscles", text: $search)
-                .foregroundColor(IronTheme.primaryText)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-            if !search.isEmpty {
-                Button {
-                    search = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-                .buttonStyle(.plain)
-            }
-        }
-        .padding(.horizontal, 14)
-        .frame(height: 48)
-        .background(Capsule(style: .continuous).fill(IronTheme.field))
-    }
-
-    @ViewBuilder
-    private var muscleGrid: some View {
-        if filteredOptions.isEmpty {
-            VStack(spacing: 10) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 24, weight: .semibold))
-                    .foregroundColor(IronTheme.secondaryText)
-                Text("No muscles found")
-                    .font(.headline)
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Try a broader anatomical or common name.")
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 34)
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(alignment: .firstTextBaseline) {
-                    Text(search.isEmpty ? "All muscles" : "Results")
-                        .font(.headline)
-                        .foregroundColor(IronTheme.primaryText)
-                    Spacer()
-                    Text("\(filteredOptions.count)")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 148), spacing: 10)],
-                    alignment: .leading,
-                    spacing: 10
-                ) {
+            Section(search.isEmpty ? "All Muscles" : "Results") {
+                if filteredOptions.isEmpty {
+                    ContentUnavailableView.search(text: search)
+                        .listRowBackground(Color.clear)
+                } else {
                     ForEach(filteredOptions) { option in
-                        muscleButton(option)
+                        muscleRow(option)
                     }
                 }
             }
         }
+        .listStyle(.insetGrouped)
+        .searchable(text: $search, prompt: "Search Muscles")
     }
 
-    private func muscleButton(_ option: MuscleOption) -> some View {
+    private func muscleRow(_ option: MuscleOption) -> some View {
         let selectedRole = role(for: option)
-        let isSelected = selectedRole != nil
 
         return Button {
             toggle(option)
         } label: {
-            HStack(spacing: 10) {
-                Image(systemName: selectedRole == .primary ? "scope" : (selectedRole == .secondary ? "circle.dotted" : "plus"))
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(isSelected ? roleTint(selectedRole!) : IronTheme.secondaryText)
-                    .frame(width: 30, height: 30)
-                    .background(
-                        Circle()
-                            .fill(isSelected ? roleTint(selectedRole!).opacity(0.14) : IronTheme.field)
-                    )
-
+            HStack {
                 VStack(alignment: .leading, spacing: 2) {
                     Text(option.title)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.8)
-                    Text(selectedRole?.title ?? "Not selected")
-                        .font(.caption2.weight(.medium))
-                        .foregroundColor(isSelected ? roleTint(selectedRole!) : IronTheme.secondaryText)
+                        .foregroundStyle(.primary)
+                    if let selectedRole {
+                        Text(selectedRole.title)
+                            .font(.caption)
+                            .foregroundStyle(.tint)
+                    }
                 }
 
-                Spacer(minLength: 0)
+                Spacer()
+
+                if selectedRole != nil {
+                    Image(systemName: "checkmark")
+                        .font(.body.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
             }
-            .padding(.horizontal, 11)
-            .frame(maxWidth: .infinity, minHeight: 58, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .fill(isSelected ? roleTint(selectedRole!).opacity(0.09) : IronTheme.raisedSurface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .stroke(isSelected ? roleTint(selectedRole!).opacity(0.48) : Color.clear, lineWidth: 1)
-            )
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel(option.title)
         .accessibilityValue(selectedRole.map { "Selected as \($0.title.lowercased())" } ?? "Not selected")
         .accessibilityHint("Adds or removes this muscle as \(activeRole.title.lowercased())")
-    }
-
-    private func countTile(title: String, count: Int, icon: String, tint: Color) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: icon)
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(tint)
-                .frame(width: 32, height: 32)
-                .background(Circle().fill(tint.opacity(0.14)))
-            VStack(alignment: .leading, spacing: 1) {
-                Text("\(count)")
-                    .font(.headline.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.primaryText)
-                Text(title)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(IronTheme.secondaryText)
-            }
-            Spacer(minLength: 0)
-        }
-        .padding(.horizontal, 12)
-        .frame(maxWidth: .infinity, minHeight: 58)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(IronTheme.raisedSurface)
-        )
     }
 
     private func canonicalName(for muscle: String) -> String {
@@ -664,12 +287,6 @@ struct MuscleSelectionView: View {
             return .secondary
         }
         return nil
-    }
-
-    private func roleTint(
-        _ role: EditCustomExerciseView.ExerciseValues.ExerciseMuscle.MuscleType
-    ) -> Color {
-        IronTheme.accent
     }
 
     private func selectedOptionCount(
@@ -707,6 +324,7 @@ struct MuscleSelectionView: View {
         feedback.selectionChanged()
     }
 }
+
 
 #if DEBUG
 struct CreateCustomExerciseView_Previews: PreviewProvider {

@@ -46,9 +46,7 @@ struct TimerBannerView: View {
         }
         .presentationDetents([.fraction(0.82), .large])
         .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-        .presentationBackground(IronTheme.modalSurface)
-    }
+        .presentationContentInteraction(.scrolls)    }
     
     private var restTimerSheet: some View {
         IronUtilitySheet(
@@ -62,9 +60,7 @@ struct TimerBannerView: View {
         }
         .presentationDetents([.height(430)])
         .presentationDragIndicator(.visible)
-        .presentationContentInteraction(.scrolls)
-        .presentationBackground(IronTheme.modalSurface)
-    }
+        .presentationContentInteraction(.scrolls)    }
     
     var body: some View {
         HStack(spacing: 8) {
@@ -86,7 +82,7 @@ struct TimerBannerView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(minHeight: 52)
-                .background(Capsule().fill(IronTheme.surface))
+                .background(Capsule().fill(.regularMaterial))
             }
             .buttonStyle(.plain)
 
@@ -115,13 +111,13 @@ struct TimerBannerView: View {
                 }
                 .padding(.horizontal, 14)
                 .frame(minHeight: 52)
-                .background(Capsule().fill(IronTheme.surface))
+                .background(Capsule().fill(.regularMaterial))
             }
             .buttonStyle(.plain)
         }
         .padding(.horizontal, IronTheme.horizontalPadding)
         .padding(.vertical, 10)
-        .background(IronTheme.background.overlay(IronHairline(), alignment: .bottom))
+        .background(Color(.systemBackground).overlay(Divider(), alignment: .bottom))
         .sheet(item: $activeSheet) { sheet in
             if sheet == .editTime {
                 self.editTimeSheet
@@ -137,8 +133,7 @@ struct TimerBannerView: View {
 struct TimerBannerView_Previews: PreviewProvider {
     static var previews: some View {
         if RestTimerStore.shared.restTimerRemainingTime == nil {
-            RestTimerStore.shared.restTimerStart = Date()
-            RestTimerStore.shared.restTimerDuration = 10
+            RestTimerStore.shared.start(duration: 10)
         }
         return TimerBannerView(workout: MockWorkoutData.metricRandom.currentWorkout)
             .mockEnvironment(weightUnit: .metric)

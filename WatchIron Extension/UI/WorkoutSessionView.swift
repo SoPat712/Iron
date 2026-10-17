@@ -59,38 +59,25 @@ private struct WorkoutProjectionView: View {
     private var syncStatus: (text: String, color: Color) {
         if pendingEventCount > 0 {
             let text = pendingEventCount == 1 ? "1 queued" : "\(pendingEventCount) queued"
-            return (text, WatchUITheme.actionBlue)
+            return (text, Color.accentColor)
         }
         if phoneConnectionManager.isReachable {
-            return ("Phone linked", WatchUITheme.success)
+            return ("Phone linked", Color.green)
         }
-        return ("Saved on watch", WatchUITheme.actionBlue)
+        return ("Saved on watch", Color.accentColor)
     }
 
+    @ViewBuilder
     var body: some View {
-        Group {
-            if let snapshot {
-                exerciseOverview(snapshot: snapshot)
-            } else {
-                emptyState
-            }
-        }
-        .background(WatchUITheme.background)
-    }
-
-    private var emptyState: some View {
-        WatchCard {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("NO WORKOUT LOADED")
-                    .font(.system(.caption2, design: .rounded).weight(.bold))
-                    .foregroundColor(WatchUITheme.secondaryText)
+        if let snapshot {
+            exerciseOverview(snapshot: snapshot)
+        } else {
+            ContentUnavailableView {
+                Label("No Workout Loaded", systemImage: "applewatch.slash")
+            } description: {
                 Text("Start a workout on your iPhone to send the exercise list to this watch.")
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundColor(WatchUITheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .scenePadding()
     }
 
     private func exerciseOverview(snapshot: WatchWorkoutSnapshot) -> some View {
@@ -99,11 +86,11 @@ private struct WorkoutProjectionView: View {
                 overviewHeader(snapshot: snapshot)
             }
 
-            Section(header: Text("Exercises")) {
+            Section("Exercises") {
                 if snapshot.exercises.isEmpty {
                     Text("No exercises were sent with this workout.")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundColor(WatchUITheme.secondaryText)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
                 } else {
                     ForEach(snapshot.exercises) { exercise in
                         NavigationLink(
@@ -149,7 +136,7 @@ private struct WorkoutProjectionView: View {
                     Spacer(minLength: 4)
                     Text("\(completedSetCount)/\(totalSetCount) sets")
                         .font(.system(.caption2, design: .rounded).weight(.semibold))
-                        .foregroundColor(WatchUITheme.secondaryText)
+                        .foregroundColor(Color.secondary)
                 }
 
                 HStack(spacing: 6) {
@@ -177,13 +164,11 @@ private struct WorkoutProjectionView: View {
 
                 ProgressView(value: Double(completedSetCount), total: Double(max(totalSetCount, 1)))
                     .progressViewStyle(.linear)
-                    .accentColor(WatchUITheme.actionBlue)
                     .accessibilityLabel("Workout progress")
                     .accessibilityValue("\(completedSetCount) of \(totalSetCount) sets complete")
             }
             .padding(.vertical, 2)
         }
-        .listRowBackground(Color.clear)
     }
 
     private func volumeText(snapshot: WatchWorkoutSnapshot) -> String {
@@ -209,22 +194,21 @@ private struct ExerciseOverviewRow: View {
 
             VStack(alignment: .leading, spacing: 2) {
                 Text(exercise.name)
-                    .font(.system(.headline, design: .rounded).weight(.semibold))
-                    .foregroundColor(WatchUITheme.primaryText)
+                    .font(.headline)
                     .lineLimit(2)
 
                 HStack(spacing: 6) {
-                    Text("\(completedCount)/\(exercise.sets.count) Sets")
-                        .font(.system(.caption, design: .rounded))
-                        .foregroundColor(WatchUITheme.actionBlue)
+                    Text("\(completedCount)/\(exercise.sets.count) sets")
+                        .foregroundStyle(.tint)
                     if let latest = exercise.sets.last(where: { $0.completed })?
                         .displayText(weightUnit: weightUnit) {
                         Text(latest)
-                            .font(.system(.caption2, design: .rounded).monospacedDigit())
-                            .foregroundColor(WatchUITheme.secondaryText)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
                             .lineLimit(1)
                     }
                 }
+                .font(.caption2)
             }
         }
         .padding(.vertical, 4)
@@ -236,7 +220,7 @@ private struct ExerciseOverviewRow: View {
 
 private struct SetLoggingView: View {
     @EnvironmentObject var workoutSessionManagerStore: WorkoutSessionManagerStore
-    @Environment(\.presentationMode) private var presentationMode
+    @Environment(\.dismiss) private var dismiss
     let workoutSessionManager: WorkoutSessionManager?
     let exerciseID: UUID
 
@@ -286,30 +270,31 @@ private struct SetLoggingView: View {
             if let snapshot, let exercise, let selectedSet, let selectedIndex {
                 setPage(snapshot: snapshot, exercise: exercise, set: selectedSet, index: selectedIndex)
             } else {
-                Text("This exercise is no longer in the workout.")
-                    .font(.system(.caption, design: .rounded))
-                    .foregroundColor(WatchUITheme.secondaryText)
-                    .scenePadding()
+                ContentUnavailableView {
+                    Label("Exercise Removed", systemImage: "xmark.circle")
+                } description: {
+                    Text("This exercise is no longer in the workout.")
+                }
             }
         }
         .navigationTitle(exercise?.name ?? "Set")
         .onAppear(perform: reconcileSelection)
-        .onChange(of: snapshot?.exercises.map(\.id)) { _ in
+        .onChange(of: snapshot?.exercises.map(\.id)) {
             if exercise == nil {
-                presentationMode.wrappedValue.dismiss()
+                dismiss()
             } else {
                 reconcileSelection()
             }
         }
-        .onChange(of: exercise?.sets.map(\.id)) { _ in
+        .onChange(of: exercise?.sets.map(\.id)) {
             reconcileSelection()
         }
-        .onChange(of: selectedSetID) { _ in
+        .onChange(of: selectedSetID) {
             loadSelectedSet()
         }
-        .onChange(of: weightTenths) { _ in commitCurrentSet() }
-        .onChange(of: repsValue) { _ in commitCurrentSet() }
-        .onChange(of: rpeTenths) { _ in commitCurrentSet() }
+        .onChange(of: weightTenths) { commitCurrentSet() }
+        .onChange(of: repsValue) { commitCurrentSet() }
+        .onChange(of: rpeTenths) { commitCurrentSet() }
         .alert(item: $pendingDelete) { item in
             switch item {
             case .set:
@@ -334,21 +319,129 @@ private struct SetLoggingView: View {
                          exercise: WatchWorkoutExercise,
                          set: WatchWorkoutSet,
                          index: Int) -> some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                setHeader(snapshot: snapshot, set: set, index: index, setCount: exercise.sets.count)
-                loggingPickers(set: set)
-                if let previous = set.previousDisplayText(weightUnit: weightUnit) {
-                    Text("Previous  \(previous)")
-                        .font(.system(.caption, design: .rounded).monospacedDigit())
-                        .foregroundColor(WatchUITheme.secondaryText)
+        List {
+            Section {
+                Picker(weightUnit.symbol.uppercased(), selection: $weightTenths) {
+                    ForEach(weightTenthChoices(current: set.weight), id: \.self) { tenths in
+                        Text(WatchPlateMath.format(Double(tenths) / 10, integerOnly: false))
+                            .tag(tenths)
+                    }
                 }
-                setPager(exercise: exercise, index: index, set: set)
-                extraData(set: set)
-                setActions(snapshot: snapshot, exercise: exercise, set: set)
-                exerciseActions(snapshot: snapshot, exercise: exercise)
+
+                Picker("Reps", selection: $repsValue) {
+                    ForEach(repChoices(current: set.reps), id: \.self) { value in
+                        Text("\(value)").tag(value)
+                    }
+                }
+
+                Picker("RPE", selection: $rpeTenths) {
+                    Text("Off").tag(-1)
+                    ForEach(Array(stride(from: 50, through: 100, by: 5)), id: \.self) { tenths in
+                        Text(Self.rpeLabel(tenths)).tag(tenths)
+                    }
+                }
+            } header: {
+                Text("\(set.kindTitle) · Set \(index + 1) of \(exercise.sets.count)")
+            } footer: {
+                if let previous = set.previousDisplayText(weightUnit: weightUnit) {
+                    Text("Previous \(previous)")
+                        .monospacedDigit()
+                }
             }
-            .scenePadding()
+
+            Section {
+                setPager(exercise: exercise, index: index, set: set)
+                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+
+                Button("Plate Calculator", systemImage: "rectangle.split.2x1") {
+                    showingPlateCalculator = true
+                }
+                .disabled(weightTenths <= 0)
+            }
+
+            Section("This Set") {
+                Button("Add Set", systemImage: "plus", action: addSet)
+
+                NavigationLink {
+                    SetKindPickerView(
+                        currentTag: set.tag,
+                        onSelect: { tag in
+                            workoutSessionManagerStore.updateSetTag(
+                                workoutID: snapshot.workoutID,
+                                exerciseID: exercise.id,
+                                setID: set.id,
+                                tag: tag
+                            )
+                        }
+                    )
+                } label: {
+                    LabeledContent("Set Type", value: set.kindTitle)
+                }
+
+                Button("Delete Set", systemImage: "trash", role: .destructive) {
+                    pendingDelete = .set
+                }
+                .disabled(exercise.sets.count < 2)
+            }
+
+            Section("Exercise") {
+                NavigationLink {
+                    WatchExercisePickerView(
+                        title: "Add Exercise",
+                        library: snapshot.library ?? [],
+                        onPick: { pick in
+                            workoutSessionManagerStore.addExercise(
+                                workoutID: snapshot.workoutID,
+                                afterExerciseID: exercise.id,
+                                catalogExerciseUuid: pick.id,
+                                name: pick.name,
+                                muscleGroup: pick.muscle,
+                                imageURL: pick.imageURL
+                            )
+                        }
+                    )
+                } label: {
+                    Label("Add Below", systemImage: "plus.circle")
+                }
+
+                NavigationLink {
+                    WatchExercisePickerView(
+                        title: "Replace Exercise",
+                        library: snapshot.library ?? [],
+                        onPick: { pick in
+                            workoutSessionManagerStore.replaceExercise(
+                                workoutID: snapshot.workoutID,
+                                exerciseID: exercise.id,
+                                catalogExerciseUuid: pick.id,
+                                name: pick.name,
+                                muscleGroup: pick.muscle,
+                                imageURL: pick.imageURL
+                            )
+                        }
+                    )
+                } label: {
+                    Label("Replace Exercise", systemImage: "arrow.triangle.2.circlepath")
+                }
+
+                Button("Delete Exercise", systemImage: "trash", role: .destructive) {
+                    pendingDelete = .exercise
+                }
+                .disabled(snapshot.exercises.count < 2)
+            }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            TimelineView(.periodic(from: Date(), by: 1)) { context in
+                RestBanner(
+                    date: context.date,
+                    end: workoutSessionManager?.restTimerEnd ?? snapshot.restTimerEnd,
+                    keepRunning: workoutSessionManager?.keepRestTimerRunning ?? snapshot.keepRestTimerRunning,
+                    heartRate: workoutSessionManager?.mostRecentHeartRate
+                )
+                .padding(.horizontal, 8)
+                .padding(.vertical, 4)
+                .background(.regularMaterial, in: Capsule(style: .continuous))
+                .padding(.bottom, 2)
+            }
         }
         .sheet(isPresented: $showingPlateCalculator) {
             WatchPlateCalculatorView(
@@ -358,257 +451,31 @@ private struct SetLoggingView: View {
         }
     }
 
-    private func setHeader(snapshot: WatchWorkoutSnapshot,
-                           set: WatchWorkoutSet,
-                           index: Int,
-                           setCount: Int) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(alignment: .firstTextBaseline) {
-                HStack(spacing: 4) {
-                    Text(set.kindTitle)
-                        .foregroundColor(set.kindColor)
-                    Text("set \(index + 1) of \(setCount)")
-                        .foregroundColor(WatchUITheme.secondaryText)
-                }
-                .font(.system(.caption, design: .rounded).weight(.semibold))
-
-                Spacer(minLength: 4)
-
-                if let manager = workoutSessionManager {
-                    CompactHeartRateView(mostRecentHeartRate: manager.mostRecentHeartRate,
-                                         mostRecentHeartRateDate: manager.mostRecentHeartRateDate)
-                }
-            }
-
-            TimelineView(.periodic(from: Date(), by: 1)) { context in
-                RestBanner(
-                    date: context.date,
-                    end: workoutSessionManager?.restTimerEnd ?? snapshot.restTimerEnd,
-                    keepRunning: workoutSessionManager?.keepRestTimerRunning ?? snapshot.keepRestTimerRunning
-                )
-            }
-        }
-    }
-
-    private func loggingPickers(set: WatchWorkoutSet) -> some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(spacing: 2) {
-                    Text(weightUnit.symbol.uppercased())
-                        .font(.system(.caption2, design: .rounded).weight(.bold))
-                        .foregroundColor(WatchUITheme.secondaryText)
-                    Picker("Weight", selection: $weightTenths) {
-                        ForEach(weightTenthChoices(current: set.weight), id: \.self) { tenths in
-                            Text(WatchPlateMath.format(Double(tenths) / 10, integerOnly: false))
-                                .tag(tenths)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.wheel)
-                    .frame(height: 70)
-                    .clipped()
-                }
-                .frame(maxWidth: .infinity)
-
-                VStack(spacing: 2) {
-                    Text("REPS")
-                        .font(.system(.caption2, design: .rounded).weight(.bold))
-                        .foregroundColor(WatchUITheme.secondaryText)
-                    Picker("Reps", selection: $repsValue) {
-                        ForEach(repChoices(current: set.reps), id: \.self) { value in
-                            Text("\(value)").tag(value)
-                        }
-                    }
-                    .labelsHidden()
-                    .pickerStyle(.wheel)
-                    .frame(height: 70)
-                    .clipped()
-                }
-                .frame(maxWidth: .infinity)
-            }
-        }
-        .accessibilityElement(children: .contain)
-    }
-
-    private func extraData(set: WatchWorkoutSet) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            VStack(spacing: 2) {
-                Text("RPE")
-                    .font(.system(.caption2, design: .rounded).weight(.bold))
-                    .foregroundColor(WatchUITheme.secondaryText)
-                Picker("RPE", selection: $rpeTenths) {
-                    Text("Off").tag(-1)
-                    ForEach(Array(stride(from: 50, through: 100, by: 5)), id: \.self) { tenths in
-                        Text(Self.rpeLabel(tenths)).tag(tenths)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.wheel)
-                .frame(height: 52)
-                .clipped()
-            }
-
-            Button(action: { showingPlateCalculator = true }) {
-                Label("Plate calculator", systemImage: "rectangle.split.2x1")
-                    .font(.system(.caption, design: .rounded).weight(.semibold))
-            }
-            .buttonStyle(.plain)
-            .foregroundColor(WatchUITheme.actionBlue)
-            .disabled(weightTenths <= 0)
-        }
-    }
-
     private func setPager(exercise: WatchWorkoutExercise, index: Int, set: WatchWorkoutSet) -> some View {
-        HStack(spacing: 8) {
-            pagerButton(symbol: "chevron.left", enabled: index > 0) {
+        HStack(spacing: 6) {
+            Button("Previous Set", systemImage: "chevron.left") {
                 selectSet(at: index - 1, in: exercise)
             }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .disabled(index == 0)
 
             Button(action: toggleCurrentSet) {
                 Image(systemName: set.completed ? "arrow.uturn.backward" : "checkmark")
-                    .font(.system(size: 18, weight: .bold))
-                    .frame(maxWidth: .infinity, minHeight: 44)
+                    .font(.body.weight(.bold))
+                    .frame(maxWidth: .infinity)
             }
-            .buttonStyle(WatchActionButtonStyle(
-                tint: set.completed ? WatchUITheme.actionBlue : WatchUITheme.success
-            ))
+            .buttonStyle(.borderedProminent)
+            .tint(set.completed ? Color.accentColor : Color.green)
             .accessibilityLabel(set.completed ? "Undo completion" : "Complete set")
 
-            pagerButton(symbol: "chevron.right", enabled: index < exercise.sets.count - 1) {
+            Button("Next Set", systemImage: "chevron.right") {
                 selectSet(at: index + 1, in: exercise)
             }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.bordered)
+            .disabled(index >= exercise.sets.count - 1)
         }
-    }
-
-    private func setActions(snapshot: WatchWorkoutSnapshot,
-                            exercise: WatchWorkoutExercise,
-                            set: WatchWorkoutSet) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("THIS SET")
-                .font(.system(.caption2, design: .rounded).weight(.bold))
-                .foregroundColor(WatchUITheme.secondaryText)
-
-            Button(action: addSet) {
-                Label("Add Set", systemImage: "plus")
-            }
-            .buttonStyle(WatchActionButtonStyle(tint: WatchUITheme.actionBlue))
-
-            NavigationLink(
-                destination: SetKindPickerView(
-                    currentTag: set.tag,
-                    onSelect: { tag in
-                        workoutSessionManagerStore.updateSetTag(
-                            workoutID: snapshot.workoutID,
-                            exerciseID: exercise.id,
-                            setID: set.id,
-                            tag: tag
-                        )
-                    }
-                )
-            ) {
-                settingsRow(title: "Set Options", detail: set.kindTitle, symbol: "tag")
-            }
-            .buttonStyle(.plain)
-
-            Button(action: { pendingDelete = .set }) {
-                Label("Delete Set", systemImage: "trash")
-            }
-            .buttonStyle(WatchActionButtonStyle(tint: WatchUITheme.danger))
-            .disabled(exercise.sets.count < 2)
-        }
-    }
-
-    private func exerciseActions(snapshot: WatchWorkoutSnapshot,
-                                 exercise: WatchWorkoutExercise) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("EXERCISE")
-                .font(.system(.caption2, design: .rounded).weight(.bold))
-                .foregroundColor(WatchUITheme.secondaryText)
-
-            NavigationLink(
-                destination: WatchExercisePickerView(
-                    title: "Add Exercise",
-                    library: snapshot.library ?? [],
-                    onPick: { pick in
-                        workoutSessionManagerStore.addExercise(
-                            workoutID: snapshot.workoutID,
-                            afterExerciseID: exercise.id,
-                            catalogExerciseUuid: pick.id,
-                            name: pick.name,
-                            muscleGroup: pick.muscle,
-                            imageURL: pick.imageURL
-                        )
-                    }
-                )
-            ) {
-                settingsRow(title: "Add Below", detail: "Insert after this movement", symbol: "plus.circle")
-            }
-            .buttonStyle(.plain)
-
-            NavigationLink(
-                destination: WatchExercisePickerView(
-                    title: "Replace Exercise",
-                    library: snapshot.library ?? [],
-                    onPick: { pick in
-                        workoutSessionManagerStore.replaceExercise(
-                            workoutID: snapshot.workoutID,
-                            exerciseID: exercise.id,
-                            catalogExerciseUuid: pick.id,
-                            name: pick.name,
-                            muscleGroup: pick.muscle,
-                            imageURL: pick.imageURL
-                        )
-                    }
-                )
-            ) {
-                settingsRow(title: "Replace Exercise", detail: exercise.name, symbol: "arrow.triangle.2.circlepath")
-            }
-            .buttonStyle(.plain)
-
-            Button(action: { pendingDelete = .exercise }) {
-                Label("Delete Exercise", systemImage: "trash")
-            }
-            .buttonStyle(WatchActionButtonStyle(tint: WatchUITheme.danger))
-            .disabled((snapshot.exercises.count) < 2)
-        }
-    }
-
-    private func settingsRow(title: String, detail: String, symbol: String) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: symbol)
-                .foregroundColor(WatchUITheme.actionBlue)
-                .frame(width: 22)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                    .font(.system(.headline, design: .rounded).weight(.semibold))
-                Text(detail)
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundColor(WatchUITheme.secondaryText)
-                    .lineLimit(2)
-            }
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.right")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(WatchUITheme.tertiaryText)
-        }
-        .padding(.vertical, 8)
-        .padding(.horizontal, 8)
-        .frame(minHeight: 44)
-        .background(WatchUITheme.card)
-        .clipShape(RoundedRectangle(cornerRadius: WatchUITheme.compactCornerRadius, style: .continuous))
-    }
-
-    private func pagerButton(symbol: String, enabled: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: symbol)
-                .font(.system(size: 14, weight: .bold))
-                .frame(width: 44, height: 44)
-                .background(WatchUITheme.mutedCard)
-                .clipShape(Circle())
-                .foregroundColor(enabled ? WatchUITheme.primaryText : WatchUITheme.tertiaryText)
-        }
-        .buttonStyle(.plain)
-        .disabled(!enabled)
     }
 
     private static func rpeLabel(_ tenths: Int) -> String {
@@ -726,20 +593,20 @@ private struct SetLoggingView: View {
     private func deleteCurrentExercise() {
         guard let snapshot else { return }
         workoutSessionManagerStore.deleteExercise(workoutID: snapshot.workoutID, exerciseID: exerciseID)
-        presentationMode.wrappedValue.dismiss()
+        dismiss()
     }
 }
 
 private struct SetKindPickerView: View {
     let currentTag: String?
     let onSelect: (String?) -> Void
-    @Environment(\.presentationMode) private var presentationMode
+    @Environment(\.dismiss) private var dismiss
 
     private let kinds: [(title: String, tag: String?, color: Color)] = [
-        ("Working", nil, WatchUITheme.primaryText),
+        ("Working", nil, Color.primary),
         ("Warm-up", "warmUp", .orange),
         ("Drop", "dropSet", .purple),
-        ("Failure", "failure", WatchUITheme.danger)
+        ("Failure", "failure", Color.red)
     ]
 
     var body: some View {
@@ -747,7 +614,7 @@ private struct SetKindPickerView: View {
             ForEach(kinds, id: \.title) { kind in
                 Button(action: {
                     onSelect(kind.tag)
-                    presentationMode.wrappedValue.dismiss()
+                    dismiss()
                 }) {
                     HStack {
                         Text(kind.title)
@@ -755,7 +622,7 @@ private struct SetKindPickerView: View {
                         Spacer()
                         if currentTag == kind.tag {
                             Image(systemName: "checkmark")
-                                .foregroundColor(WatchUITheme.actionBlue)
+                                .foregroundColor(Color.accentColor)
                         }
                     }
                 }
@@ -769,25 +636,25 @@ private struct WatchExercisePickerView: View {
     let title: String
     let library: [WatchExercisePick]
     let onPick: (WatchExercisePick) -> Void
-    @Environment(\.presentationMode) private var presentationMode
+    @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         List {
             if library.isEmpty {
                 Text("The exercise library arrives from iPhone when this workout syncs.")
                     .font(.system(.caption, design: .rounded))
-                    .foregroundColor(WatchUITheme.secondaryText)
+                    .foregroundColor(Color.secondary)
             } else {
                 ForEach(library) { pick in
                     Button(action: {
                         onPick(pick)
-                        presentationMode.wrappedValue.dismiss()
+                        dismiss()
                     }) {
                         HStack(spacing: 8) {
                             WatchExerciseThumbnail(imageURL: pick.imageURL, imageData: nil, muscle: pick.muscle, size: 28)
                             Text(pick.name)
                                 .font(.system(.body, design: .rounded))
-                                .foregroundColor(WatchUITheme.primaryText)
+                                .foregroundColor(Color.primary)
                                 .lineLimit(2)
                         }
                     }
@@ -826,10 +693,10 @@ private struct WatchExerciseThumbnail: View {
                 .stroke(Color.primary.opacity(0.18), lineWidth: 1)
         )
         .onAppear { load() }
-        .onChange(of: imageURL) { _ in
+        .onChange(of: imageURL) {
             load(reset: true)
         }
-        .onChange(of: imageData) { _ in
+        .onChange(of: imageData) {
             load(reset: true)
         }
         .accessibilityHidden(true)
@@ -960,7 +827,7 @@ private struct WatchMuscleGlyph: View {
         case "legs": return .green
         case "chest": return .red
         case "cardio": return .pink
-        default: return WatchUITheme.actionBlue
+        default: return Color.accentColor
         }
     }
 }
@@ -975,7 +842,7 @@ private struct OverviewMetric: View {
                 .font(.system(.headline, design: .rounded).weight(.semibold).monospacedDigit())
             Text(label)
                 .font(.system(.caption2, design: .rounded).weight(.semibold))
-                .foregroundColor(WatchUITheme.secondaryText)
+                .foregroundColor(Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityElement(children: .combine)
@@ -987,35 +854,24 @@ private struct RestBanner: View {
     let date: Date
     let end: Date?
     let keepRunning: Bool
+    var heartRate: Double? = nil
 
     var body: some View {
         HStack(spacing: 6) {
             Image(systemName: "timer")
-                .foregroundColor(WatchUITheme.actionBlue)
-            Text("Rest")
-                .font(.system(.caption2, design: .rounded).weight(.bold))
-                .foregroundColor(WatchUITheme.secondaryText)
-            Spacer(minLength: 4)
+                .foregroundStyle(.tint)
             RestTimerView(date: date, end: end, keepRunning: keepRunning)
-                .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
+                .font(.caption.weight(.semibold).monospacedDigit())
+
+            if let heartRate {
+                Spacer(minLength: 4)
+                Image(systemName: "heart.fill")
+                    .foregroundStyle(.red)
+                Text(String(format: "%.0f", heartRate))
+                    .font(.caption.weight(.semibold).monospacedDigit())
+            }
         }
         .accessibilityElement(children: .combine)
-    }
-}
-
-private struct CompactHeartRateView: View {
-    let mostRecentHeartRate: Double?
-    let mostRecentHeartRateDate: Date?
-
-    var body: some View {
-        HStack(spacing: 3) {
-            Image(systemName: "heart.fill")
-                .foregroundColor(WatchUITheme.danger)
-            Text(mostRecentHeartRate.map { String(format: "%.0f", $0) } ?? "--")
-                .font(.system(.caption, design: .rounded).weight(.semibold).monospacedDigit())
-        }
-        .accessibilityLabel("Heart rate")
-        .accessibilityValue(mostRecentHeartRate.map { String(format: "%.0f beats per minute", $0) } ?? "Unavailable")
     }
 }
 
@@ -1033,8 +889,8 @@ private extension WatchWorkoutSet {
         switch tag {
         case "warmUp": return .orange
         case "dropSet": return .purple
-        case "failure": return WatchUITheme.danger
-        default: return WatchUITheme.secondaryText
+        case "failure": return Color.red
+        default: return Color.secondary
         }
     }
 }
@@ -1088,52 +944,34 @@ private struct WatchPlateCalculatorView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
-                Text("PLATE CALCULATOR")
-                    .font(.system(.caption2, design: .rounded).weight(.bold))
-                    .foregroundColor(WatchUITheme.actionBlue)
-                Text("\(WatchPlateMath.format(targetWeight, integerOnly: false)) \(unit.symbol)")
-                    .font(.system(.title3, design: .rounded).weight(.bold).monospacedDigit())
+        List {
+            Section {
+                LabeledContent("Target", value: "\(WatchPlateMath.format(targetWeight, integerOnly: false)) \(unit.symbol)")
+                LabeledContent("Bar", value: "\(WatchPlateMath.format(unit.barbellWeight, integerOnly: true)) \(unit.symbol)")
+            }
 
-                WatchCard {
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("BAR \(WatchPlateMath.format(unit.barbellWeight, integerOnly: true)) \(unit.symbol)")
-                            .font(.system(.caption2, design: .rounded).weight(.bold))
-                            .foregroundColor(WatchUITheme.secondaryText)
-                        if targetWeight < unit.barbellWeight {
-                            Text("Target is lighter than the bar.")
-                                .font(.system(.caption, design: .rounded))
-                                .foregroundColor(WatchUITheme.danger)
-                        } else if platesPerSide.isEmpty {
-                            Text("Empty bar.")
-                                .font(.system(.caption, design: .rounded))
-                                .foregroundColor(WatchUITheme.secondaryText)
-                        } else {
-                            ForEach(platesPerSide, id: \.weight) { plate in
-                                HStack {
-                                    Text("\(plate.count)×")
-                                        .font(.system(.headline, design: .rounded).weight(.bold).monospacedDigit())
-                                    Text("\(WatchPlateMath.format(plate.weight, integerOnly: false)) \(unit.symbol)")
-                                        .font(.system(.caption, design: .rounded))
-                                    Spacer()
-                                    Text("each side")
-                                        .font(.system(.caption2, design: .rounded))
-                                        .foregroundColor(WatchUITheme.secondaryText)
-                                }
-                            }
-                        }
+            Section {
+                if targetWeight < unit.barbellWeight {
+                    Text("Target is lighter than the bar.")
+                        .foregroundStyle(.red)
+                } else if platesPerSide.isEmpty {
+                    Text("Empty bar.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(platesPerSide, id: \.weight) { plate in
+                        LabeledContent(
+                            "\(WatchPlateMath.format(plate.weight, integerOnly: false)) \(unit.symbol)",
+                            value: "\(plate.count)×"
+                        )
+                        .monospacedDigit()
                     }
                 }
-
-                Text("Loads \(WatchPlateMath.format(loadedWeight, integerOnly: false)) \(unit.symbol) with a \(WatchPlateMath.format(unit.barbellWeight, integerOnly: true)) \(unit.symbol) bar.")
-                    .font(.system(.caption2, design: .rounded))
-                    .foregroundColor(WatchUITheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
+            } header: {
+                Text("Each Side")
+            } footer: {
+                Text("Loads \(WatchPlateMath.format(loadedWeight, integerOnly: false)) \(unit.symbol).")
             }
-            .scenePadding()
         }
-        .background(WatchUITheme.background)
         .navigationTitle("Plates")
     }
 }
@@ -1187,7 +1025,7 @@ private struct RestTimerView: View {
         } ?? "Ready"
 
         Text(isOvertime ? "+\(formatted)" : formatted)
-            .foregroundColor(isOvertime ? WatchUITheme.danger : WatchUITheme.primaryText)
+            .foregroundColor(isOvertime ? Color.red : Color.primary)
             .accessibilityLabel(
                 isOvertime
                     ? "Over rest time by \(formatted)"
@@ -1206,13 +1044,13 @@ private struct HeartRateView: View {
         TimelineView(.periodic(from: mostRecentHeartRateDate ?? Date(), by: Self.maxHeartRateAge)) { context in
             HStack(spacing: 5) {
                 Image(systemName: "heart.fill")
-                    .foregroundColor(measurementWasRecent(date: context.date) ? WatchUITheme.danger : WatchUITheme.tertiaryText)
+                    .foregroundColor(measurementWasRecent(date: context.date) ? Color.red : Color.secondary)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(mostRecentHeartRate.map { String(format: "%.0f", $0) } ?? "--")
                         .font(.system(.headline, design: .rounded).weight(.semibold).monospacedDigit())
                     Text("BPM")
                         .font(.system(.caption2, design: .rounded).weight(.semibold))
-                        .foregroundColor(WatchUITheme.secondaryText)
+                        .foregroundColor(Color.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

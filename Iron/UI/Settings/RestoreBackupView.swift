@@ -30,33 +30,53 @@ struct RestoreBackupView: View {
 
     @State private var activeModal: BackupModal?
     @State private var modalAfterDismiss: BackupModal?
-    @State private var isEditing = false
     @State private var isRestoring = false
 
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 22) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        IronSectionTitle(title: "Backups", detail: backupStatusTitle)
-                        restoreScopeCard
+        List {
+            Section {
+                switch backupStore.loadState {
+                case .idle, .loading:
+                    HStack {
+                        ProgressView()
+                        Text("Checking iCloud Drive…")
+                            .foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, IronTheme.horizontalPadding)
 
-                    backupContent
+                case .unavailable(let message):
+                    ContentUnavailableView {
+                        Label("iCloud Drive Unavailable", systemImage: "icloud.slash.fill")
+                    } description: {
+                        Text(message)
+                    } actions: {
+                        Button("Try Again", action: backupStore.fetchBackups)
+                            .buttonStyle(.borderedProminent)
+                    }
+                    .listRowBackground(Color.clear)
+
+                case .loaded:
+                    if backupStore.backups.isEmpty {
+                        ContentUnavailableView {
+                            Label("No iCloud Backups", systemImage: "icloud.fill")
+                        } description: {
+                            Text("Create your first private backup, then return here whenever you need to restore it.")
+                        }
+                        .listRowBackground(Color.clear)
+                    } else {
+                        ForEach(backupStore.backups.indices, id: \.self) { index in
+                            backupRow(backupStore.backups[index])
+                        }
+                    }
                 }
-                .padding(.top, 14)
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
+            } header: {
+                Text("iCloud Backups")
+            } footer: {
+                Text("A restore replaces completed workouts, saved workouts, custom exercises, and body measurements. Settings and any workout in progress stay unchanged.")
             }
         }
+        .listStyle(.insetGrouped)
         .navigationTitle("Restore Backup")
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar {
-            ToolbarItem(placement: .topBarTrailing) {
-                editButton
-            }
-        }
         .onAppear(perform: backupStore.fetchBackups)
         .allowsHitTesting(!isRestoring)
         .overlay {
@@ -77,7 +97,7 @@ struct RestoreBackupView: View {
                     onCancel: { activeModal = nil },
                     onConfirm: { restoreBackup(at: url) }
                 )
-                .presentationDetents([.height(410), .medium])
+                .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
 
             case .deleteConfirmation(let url):
@@ -90,7 +110,7 @@ struct RestoreBackupView: View {
                     onCancel: { activeModal = nil },
                     onConfirm: { deleteBackup(at: url) }
                 )
-                .presentationDetents([.height(410), .medium])
+                .presentationDetents([.medium])
                 .presentationDragIndicator(.visible)
 
             case .restoreResult(let result):
@@ -100,7 +120,7 @@ struct RestoreBackupView: View {
                     title: details.title,
                     message: details.message,
                     systemImage: details.isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
-                    tint: details.isSuccess ? IronTheme.success : IronTheme.danger
+                    tint: details.isSuccess ? .green : .red
                 )
 
             case .deleteError(let error):
@@ -109,251 +129,64 @@ struct RestoreBackupView: View {
                     title: "Could not delete backup",
                     message: error.localizedDescription,
                     systemImage: "trash.slash.fill",
-                    tint: IronTheme.danger
+                    tint: .red
                 )
             }
         }
-        .ironScreen()
     }
 
     private var restoreProgressOverlay: some View {
         ZStack {
-            IronTheme.background.opacity(0.82)
+            Rectangle()
+                .fill(.regularMaterial)
                 .ignoresSafeArea()
 
-            VStack(spacing: 13) {
+            VStack(spacing: 12) {
                 ProgressView()
                     .controlSize(.large)
-                    .tint(IronTheme.accent)
-                Text("Restoring your data")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
+                Text("Restoring Your Data")
+                    .font(.headline)
                 Text("Keep Iron open while workouts and measurements are replaced.")
                     .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
+                    .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(24)
             .frame(maxWidth: 290)
-            .background(
-                RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                    .fill(IronTheme.surface)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                    .stroke(IronTheme.outline.opacity(0.45), lineWidth: 1)
-            )
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Restoring your Iron data")
         .accessibilityAddTraits(.updatesFrequently)
     }
 
-    private var editButton: some View {
-        Group {
-            if backupStore.loadState == .loaded, !backupStore.backups.isEmpty {
-                Button(isEditing ? "Done" : "Edit") {
-                    withAnimation {
-                        isEditing.toggle()
-                    }
-                }
-            }
-        }
-    }
-
-    private var backupStatusTitle: String {
-        switch backupStore.loadState {
-        case .idle, .loading:
-            return "CHECKING"
-        case .unavailable:
-            return "UNAVAILABLE"
-        case .loaded:
-            return backupStore.backups.isEmpty ? "EMPTY" : "\(backupStore.backups.count) SAVED"
-        }
-    }
-
-    @ViewBuilder
-    private var backupContent: some View {
-        switch backupStore.loadState {
-        case .idle, .loading:
-            loadingState
-        case .unavailable(let message):
-            unavailableState(message: message)
-        case .loaded:
-            if backupStore.backups.isEmpty {
-                emptyState
-            } else {
-                backupsCard
-            }
-        }
-    }
-
-    private var backupsCard: some View {
-        IronCard(padding: 0) {
-            LazyVStack(spacing: 0) {
-                ForEach(backupStore.backups.indices, id: \.self) { index in
-                    let backup = backupStore.backups[index]
-                    backupRow(backup)
-
-                    if index != backupStore.backups.indices.last {
-                        IronHairline(opacity: 0.35)
-                            .padding(.leading, 58)
-                    }
-                }
-            }
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    private var emptyState: some View {
-        IronCard {
-            VStack(spacing: 13) {
-                Image(systemName: "icloud.fill")
-                    .font(.system(size: 25, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 58, height: 58)
-                    .background(Circle().fill(IronTheme.accentSoft))
-                Text("No iCloud backups yet")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Create your first private backup, then return here whenever you need to restore it.")
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Button(action: { dismiss() }) {
-                    Label("Back to Backup & Export", systemImage: "arrow.left")
-                }
-                .buttonStyle(IronSecondaryButtonStyle())
-                .padding(.top, 2)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    private var loadingState: some View {
-        IronCard {
-            VStack(spacing: 13) {
-                ProgressView()
-                    .tint(IronTheme.accent)
-                    .frame(width: 58, height: 58)
-                Text("Checking iCloud Drive")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Looking for private Iron backups saved by your devices…")
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .multilineTextAlignment(.center)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    private func unavailableState(message: String) -> some View {
-        IronCard {
-            VStack(spacing: 13) {
-                Image(systemName: "icloud.slash.fill")
-                    .font(.system(size: 25, weight: .bold))
-                    .foregroundColor(IronTheme.warning)
-                    .frame(width: 58, height: 58)
-                    .background(Circle().fill(IronTheme.warning.opacity(0.14)))
-                Text("iCloud Drive unavailable")
-                    .font(.headline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text(message)
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Button(action: backupStore.fetchBackups) {
-                    Label("Try Again", systemImage: "arrow.clockwise")
-                }
-                .buttonStyle(IronSecondaryButtonStyle())
-                .padding(.top, 2)
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    private var restoreScopeCard: some View {
-        IronCard(padding: 14) {
-            HStack(alignment: .top, spacing: 12) {
-                Image(systemName: "lock.shield.fill")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 42, height: 42)
-                    .background(IronTheme.accentSoft)
-                    .clipShape(
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Your current session stays safe")
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("A restore replaces completed workouts, saved workouts, custom exercises, and body measurements. Settings and any workout in progress stay unchanged.")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }
-    }
-
     private func backupRow(_ backup: BackupFileStore.BackupFile) -> some View {
-        HStack(spacing: 10) {
-            Button(action: {
-                activeModal = BackupModal(kind: .restoreConfirmation(backup.url))
-            }) {
-                HStack(spacing: 12) {
-                    Image(systemName: "externaldrive.fill")
-                        .font(.system(size: 17, weight: .bold))
-                        .foregroundColor(IronTheme.accent)
-                        .frame(width: 32, height: 32)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate))
-                            .font(.body.weight(.medium))
-                            .foregroundColor(IronTheme.primaryText)
-                            .lineLimit(1)
-                        Text("\(backup.deviceName) • \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-                    Spacer(minLength: 4)
-                    if !isEditing {
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.tertiaryText)
-                    }
-                }
-                .frame(minHeight: 64)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            if isEditing {
-                Button(action: {
-                    activeModal = BackupModal(kind: .deleteConfirmation(backup.url))
-                }) {
-                    Image(systemName: "trash.fill")
-                }
-                .buttonStyle(IronIconButtonStyle())
-                .foregroundColor(IronTheme.danger)
-                .accessibilityLabel(Text("Delete backup"))
+        Button {
+            activeModal = BackupModal(kind: .restoreConfirmation(backup.url))
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(BackupFileStore.BackupFile.dateFormatter.string(from: backup.creationDate))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                Text("\(backup.deviceName) · \(BackupFileStore.BackupFile.byteCountFormatter.string(fromByteCount: Int64(backup.fileSize)))")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 4)
+        .swipeActions(edge: .trailing) {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                activeModal = BackupModal(kind: .deleteConfirmation(backup.url))
+            }
+        }
+        .contextMenu {
+            Button("Restore Backup", systemImage: "arrow.counterclockwise") {
+                activeModal = BackupModal(kind: .restoreConfirmation(backup.url))
+            }
+            Button("Delete Backup", systemImage: "trash", role: .destructive) {
+                activeModal = BackupModal(kind: .deleteConfirmation(backup.url))
+            }
+        }
     }
 
     private func restoreBackup(at url: URL) {
@@ -386,9 +219,6 @@ struct RestoreBackupView: View {
             modalAfterDismiss = BackupModal(kind: .deleteError(error))
         }
         activeModal = nil
-        if backupStore.backups.isEmpty {
-            isEditing = false
-        }
     }
 
     private func presentQueuedModal() {

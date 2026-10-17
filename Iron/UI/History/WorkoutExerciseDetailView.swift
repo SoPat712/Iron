@@ -75,72 +75,25 @@ struct WorkoutExerciseDetailView: View {
     }
 
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    sessionOverviewCard
-                        .padding(.bottom, 8)
-
-                    editorCard
-
-                    IronHairline(opacity: 0.5)
-                        .padding(.horizontal, IronTheme.horizontalPadding)
-
-                    IronSectionTitle(
-                        title: "Previous sessions",
-                        detail: previousSessions.isEmpty ? "FIRST SESSION" : "\(previousSessions.count) total"
-                    )
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.top, 22)
-                    .padding(.bottom, 8)
-
-                    if previousSessions.isEmpty {
-                        firstSessionCard
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(Array(previousSessions.prefix(8).enumerated()), id: \.element.id) { index, session in
-                                previousSessionCard(session)
-
-                                if index < min(previousSessions.count, 8) - 1 {
-                                    IronHairline(opacity: 0.46)
-                                        .padding(.horizontal, IronTheme.horizontalPadding)
-                                }
-                            }
-                        }
-
-                        if previousSessions.count > 8, let exercise {
-                            Button(action: { showAllExerciseHistory = true }) {
-                                HStack(spacing: 8) {
-                                    Image(systemName: "clock.arrow.circlepath")
-                                    Text("View all \(previousSessions.count) sessions")
-                                }
-                            }
-                            .buttonStyle(IronSecondaryButtonStyle())
-                            .padding(.horizontal, IronTheme.horizontalPadding)
-                            .padding(.top, 16)
-                            .accessibilityHint("Opens the complete history for \(exercise.title)")
-                        }
-                    }
-                }
-                .padding(.top, 12)
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
-            }
+        List {
+            overviewSection
+            setsSection
+            previousSessionsSection
         }
+        .listStyle(.insetGrouped)
+        .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
         .navigationTitle(exercise?.title ?? "Exercise Log")
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItemGroup(placement: .topBarTrailing) {
                 if exercise != nil {
-                    Button(action: { showExerciseInfo = true }) {
-                        Image(systemName: "info.circle")
-                    }
-                    .accessibilityLabel("Exercise details")
+                    Button("Exercise Details", systemImage: "info.circle") { showExerciseInfo = true }
+                        .labelStyle(.iconOnly)
                 }
 
                 if isCurrentWorkout {
-                    restTimerMenu
+                    Button("Rest Timer", systemImage: "timer") { showingRestTimerEditor = true }
+                        .labelStyle(.iconOnly)
                 }
             }
         }
@@ -165,19 +118,15 @@ struct WorkoutExerciseDetailView: View {
         .sheet(isPresented: $showAllExerciseHistory) {
             if let exercise {
                 IronUtilitySheet(
-                    title: "Exercise history",
-                    subtitle: exercise.title,
+                    title: "Exercise History",
+                    subtitle: "",
                     systemImage: "clock.arrow.circlepath",
                     onClose: { showAllExerciseHistory = false }
                 ) {
-                    ExerciseHistoryView(
-                        exercise: exercise,
-                        usesModalSurface: true
-                    )
+                    ExerciseHistoryView(exercise: exercise)
                 }
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
             }
         }
         .sheet(isPresented: $showingRestTimerEditor) {
@@ -201,9 +150,9 @@ struct WorkoutExerciseDetailView: View {
         }
         .sheet(item: $plateCalculatorSet) { set in
             IronUtilitySheet(
-                title: "Plate calculator",
-                subtitle: "Build each side of the bar",
-                systemImage: "circle.grid.cross",
+                title: "Plate Calculator",
+                subtitle: "",
+                systemImage: "plusminus",
                 onClose: { plateCalculatorSet = nil }
             ) {
                 PlateCalculatorView(
@@ -222,9 +171,8 @@ struct WorkoutExerciseDetailView: View {
                     }
                 )
             }
-            .presentationDetents([.height(680), .large])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .presentationBackground(IronTheme.modalSurface)
             .alert("Workout Not Saved", isPresented: Binding(
                 get: { persistenceError != nil },
                 set: { if !$0 { persistenceError = nil } }
@@ -237,73 +185,35 @@ struct WorkoutExerciseDetailView: View {
         .onDisappear { _ = save() }
     }
 
-    private var sessionOverviewCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(spacing: 13) {
-                if let exercise {
-                    ExerciseDiagramThumbnail(exercise: exercise, size: 58)
-                } else {
-                    Circle()
-                        .fill(IronTheme.raisedSurface)
-                        .frame(width: 58, height: 58)
-                        .overlay(
-                            Image(systemName: "dumbbell")
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundColor(IronTheme.accent)
-                        )
+    @ViewBuilder
+    private var overviewSection: some View {
+        Section {
+            if let exercise {
+                NavigationLink {
+                    ExerciseDetailView(exercise: exercise)
+                        .environmentObject(settingsStore)
+                } label: {
+                    HStack(spacing: 12) {
+                        ExerciseDiagramThumbnail(exercise: exercise, size: 40)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(exercise.title)
+                                .lineLimit(2)
+                            Text(exerciseContextText)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 }
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(exercise?.title ?? "Unknown exercise")
-                        .font(.headline.weight(.bold))
-                        .foregroundColor(IronTheme.accent)
-                        .lineLimit(2)
-
-                    Text(exerciseContextText)
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .lineLimit(1)
-
-                    Label(sessionContextText, systemImage: isCurrentWorkout ? "record.circle" : "calendar")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundColor(isCurrentWorkout ? IronTheme.success : IronTheme.tertiaryText)
-                }
-
-                Spacer(minLength: 0)
             }
 
-            IronHairline(opacity: 0.48)
-
-            HStack(spacing: 0) {
-                overviewMetric(
-                    icon: "checkmark.circle",
-                    value: "\(workoutExercise.numberOfCompletedSets ?? 0)/\(workoutSets.count)",
-                    label: "sets"
-                )
-                overviewDivider
-                overviewMetric(
-                    icon: "scalemass",
-                    value: sessionWorkValue,
-                    label: sessionWorkLabel
-                )
-                overviewDivider
-                overviewMetric(
-                    icon: "clock.arrow.circlepath",
-                    value: "\(previousSessions.count)",
-                    label: "previous"
-                )
-            }
+            LabeledContent("Sets", value: "\(workoutExercise.numberOfCompletedSets ?? 0) of \(workoutSets.count)")
+            LabeledContent(sessionWorkLabel.capitalized, value: sessionWorkValue)
+        } header: {
+            Text("Overview")
+        } footer: {
+            Text(sessionContextText)
         }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .stroke(IronTheme.outline.opacity(0.38), lineWidth: 1)
-        )
-        .padding(.horizontal, IronTheme.horizontalPadding)
+        .monospacedDigit()
     }
 
     private var exerciseContextText: String {
@@ -345,78 +255,25 @@ struct WorkoutExerciseDetailView: View {
         return "reps"
     }
 
-    private func overviewMetric(icon: String, value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Image(systemName: icon)
-                    .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                Text(value)
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.primaryText)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.7)
-            }
-            Text(label.uppercased())
-                .font(.system(size: 8, weight: .bold))
-                .tracking(0.55)
-                .foregroundColor(IronTheme.tertiaryText)
-        }
-        .frame(maxWidth: .infinity, minHeight: 46, alignment: .center)
-    }
-
-    private var overviewDivider: some View {
-        Rectangle()
-            .fill(IronTheme.outline)
-            .frame(width: 1, height: 32)
-    }
-
-    private var editorCard: some View {
+    @ViewBuilder
+    private var setsSection: some View {
         let usesDuration = workoutSets.contains { $0.durationValue != nil }
         let isBarbell = exercise?.type == .barbell && !usesDuration
 
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                IronSectionTitle(title: isCurrentWorkout ? "Log sets" : "Session sets")
-                Spacer()
-                Text(isCurrentWorkout ? "LIVE" : "EDITABLE")
-                    .font(.system(size: 9, weight: .black))
-                    .tracking(0.7)
-                    .foregroundColor(isCurrentWorkout ? IronTheme.success : IronTheme.secondaryText)
-                    .padding(.horizontal, 9)
-                    .padding(.vertical, 5)
-                    .background(Capsule().fill(IronTheme.raisedSurface))
-            }
-            .padding(.bottom, 12)
-
-            TextField("Add notes here…", text: commentBinding)
-                .font(.subheadline)
-                .foregroundColor(IronTheme.primaryText)
-                .padding(.horizontal, 14)
-                .frame(minHeight: IronTheme.controlHeight)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                        .fill(IronTheme.field)
-                )
-                .padding(.bottom, 14)
+        Section {
+            TextField("Exercise Notes", text: commentBinding, axis: .vertical)
+                .lineLimit(1...4)
 
             if isCurrentWorkout {
-                HStack(spacing: 8) {
-                    Image(systemName: "timer")
-                    Text("Rest Timer: \(restTimerDurationFormatter.string(from: restTimerDuration) ?? "Off")")
+                Button {
+                    showingRestTimerEditor = true
+                } label: {
+                    LabeledContent(
+                        "Rest Timer",
+                        value: restTimerDurationFormatter.string(from: restTimerDuration) ?? "Off"
+                    )
                 }
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(IronTheme.accent)
-                .padding(.horizontal, 12)
-                .frame(minHeight: 42)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(IronTheme.accentSoft)
-                )
-                .padding(.bottom, 14)
             }
-
-            setTableHeader
 
             ForEach(Array(workoutSets.enumerated()), id: \.element.id) { index, set in
                 InlineWorkoutSetRow(
@@ -434,149 +291,71 @@ struct WorkoutExerciseDetailView: View {
                 .environmentObject(settingsStore)
             }
 
-            Button(action: addSet) {
-                Label("Add Set", systemImage: "plus")
-            }
-            .buttonStyle(IronSecondaryButtonStyle())
-            .padding(.top, 10)
+            Button("Add Set", systemImage: "plus", action: addSet)
+        } header: {
+            Text(isCurrentWorkout ? "Log Sets" : "Session Sets")
         }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.vertical, 18)
     }
 
-    private var setTableHeader: some View {
-        let usesDuration = workoutSets.contains { $0.durationValue != nil }
-        return HStack(spacing: InlineWorkoutSetLayout.spacing) {
-            Text("SET").frame(width: InlineWorkoutSetLayout.setWidth)
-            Text("PREVIOUS").frame(width: InlineWorkoutSetLayout.previousWidth)
-            if usesDuration {
-                Text("DURATION")
-                    .frame(maxWidth: .infinity)
+    @ViewBuilder
+    private var previousSessionsSection: some View {
+        Section {
+            if previousSessions.isEmpty {
+                Text("The next time you train this exercise, your previous sets appear here for quick comparison.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
             } else {
-                HStack(spacing: 3) {
-                    Image(systemName: "dumbbell")
-                    Text(settingsStore.weightUnit.unit.symbol.uppercased())
+                ForEach(previousSessions.prefix(8), id: \.objectID) { session in
+                    previousSessionRow(session)
                 }
-                .frame(maxWidth: .infinity)
-                Text("REPS").frame(width: InlineWorkoutSetLayout.repetitionsWidth)
+
+                if previousSessions.count > 8, let exercise {
+                    Button("View All \(previousSessions.count) Sessions", systemImage: "clock.arrow.circlepath") {
+                        showAllExerciseHistory = true
+                    }
+                    .accessibilityHint("Opens the complete history for \(exercise.title)")
+                }
             }
-            Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
-            Image(systemName: "checkmark").frame(width: InlineWorkoutSetLayout.completionWidth)
+        } header: {
+            Text(previousSessions.isEmpty ? "First Session" : "Previous Sessions")
         }
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundColor(IronTheme.secondaryText)
-        .padding(.bottom, 4)
     }
 
-    private var firstSessionCard: some View {
-        HStack(alignment: .top, spacing: 13) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 17, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 40, height: 40)
-                .background(Circle().fill(IronTheme.accentSoft))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Your first session")
-                    .font(.subheadline.weight(.bold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("The next time you train this exercise, Iron will place your previous sets here for quick comparison.")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(.vertical, 18)
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    private func previousSessionCard(_ session: WorkoutExercise) -> some View {
+    private func previousSessionRow(_ session: WorkoutExercise) -> some View {
         let sets = session.workoutSets?.array as? [WorkoutSet] ?? []
+        let summary = sets
+            .map { $0.resultTitle(weightUnit: settingsStore.weightUnit) }
+            .joined(separator: ", ")
 
-        return VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 10) {
-                Image(systemName: "calendar")
-                    .font(.system(size: 13, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 34, height: 34)
-                    .background(Circle().fill(IronTheme.accentSoft))
-
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(Workout.dateFormatter.string(from: session.workout?.start, fallback: "Unknown date"))
-                        .font(.subheadline.weight(.bold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("\(sets.count) sets · \(previousSessionResult(session))")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-
-                Spacer()
-
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Text(Workout.dateFormatter.string(from: session.workout?.start, fallback: "Unknown date"))
                 if sets.contains(where: { $0.isPersonalRecord ?? false }) {
                     Image(systemName: "medal.fill")
-                        .font(.subheadline)
-                        .foregroundColor(IronTheme.success)
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.metricRecord)
                 }
+                Spacer(minLength: 4)
+                Text(previousSessionResult(session))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
             }
+
+            Text(sets.isEmpty ? "No sets" : summary)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+                .lineLimit(2)
 
             if let comment = session.comment, !comment.isEmpty {
                 Text(comment)
-                    .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            HStack(spacing: 10) {
-                Text("SET")
-                    .frame(width: 34)
-                Text("RESULT")
-                Spacer()
-                Text("EFFORT")
-            }
-            .font(.system(size: 10, weight: .bold))
-            .tracking(0.5)
-            .foregroundColor(IronTheme.tertiaryText)
-
-            VStack(spacing: 0) {
-                ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
-                    if index > 0 {
-                        IronHairline(opacity: 0.42)
-                            .padding(.leading, 44)
-                    }
-
-                    HStack(spacing: 10) {
-                        Text(set.tagValue?.title.first.map(String.init) ?? "\(index + 1)")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundColor(set.tagValue?.color ?? IronTheme.primaryText)
-                            .frame(width: 34, height: 32)
-                            .background(Capsule(style: .continuous).fill(IronTheme.raisedSurface))
-
-                        Text(set.resultTitle(weightUnit: settingsStore.weightUnit))
-                            .font(.subheadline.weight(.medium).monospacedDigit())
-                            .foregroundColor(IronTheme.primaryText)
-
-                        Spacer()
-
-                        if let rpe = set.rpeValue {
-                            Text("RPE \(String(format: "%g", rpe))")
-                                .font(.caption2.weight(.bold).monospacedDigit())
-                                .foregroundColor(IronTheme.secondaryText)
-                        }
-
-                        if set.isPersonalRecord ?? false {
-                            Image(systemName: "medal.fill")
-                                .font(.caption)
-                                .foregroundColor(IronTheme.success)
-                        }
-                    }
-                    .frame(minHeight: 44)
-                }
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
             }
         }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.vertical, 16)
+        .padding(.vertical, 2)
     }
 
     private func previousSessionResult(_ session: WorkoutExercise) -> String {
@@ -593,14 +372,6 @@ struct WorkoutExerciseDetailView: View {
 
         let repetitions = session.numberOfCompletedRepetitions ?? 0
         return repetitions > 0 ? "\(repetitions) reps" : "—"
-    }
-
-    private var restTimerMenu: some View {
-        Button(action: { showingRestTimerEditor = true }) {
-            Image(systemName: "timer")
-        }
-        .accessibilityLabel("Rest timer")
-        .accessibilityHint("Opens a radial rest-duration picker")
     }
 
     private var restTimerDuration: TimeInterval {

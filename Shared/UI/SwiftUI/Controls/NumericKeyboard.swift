@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import AVKit
 
 struct NumericKeyboard: View {
     @Environment(\.locale) var locale
@@ -88,7 +87,7 @@ struct NumericKeyboard: View {
     }
     
     static func playButtonSound() {
-        AudioServicesPlaySystemSound(1104)
+        IronSoundPlayer.shared.play(.tick)
     }
     
     static func textActionKeyboardButton(label: Text, width: CGFloat, action: @escaping () -> Void) -> some View {

@@ -66,161 +66,40 @@ struct CustomExercisesView: View {
         }
     }
 
-    private func popupActions(for exercise: Exercise) -> [IronPopupAction] {
-        assert(exercise.isCustom)
-        return [
-            IronPopupAction(title: "Edit Exercise", systemImage: "pencil") {
-                self.activeSheet = .editCustomExercise(exercise)
-            },
-            IronPopupAction(
-                title: "Delete Exercise",
-                systemImage: "trash",
-                role: .destructive
-            ) {
-                self.exerciseToDelete = exercise
-            }
-        ]
-    }
-
-    private func customExerciseRow(_ exercise: Exercise) -> some View {
-        HStack(spacing: 12) {
-            NavigationLink(
-                destination: ExerciseDetailView(exercise: exercise)
-                    .environmentObject(self.settingsStore)
-            ) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle()
-                            .fill(IronTheme.accentSoft)
-                        Image(systemName: "dumbbell.fill")
-                            .font(.system(size: 19, weight: .bold))
-                            .foregroundColor(IronTheme.accent)
-                    }
-                    .frame(width: 46, height: 46)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(exercise.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                            .lineLimit(2)
-                        Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(IronTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 4)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(IronTheme.tertiaryText)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            IronPopupMenu(title: "Exercise actions", actions: popupActions(for: exercise)) {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Actions for \(exercise.title)")
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 7)
-        .frame(minHeight: 70)
-    }
-
-    private var customExercisesCard: some View {
-        IronCard(padding: 0) {
-            LazyVStack(spacing: 0) {
-                ForEach(Array(exerciseStore.customExercises.enumerated()), id: \.element.id) { index, exercise in
-                    customExerciseRow(exercise)
-
-                    if index < exerciseStore.customExercises.count - 1 {
-                        IronHairline(opacity: 0.5)
-                            .padding(.leading, 72)
-                    }
-                }
-            }
-        }
-    }
-
-    private var emptyStateCard: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "dumbbell.fill")
-                .font(.system(size: 25, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-            Text("No custom exercises yet")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Create an exercise to start building your library.")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .padding(.horizontal, 18)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
-
-    private var librarySummaryCard: some View {
-        IronCard(padding: 14) {
-            HStack(spacing: 13) {
-                Image(systemName: "square.grid.2x2.fill")
-                    .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 46, height: 46)
-                    .background(Circle().fill(IronTheme.accentSoft))
-
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Your exercise library")
-                        .font(.headline.weight(.bold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("\(exerciseStore.customExercises.count) custom exercise\(exerciseStore.customExercises.count == 1 ? "" : "s") · private to Iron")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-
-                Spacer(minLength: 0)
-            }
-        }
-    }
-
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            ScrollView(showsIndicators: false) {
-                LazyVStack(alignment: .leading, spacing: 12) {
-                    librarySummaryCard
-
-                    IronSectionTitle(title: "Custom exercises", detail: "YOUR LIBRARY")
-
-                    if exerciseStore.customExercises.isEmpty {
-                        emptyStateCard
-                    } else {
-                        customExercisesCard
+        List {
+            if exerciseStore.customExercises.isEmpty {
+                Section {
+                    ContentUnavailableView {
+                        Label("No Custom Exercises", systemImage: "dumbbell.fill")
+                    } description: {
+                        Text("Create an exercise to start building your library.")
+                    } actions: {
+                        Button("Create Exercise") { activeSheet = .createCustomExercise }
+                            .buttonStyle(.borderedProminent)
                     }
+                    .listRowBackground(Color.clear)
                 }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.top, 12)
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
+            } else {
+                Section {
+                    ForEach(exerciseStore.customExercises) { exercise in
+                        customExerciseRow(exercise)
+                    }
+                } header: {
+                    Text("Your Library")
+                } footer: {
+                    Text("\(exerciseStore.customExercises.count) custom exercise\(exerciseStore.customExercises.count == 1 ? "" : "s") · private to Iron")
+                }
             }
         }
-        .background(IronTheme.background)
-        .navigationTitle("Custom exercises")
-        .navigationBarTitleDisplayMode(.inline)
+        .listStyle(.insetGrouped)
+        .navigationTitle("Custom Exercises")
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
-                Button(action: { activeSheet = .createCustomExercise }) {
-                    Image(systemName: "plus")
+                Button("Create Exercise", systemImage: "plus") {
+                    activeSheet = .createCustomExercise
                 }
-                .accessibilityLabel("Create custom exercise")
+                .labelStyle(.iconOnly)
                 .accessibilityHint("Opens the custom exercise editor")
             }
         }
@@ -228,7 +107,6 @@ struct CustomExercisesView: View {
             self.sheetView(type: type)
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
         }
         .confirmationDialog(
             "Delete \(exerciseToDelete?.title ?? "exercise")?",
@@ -255,10 +133,40 @@ struct CustomExercisesView: View {
                 title: "Could not delete exercise",
                 message: failure.error.localizedDescription,
                 systemImage: "exclamationmark.triangle.fill",
-                tint: IronTheme.danger
+                tint: .red
             )
         }
-        .ironScreen()
+    }
+
+    private func customExerciseRow(_ exercise: Exercise) -> some View {
+        NavigationLink {
+            ExerciseDetailView(exercise: exercise)
+                .environmentObject(self.settingsStore)
+        } label: {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(exercise.title)
+                Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .swipeActions(edge: .trailing) {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                exerciseToDelete = exercise
+            }
+            Button("Edit", systemImage: "pencil") {
+                activeSheet = .editCustomExercise(exercise)
+            }
+            .tint(.accentColor)
+        }
+        .contextMenu {
+            Button("Edit Exercise", systemImage: "pencil") {
+                activeSheet = .editCustomExercise(exercise)
+            }
+            Button("Delete Exercise", systemImage: "trash", role: .destructive) {
+                exerciseToDelete = exercise
+            }
+        }
     }
 
     private func deleteWorkoutExercises(with uuid: UUID) throws {

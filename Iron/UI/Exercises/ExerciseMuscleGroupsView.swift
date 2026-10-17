@@ -38,43 +38,41 @@ struct ExerciseMuscleGroupsView : View {
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
     }
 
+    private var hasActiveFilter: Bool {
+        selectedMuscleGroup != nil || selectedEquipment != nil
+    }
+
     var body: some View {
-        ZStack {
-            IronScreenBackground()
+        List {
             if filteredExercises.isEmpty {
-                ScrollView(showsIndicators: false) {
-                    emptyExerciseState
-                }
+                emptyExerciseState
             } else {
-                List {
-                    Section {
-                        ForEach(filteredExercises) { exercise in
-                            NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                                ExerciseLibraryRow(exercise: exercise)
-                            }
+                Section {
+                    ForEach(filteredExercises) { exercise in
+                        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                            ExerciseLibraryRow(exercise: exercise)
                         }
-                    } header: {
-                        if selectedEquipment != nil || selectedMuscleGroup != nil {
-                            HStack {
-                                Text(activeFilterSummary)
-                                Spacer()
-                                Button("Clear") {
-                                    selectedEquipment = nil
-                                    selectedMuscleGroup = nil
-                                }
-                                .textCase(nil)
-                            }
-                        }
-                    } footer: {
-                        Text("\(filteredExercises.count) exercises")
                     }
-                }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .safeAreaInset(edge: .bottom) {
-                    Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
+                } header: {
+                    if hasActiveFilter {
+                        HStack {
+                            Text(activeFilterSummary)
+                            Spacer()
+                            Button("Clear") {
+                                selectedEquipment = nil
+                                selectedMuscleGroup = nil
+                            }
+                            .textCase(nil)
+                        }
+                    }
+                } footer: {
+                    Text("\(filteredExercises.count) exercises")
                 }
             }
+        }
+        .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
         .navigationTitle("Exercises")
         .navigationBarTitleDisplayMode(.large)
@@ -129,11 +127,7 @@ struct ExerciseMuscleGroupsView : View {
                 .accessibilityLabel("Create exercise or manage library")
             }
         }
-        .searchable(
-            text: $search,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search 1,400+ exercises"
-        )
+        .searchable(text: $search, prompt: "Search 1,400+ exercises")
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .sheet(isPresented: $showingCreateExercise) {
@@ -150,39 +144,34 @@ struct ExerciseMuscleGroupsView : View {
         }
     }
 
+    @ViewBuilder
     private var emptyExerciseState: some View {
-        let hasFilters = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            || selectedEquipment != nil
-            || selectedMuscleGroup != nil
+        let hasSearch = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        return VStack(spacing: 10) {
-            Image(systemName: hasFilters ? "magnifyingglass" : "eye.slash")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text(hasFilters ? "No matching exercises" : "No exercises available")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text(hasFilters
-                ? "Try a different search or clear a filter."
-                : "All exercises are hidden. Use Hidden above to restore one.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
+        if hasSearch {
+            ContentUnavailableView.search(text: search)
+        } else if hasActiveFilter {
+            ContentUnavailableView {
+                Label("No matching exercises", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text("Try a different muscle group or equipment.")
+            } actions: {
+                Button("Clear Filters") {
+                    selectedEquipment = nil
+                    selectedMuscleGroup = nil
+                }
+            }
+        } else {
+            ContentUnavailableView {
+                Label("No exercises available", systemImage: "eye.slash")
+            } description: {
+                Text("All exercises are hidden. Restore one from the library menu.")
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 56)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.top, 16)
-        .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
     }
 
     private var activeFilterSummary: String {
-        [selectedEquipment?.capitalized, selectedMuscleGroup?.capitalized]
+        [selectedMuscleGroup?.capitalized, selectedEquipment?.capitalized]
             .compactMap { $0 }
             .joined(separator: " · ")
     }
@@ -199,114 +188,53 @@ private struct HiddenExercisesView: View {
     }
 
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            VStack(spacing: 0) {
-                HStack {
+        List {
+            if filteredExercises.isEmpty {
+                emptyState
+            } else {
+                Section {
+                    ForEach(filteredExercises) { exercise in
+                        hiddenExerciseRow(exercise)
+                    }
+                } footer: {
                     Text("\(filteredExercises.count) hidden exercises")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(IronTheme.secondaryText)
-                    Spacer()
-                    if !search.isEmpty {
-                        Button("Clear") { search = "" }
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.accent)
-                    }
-                }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.vertical, 8)
-
-                ScrollView(showsIndicators: false) {
-                    if filteredExercises.isEmpty {
-                        emptyState
-                    } else {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredExercises) { exercise in
-                                hiddenExerciseRow(exercise)
-                            }
-                        }
-                        .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
-                    }
                 }
             }
         }
-        .ironDestinationScreen(title: "Hidden exercises")
-        .searchable(
-            text: $search,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search hidden exercises"
-        )
+        .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
+        }
+        .navigationTitle("Hidden exercises")
+        .navigationBarTitleDisplayMode(.inline)
+        .searchable(text: $search, prompt: "Search hidden exercises")
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
     }
 
     private func hiddenExerciseRow(_ exercise: Exercise) -> some View {
-        HStack(spacing: 10) {
-            NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                HStack(spacing: 13) {
-                    ExerciseDiagramThumbnail(exercise: exercise)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(exercise.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                            .lineLimit(2)
-                        Text(exercise.primaryMuscleCommonName.first?.capitalized
-                             ?? exercise.muscleGroup.capitalized)
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(IronTheme.secondaryText)
-                            .lineLimit(1)
-                    }
-
-                    Spacer(minLength: 4)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            Button {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    exerciseStore.show(exercise: exercise)
-                }
-            } label: {
-                Label("Restore", systemImage: "eye")
-                    .font(.caption.weight(.bold))
-            }
-            .buttonStyle(IronCompactPillButtonStyle())
-            .fixedSize(horizontal: true, vertical: false)
-            .accessibilityHint("Returns this exercise to the main library")
+        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+            ExerciseLibraryRow(exercise: exercise)
         }
-        .ironTonalListRow()
-        .accessibilityElement(children: .contain)
+        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+            Button("Restore", systemImage: "eye") {
+                exerciseStore.show(exercise: exercise)
+            }
+            .tint(.accentColor)
+        }
     }
 
+    @ViewBuilder
     private var emptyState: some View {
-        let hasSearch = !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-
-        return VStack(spacing: 10) {
-            Image(systemName: hasSearch ? "magnifyingglass" : "eye")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text(hasSearch ? "No matching hidden exercises" : "No hidden exercises")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text(hasSearch
-                ? "Try a different search."
-                : "Exercises you hide from the library will appear here.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
+        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView.search(text: search)
+        } else {
+            ContentUnavailableView {
+                Label("No hidden exercises", systemImage: "eye")
+            } description: {
+                Text("Exercises you hide from the library will appear here.")
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.horizontal, 24)
-        .padding(.vertical, 56)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.top, 16)
-        .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
     }
 }
 
@@ -318,18 +246,12 @@ private struct AllExercisesView: View {
     }
     
     var body: some View {
-        ZStack {
-            IronScreenBackground()
-            MuscleGroupSectionedExercisesView(exerciseGroups: filter.exerciseGroups)
-        }
-        .ironDestinationScreen(title: "All exercises")
-        .searchable(
-            text: $filter.filter,
-            placement: .navigationBarDrawer(displayMode: .always),
-            prompt: "Search exercises"
-        )
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
+        MuscleGroupSectionedExercisesView(exerciseGroups: filter.exerciseGroups)
+            .navigationTitle("All exercises")
+        .navigationBarTitleDisplayMode(.inline)
+            .searchable(text: $filter.filter, prompt: "Search exercises")
+            .textInputAutocapitalization(.never)
+            .autocorrectionDisabled()
     }
 }
 

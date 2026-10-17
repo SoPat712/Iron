@@ -62,6 +62,8 @@ struct ActivityCalendarView: View {
         }
     }
     
+    @State private var selectedWorkout: Workout?
+
     var body: some View {
         let activityCalendarDaysByWeek = self.activityCalendarDaysByWeek
         let numberOfWorkouts = activityCalendarDaysByWeek
@@ -74,13 +76,18 @@ struct ActivityCalendarView: View {
                 HStack {
                     ForEach(workoutWeek, id: \.hashValue) { workoutDay in
                         if let workoutDay = workoutDay {
-                            ActivityCalendarCell(workoutDay: workoutDay)
+                            ActivityCalendarCell(workoutDay: workoutDay) { workout in
+                                selectedWorkout = workout
+                            }
                         } else {
                             Circle().foregroundColor(.clear).hidden()
                         }
                     }
                 }
             }
+        }
+        .navigationDestination(item: $selectedWorkout) { workout in
+            WorkoutDetailView(workout: workout)
         }
         .preference(key: WorkoutsLast28DaysKey.self, value: numberOfWorkouts)
     }
@@ -117,50 +124,56 @@ struct ActivityCalendarHeaderView: View {
 
 private struct ActivityCalendarCell: View {
     @Environment(\.calendar) var calendar
-    
-    @State private var showingWorkout = false
-    
+
     let workoutDay: ActivityCalendarDay
-    
+    let onSelect: (Workout) -> Void
+
     var hasWorkouts: Bool {
         !workoutDay.workouts.isEmpty
     }
-    
+
     var isToday: Bool {
         calendar.isDateInToday(workoutDay.date)
     }
-    
+
     var day: Int {
         calendar.dateComponents([.day], from: workoutDay.date).day!
     }
-    
-    @ViewBuilder
-    var navigationLink: some View {
+
+    var body: some View {
         if let workout = workoutDay.workouts.first {
-            NavigationLink(destination: WorkoutDetailView(workout: workout), isActive: $showingWorkout, label: { EmptyView() }).hidden()
+            Button {
+                onSelect(workout)
+            } label: {
+                dayCircle
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(accessibilityLabel)
+        } else {
+            dayCircle
+                .accessibilityLabel(accessibilityLabel)
         }
     }
-    
-    var body: some View {
+
+    private var dayCircle: some View {
         Circle()
-            .foregroundColor(hasWorkouts ? .accentColor : Color(.systemFill))
+            .foregroundStyle(hasWorkouts ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.systemFill)))
             .overlay(
                 Text(String(day))
                     .bold()
-                    .foregroundColor(hasWorkouts ? .white : .secondary)
+                    .foregroundStyle(hasWorkouts ? AnyShapeStyle(.white) : AnyShapeStyle(.secondary))
             )
-            .overlay(
-                Group {
-                    if isToday {
-                        Circle()
-                            .strokeBorder(Color(.tertiaryLabel), lineWidth: 3)
-                    }
+            .overlay {
+                if isToday {
+                    Circle().strokeBorder(Color(.tertiaryLabel), lineWidth: 3)
                 }
-            )
-            .onTapGesture {
-                self.showingWorkout = true
             }
-            .background(navigationLink)
+    }
+
+    private var accessibilityLabel: String {
+        let date = workoutDay.date.formatted(date: .abbreviated, time: .omitted)
+        guard hasWorkouts else { return "\(date), rest day" }
+        return "\(date), \(workoutDay.workouts.count) workout\(workoutDay.workouts.count == 1 ? "" : "s")"
     }
 }
 

@@ -180,12 +180,11 @@ struct WatchSettingsView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(IronTheme.background)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .ironDestinationScreen(title: "Apple Watch")
+        .navigationTitle("Apple Watch")
+        .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
         .onAppear(perform: refreshConnectionStatus)
         .onChange(of: scenePhase) { _, phase in

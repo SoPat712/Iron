@@ -10,6 +10,7 @@ import SwiftUI
 import WorkoutDataKit
 
 struct WorkoutRoutineSetEditor: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var settingsStore: SettingsStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     
@@ -145,7 +146,7 @@ struct WorkoutRoutineSetEditor: View {
             showCursor: showKeyboard == .repetitionsMin,
             onTextTapped: {
                 if self.showKeyboard == .none {
-                    withAnimation {
+                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                         self.showKeyboard = .repetitionsMin
                     }
                 } else {
@@ -166,7 +167,7 @@ struct WorkoutRoutineSetEditor: View {
             showCursor: showKeyboard == .repetitionsMax,
             onTextTapped: {
                 if self.showKeyboard == .none {
-                    withAnimation {
+                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                         self.showKeyboard = .repetitionsMax
                     }
                 } else {
@@ -237,7 +238,7 @@ struct WorkoutRoutineSetEditor: View {
                 )
                 VStack(spacing: 0) {
                     NumericKeyboard.imageActionKeyboardButton(label: Image(systemName: "keyboard.chevron.compact.down"), width: geometry.size.width / 4) {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .none
                         }
                     }
@@ -312,17 +313,17 @@ struct WorkoutRoutineSetEditor: View {
                 
                 if abs(height) > abs(width) {
                     if height > 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .none
                         }
                     }
                 } else {
                     if width > 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .repetitionsMax
                         }
                     } else if width < 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .repetitionsMin
                         }
                     }

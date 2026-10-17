@@ -47,12 +47,11 @@ struct AboutView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(IronTheme.background)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .ironDestinationScreen(title: "About Iron")
+        .navigationTitle("About Iron")
+        .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
     }
 

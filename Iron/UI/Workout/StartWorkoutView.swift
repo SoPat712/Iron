@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import Charts
 import CoreData
 import WorkoutDataKit
 
@@ -332,6 +333,7 @@ private struct WorkoutPlanEditorHost: View {
 }
 
 struct StartWorkoutView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var exerciseStore: ExerciseStore
 
@@ -342,6 +344,7 @@ struct StartWorkoutView: View {
 
     @State private var planToDelete: WorkoutRoutine?
     @State private var planEditorRoute: WorkoutPlanEditorRoute?
+    @State private var activityItems: [Any]?
     @State private var isShowingWorkoutImporter = false
     @State private var importResult: SavedWorkoutImportResult?
     @State private var persistenceError: String?
@@ -364,59 +367,58 @@ struct StartWorkoutView: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                IronScreenBackground()
-                VStack(spacing: 0) {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 18) {
-                            if currentWorkouts.isEmpty {
-                                quickStartCard
-                            }
-                            IronSectionTitle(title: "Saved workouts", detail: "\(plans.count) total")
+            List {
+                if currentWorkouts.isEmpty {
+                    Section {
+                        quickStartCard
+                    }
+                    .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+                }
 
-                            if plans.isEmpty {
-                                emptyPlansCard
-                            } else {
-                                VStack(spacing: 0) {
-                                    ForEach(Array(plans.enumerated()), id: \.element.id) { index, plan in
-                                        SavedWorkoutRow(
-                                            workout: plan,
-                                            onEdit: {
-                                                planEditorRoute = WorkoutPlanEditorRoute(
-                                                    kind: .edit(planID: plan.objectID)
-                                                )
-                                            },
-                                            onDuplicate: { duplicate(plan) },
-                                            onDelete: { requestDelete(plan) },
-                                            canStartWorkout: currentWorkouts.isEmpty,
-                                            isActiveWorkout: activeRoutineObjectID == plan.objectID,
-                                            onWorkoutStarted: onOpenCurrentWorkout,
-                                            onFailure: { persistenceError = $0.localizedDescription }
-                                        )
-
-                                        if index < plans.count - 1 {
-                                            IronHairline(opacity: 0.44)
-                                                .padding(.leading, 64)
-                                        }
-                                    }
-                                }
-                                .background(
-                                    RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                                        .fill(IronTheme.surface)
-                                )
-                            }
-
-                            Button(action: newPlan) {
-                                Label("Create workout", systemImage: "plus.rectangle.on.folder.fill")
-                                    .frame(maxWidth: .infinity)
-                            }
-                            .buttonStyle(IronSecondaryButtonStyle())
+                Section {
+                    if plans.isEmpty {
+                        Button(action: newPlan) {
+                            Label("Create Your First Workout", systemImage: "plus")
                         }
-                        .padding(IronTheme.horizontalPadding)
-                        .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
+                    } else {
+                        ForEach(plans, id: \.id) { plan in
+                            SavedWorkoutRow(
+                                workout: plan,
+                                onEdit: {
+                                    planEditorRoute = WorkoutPlanEditorRoute(
+                                        kind: .edit(planID: plan.objectID)
+                                    )
+                                },
+                                onDuplicate: { duplicate(plan) },
+                                onDelete: { requestDelete(plan) },
+                                onExport: { exportWorkout(plan) },
+                                canStartWorkout: currentWorkouts.isEmpty,
+                                isActiveWorkout: activeRoutineObjectID == plan.objectID,
+                                onWorkoutStarted: onOpenCurrentWorkout,
+                                onFailure: { persistenceError = $0.localizedDescription }
+                            )
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                        }
+                    }
+                } header: {
+                    Text("Saved Workouts")
+                } footer: {
+                    if plans.isEmpty {
+                        Text("Save a workout for push/pull/legs, upper/lower, or any split you train.")
+                    }
+                }
+
+                if !plans.isEmpty {
+                    Section {
+                        Button(action: newPlan) {
+                            Label("Create Workout", systemImage: "plus")
+                        }
                     }
                 }
             }
+            .listStyle(.insetGrouped)
+            .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: plans.map(\.objectID))
+            .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("Workout")
             .navigationBarTitleDisplayMode(.large)
             .toolbar {
@@ -440,16 +442,14 @@ struct StartWorkoutView: View {
                 )
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
-                .presentationBackground(IronTheme.modalSurface)
             }
         }
-        .confirmationDialog(
+        .alert(
             planToDelete.map { "Delete \($0.displayTitle)?" } ?? "Delete workout?",
             isPresented: Binding(
                 get: { planToDelete != nil },
                 set: { if !$0 { planToDelete = nil } }
-            ),
-            titleVisibility: .visible
+            )
         ) {
             Button("Delete Workout", role: .destructive) {
                 guard let plan = planToDelete else { return }
@@ -462,6 +462,7 @@ struct StartWorkoutView: View {
         } message: {
             Text("This removes the exercises, targets, and notes saved in this workout. Your completed workout history is not affected.")
         }
+        .ironActivitySheet(activityItems: $activityItems)
         .fileImporter(
             isPresented: $isShowingWorkoutImporter,
             allowedContentTypes: [.json],
@@ -485,53 +486,32 @@ struct StartWorkoutView: View {
         }
     }
 
+    /// The empty-workout path deserves more than a list row: it is the entry
+    /// point for anyone not training a saved routine today.
     private var quickStartCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .top, spacing: 14) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Quick start")
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("Start an empty workout and add exercises as you train.")
-                        .font(.subheadline)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("Quick Start")
+                    .font(.title2.weight(.bold))
+                Spacer()
                 Image(systemName: "dumbbell.fill")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundColor(IronTheme.accent)
+                    .font(.title3)
+                    .foregroundStyle(.tint)
             }
-            Button(action: startEmptyWorkout) {
-                Label("Start empty workout", systemImage: "play.fill")
-            }
-            .buttonStyle(IronPrimaryButtonStyle())
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
 
-    private var emptyPlansCard: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "list.bullet.rectangle.portrait")
-                .font(.system(size: 30, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text("No workouts yet")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Create a workout for push/pull/legs, upper/lower, or any split you train.")
-                .multilineTextAlignment(.center)
+            Text("Start an empty log and add exercises as you train.")
                 .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-            Button("Create your first workout", action: newPlan)
-                .buttonStyle(IronPrimaryButtonStyle())
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Button(action: startEmptyWorkout) {
+                Label("Start Empty Workout", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
         }
-        .frame(maxWidth: .infinity)
-        .padding(24)
-        .background(RoundedRectangle(cornerRadius: IronTheme.cornerRadius).fill(IronTheme.surface))
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func startEmptyWorkout() {
@@ -569,6 +549,21 @@ struct StartWorkoutView: View {
         }
     }
 
+    private func exportWorkout(_ workout: WorkoutRoutine) {
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            if let exercisesKey = CodingUserInfoKey.exercisesKey {
+                encoder.userInfo[exercisesKey] = exerciseStore.exercises
+            }
+            let data = try encoder.encode(SavedWorkoutDocument(workout: workout))
+            let filename = sanitizedFilename(workout.displayTitle) + ".ironworkout.json"
+            activityItems = [try temporaryFile(data: data, name: filename)]
+        } catch {
+            importResult = SavedWorkoutImportResult(importedTitle: nil, error: error)
+        }
+    }
+
     private func importWorkout(_ selection: Result<[URL], Error>) {
         if case .failure(let error) = selection,
            (error as NSError).code == NSUserCancelledError {
@@ -594,6 +589,20 @@ struct StartWorkoutView: View {
         } catch {
             importResult = SavedWorkoutImportResult(importedTitle: nil, error: error)
         }
+    }
+
+    private func sanitizedFilename(_ title: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\:?%*|\"<>\n\r")
+        let sanitized = title.components(separatedBy: invalidCharacters)
+            .joined(separator: "-")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "Iron Workout" : sanitized
+    }
+
+    private func temporaryFile(data: Data, name: String) throws -> URL {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent(name)
+        try data.write(to: url, options: .atomic)
+        return url
     }
 }
 
@@ -623,6 +632,14 @@ private enum WorkoutPlanTrendMetric: String, CaseIterable, Identifiable {
         }
     }
 
+    var color: Color {
+        switch self {
+        case .volume: return IronTheme.metricVolume
+        case .repetitions: return IronTheme.metricSets
+        case .duration: return IronTheme.metricTime
+        }
+    }
+
     var icon: String {
         switch self {
         case .volume: return "scalemass.fill"
@@ -643,43 +660,20 @@ private struct WorkoutPlanTrendPoint: Identifiable {
 }
 
 private struct WorkoutPlanTrendChart: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var hasAppeared = false
     let points: [WorkoutPlanTrendPoint]
     let valueFormatter: (Double) -> String
+    let valueText: (Double) -> Text
     let metricTitle: String
+    let metricColor: Color
     let volumeFormatter: (Double) -> String
 
     @State private var selectedPointID: WorkoutPlanTrendPoint.ID?
 
-    private var upperValue: Double {
-        max(points.map(\.value).max() ?? 0, 1)
-    }
-
-    private func xPosition(index: Int, width: CGFloat) -> CGFloat {
-        guard points.count > 1 else { return width / 2 }
-        return CGFloat(index) / CGFloat(points.count - 1) * width
-    }
-
-    private func yPosition(value: Double, height: CGFloat) -> CGFloat {
-        height - (max(value, 0) / upperValue * height)
-    }
-
     private var selectedPoint: WorkoutPlanTrendPoint? {
         guard let selectedPointID else { return nil }
         return points.first { $0.id == selectedPointID }
-    }
-
-    private func nearestPointID(
-        to location: CGPoint,
-        labelWidth: CGFloat,
-        plotWidth: CGFloat
-    ) -> WorkoutPlanTrendPoint.ID? {
-        guard !points.isEmpty else { return nil }
-        guard points.count > 1 else { return points[0].id }
-
-        let clampedX = min(max(location.x - labelWidth, 0), plotWidth)
-        let progress = clampedX / plotWidth
-        let index = Int((progress * CGFloat(points.count - 1)).rounded())
-        return points[min(max(index, 0), points.count - 1)].id
     }
 
     private func dateLabel(_ date: Date) -> String {
@@ -723,226 +717,114 @@ private struct WorkoutPlanTrendChart: View {
             return
         }
 
-        withAnimation(.easeOut(duration: 0.12)) {
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
             selectedPointID = points[targetIndex].id
         }
     }
 
     var body: some View {
-        VStack(spacing: 7) {
-            GeometryReader { geometry in
-                let labelWidth: CGFloat = 50
-                let plotWidth = max(geometry.size.width - labelWidth - 4, 1)
-                let plotHeight = max(geometry.size.height - 8, 1)
+        Chart(points) { point in
+            LineMark(
+                x: .value("Date", point.date),
+                y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
+            )
+            .interpolationMethod(.monotone)
+            .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round))
 
-                ZStack(alignment: .topLeading) {
-                    ForEach(0..<3, id: \.self) { index in
-                        let fraction = Double(index) / 2
-                        let y = plotHeight * CGFloat(fraction)
-
-                        Path { path in
-                            path.move(to: CGPoint(x: labelWidth, y: y))
-                            path.addLine(to: CGPoint(x: labelWidth + plotWidth, y: y))
-                        }
-                        .stroke(IronTheme.outline.opacity(0.42), style: StrokeStyle(lineWidth: 1, dash: [3, 5]))
-
-                        Text(valueFormatter(upperValue * (1 - fraction)))
-                            .font(.system(size: 9, weight: .semibold).monospacedDigit())
-                            .foregroundColor(IronTheme.tertiaryText)
-                            .frame(width: labelWidth - 6, alignment: .trailing)
-                            .position(x: (labelWidth - 6) / 2, y: max(y, 6))
-                    }
-
-                    Path { path in
-                        for (index, point) in points.enumerated() {
-                            let position = CGPoint(
-                                x: labelWidth + xPosition(index: index, width: plotWidth),
-                                y: yPosition(value: point.value, height: plotHeight)
-                            )
-                            if index == 0 { path.move(to: position) }
-                            else { path.addLine(to: position) }
-                        }
-                    }
-                    .stroke(
-                        LinearGradient(
-                            colors: [IronTheme.accent.opacity(0.62), IronTheme.accent],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        ),
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round)
-                    )
-
-                    if let selectedPoint,
-                       let selectedIndex = points.firstIndex(where: { $0.id == selectedPoint.id }) {
-                        let selectedX = labelWidth + xPosition(index: selectedIndex, width: plotWidth)
-                        Path { path in
-                            path.move(to: CGPoint(x: selectedX, y: 0))
-                            path.addLine(to: CGPoint(x: selectedX, y: plotHeight))
-                        }
-                        .stroke(
-                            IronTheme.accent.opacity(0.62),
-                            style: StrokeStyle(lineWidth: 1, dash: [3, 3])
-                        )
-                    }
-
-                    ForEach(Array(points.enumerated()), id: \.element.id) { index, point in
-                        let isSelected = point.id == selectedPoint?.id
-                        Circle()
-                            .fill(
-                                isSelected
-                                    ? IronTheme.background
-                                    : (index == points.count - 1 ? IronTheme.accent : IronTheme.surface)
-                            )
-                            .overlay(
-                                Circle().stroke(
-                                    IronTheme.accent,
-                                    lineWidth: isSelected ? 2.5 : 2
-                                )
-                            )
-                            .frame(
-                                width: isSelected ? 12 : (index == points.count - 1 ? 10 : 8),
-                                height: isSelected ? 12 : (index == points.count - 1 ? 10 : 8)
-                            )
-                            .shadow(
-                                color: isSelected ? IronTheme.accent.opacity(0.3) : .clear,
-                                radius: isSelected ? 5 : 0
-                            )
-                            .position(
-                                x: labelWidth + xPosition(index: index, width: plotWidth),
-                                y: yPosition(value: point.value, height: plotHeight)
-                            )
-                    }
-
-                    if let selectedPoint,
-                       let selectedIndex = points.firstIndex(where: { $0.id == selectedPoint.id }) {
-                        let selectedPosition = CGPoint(
-                            x: labelWidth + xPosition(index: selectedIndex, width: plotWidth),
-                            y: yPosition(value: selectedPoint.value, height: plotHeight)
-                        )
-                        selectionTooltip(
-                            for: selectedPoint,
-                            at: selectedPosition,
-                            in: geometry.size
-                        )
-                    }
-                }
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            selectedPointID = nearestPointID(
-                                to: value.location,
-                                labelWidth: labelWidth,
-                                plotWidth: plotWidth
-                            )
-                        }
+            AreaMark(
+                x: .value("Date", point.date),
+                y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
+            )
+            .interpolationMethod(.monotone)
+            .foregroundStyle(
+                LinearGradient(
+                    colors: [metricColor.opacity(0.25), metricColor.opacity(0.02)],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Training trend chart with \(points.count) sessions")
-                .accessibilityValue(accessibilityValue)
-                .accessibilityHint(
-                    "Tap or drag across the chart to select a session. Use previous and next session actions to explore the chart."
-                )
-                .accessibilityAction(named: Text("Previous session")) {
-                    adjustSelection(.decrement)
-                }
-                .accessibilityAction(named: Text("Next session")) {
-                    adjustSelection(.increment)
-                }
-                .onChange(of: points.map(\.id)) { _, identifiers in
-                    if let selectedPointID, !identifiers.contains(selectedPointID) {
-                        self.selectedPointID = nil
-                    }
-                }
-            }
-            .frame(height: 142)
+            )
 
-            HStack {
-                Text(points.first.map { Self.dateFormatter.string(from: $0.date) } ?? "")
-                Spacer()
-                Text(points.count > 2 ? "\(points.count) sessions" : "")
-                Spacer()
-                Text(points.last.map { Self.dateFormatter.string(from: $0.date) } ?? "")
+            PointMark(
+                x: .value("Date", point.date),
+                y: .value(metricTitle, hasAppeared || reduceMotion ? point.value : 0)
+            )
+            .symbolSize(point.id == selectedPointID ? 90 : 34)
+
+            if let selectedPoint, selectedPoint.id == point.id {
+                RuleMark(x: .value("Date", selectedPoint.date))
+                    .foregroundStyle(Color.secondary.opacity(0.4))
+                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+                    .annotation(position: .top, spacing: 6, overflowResolution: .init(x: .fit, y: .disabled)) {
+                        selectionCallout(for: selectedPoint)
+                    }
             }
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundColor(IronTheme.tertiaryText)
-            .padding(.leading, 50)
         }
+        .foregroundStyle(metricColor)
+        .chartYScale(domain: 0...max((points.map(\.value).max() ?? 0) * 1.1, 1))
+        .opacity(!reduceMotion || hasAppeared ? 1 : 0)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+        .onAppear { hasAppeared = true }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: metricTitle)
+        .chartYAxis {
+            AxisMarks(position: .leading) { value in
+                AxisGridLine()
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(valueFormatter(raw))
+                    }
+                }
+            }
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 3)) { value in
+                AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                if let date = value.as(Date.self), date == points.last?.date {
+                    AxisGridLine()
+                }
+            }
+        }
+        .chartXSelection(value: Binding(
+            get: { selectedPoint?.date },
+            set: { newDate in
+                guard let newDate else {
+                    selectedPointID = nil
+                    return
+                }
+                selectedPointID = points.min {
+                    abs($0.date.timeIntervalSince(newDate)) < abs($1.date.timeIntervalSince(newDate))
+                }?.id
+            }
+        ))
+        .frame(height: 150)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Training trend chart with \(points.count) sessions")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityAdjustableAction(adjustSelection)
     }
 
-    private func selectionTooltip(
-        for point: WorkoutPlanTrendPoint,
-        at position: CGPoint,
-        in size: CGSize
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
+    private func selectionCallout(for point: WorkoutPlanTrendPoint) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
             Text(dateLabel(point.date))
-                .font(.caption.weight(.semibold))
-                .foregroundColor(IronTheme.secondaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-
-            HStack(spacing: 6) {
-                Text(metricTitle)
-                    .font(.caption2.weight(.semibold))
-                    .foregroundColor(IronTheme.secondaryText)
-                Spacer(minLength: 4)
-                Text(valueFormatter(point.value))
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.accent)
-            }
-
-            HStack(spacing: 8) {
-                tooltipMetric(durationLabel(point.duration), label: "TIME")
-                tooltipMetric(volumeFormatter(point.totalVolume), label: "VOLUME")
-                tooltipMetric("\(point.completedSets)", label: "SETS")
-                tooltipMetric("\(point.repetitions)", label: "REPS")
-            }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            valueText(point.value)
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(metricColor)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: point.id)
+            (Text("\(point.completedSets) sets · \(point.repetitions) reps").foregroundColor(IronTheme.metricSets)
+             + Text(" · ").foregroundColor(IronTheme.secondaryText)
+             + Text(durationLabel(point.duration)).foregroundColor(IronTheme.metricTime))
+                .font(.ironMetric(.caption2, weight: .semibold))
         }
-        .padding(10)
-        .frame(width: 220)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(IronTheme.raisedSurface)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .stroke(IronTheme.accent.opacity(0.28), lineWidth: 1)
-        )
-        .shadow(color: IronTheme.background.opacity(0.28), radius: 8, y: 3)
-        .position(
-            x: min(max(position.x, 110), max(size.width - 110, 110)),
-            y: position.y < 62
-                ? min(position.y + 60, size.height - 42)
-                : max(position.y - 60, 42)
-        )
-        .allowsHitTesting(false)
+        .padding(8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .accessibilityHidden(true)
     }
-
-    private func tooltipMetric(_ value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(value)
-                .font(.system(size: 11, weight: .bold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.62)
-            Text(label)
-                .font(.system(size: 8, weight: .bold))
-                .tracking(0.45)
-                .foregroundColor(IronTheme.tertiaryText)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private static let dateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("MMM d")
-        return formatter
-    }()
 }
 
 private struct WorkoutPlanDetailView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -991,33 +873,65 @@ private struct WorkoutPlanDetailView: View {
     private var latestWorkout: Workout? { completedWorkouts.first }
 
     var body: some View {
-        ZStack {
-            IronScreenBackground()
+        List {
+            Section {
+                Button(action: startWorkout) {
+                    Label(
+                        isActiveWorkout
+                            ? "Resume Workout"
+                            : (canStartWorkout ? "Start Workout" : "Finish Current Workout First"),
+                        systemImage: isActiveWorkout || canStartWorkout ? "play.fill" : "lock.fill"
+                    )
+                }
+                .fontWeight(.semibold)
+                .disabled(!isActiveWorkout && (!canStartWorkout || planExercises.isEmpty))
+            } footer: {
+                if let comment = plan.comment, !comment.isEmpty {
+                    Text(comment)
+                }
+            }
 
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 0) {
-                    planHero
-                        .padding(.bottom, 22)
-                    sectionSeparator
-                    trendSection
-                        .padding(.vertical, 22)
-                    sectionSeparator
-                    exerciseSection
-                        .padding(.vertical, 22)
+            Section("Summary") {
+                LabeledContent("Sessions") {
+                    Text("\(completedWorkouts.count)")
+                        .font(.ironMetric(.body))
+                        .foregroundStyle(IronTheme.accent)
+                }
+                LabeledContent("Last Trained", value: latestWorkoutDate)
+                LabeledContent("Total Volume") {
+                    volumeText(totalVolume).font(.ironMetric(.body))
+                }
+            }
+            .monospacedDigit()
 
-                    if !completedWorkouts.isEmpty {
-                        sectionSeparator
-                        recentSessionsSection
-                            .padding(.top, 22)
+            trendSection
+
+            exerciseSection
+
+            if !completedWorkouts.isEmpty {
+                Section("Recent Sessions") {
+                    ForEach(completedWorkouts.prefix(4), id: \.objectID) { workout in
+                        NavigationLink {
+                            WorkoutDetailView(workout: workout)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
+                                (Text("\(workout.numberOfCompletedSets ?? 0) sets").foregroundColor(IronTheme.metricSets)
+                                 + Text(" · ").foregroundColor(IronTheme.secondaryText)
+                                 + volumeText(workout.totalCompletedWeight ?? 0)
+                                 + Text(" · ").foregroundColor(IronTheme.secondaryText)
+                                 + Text(workout.duration.flatMap { Workout.durationFormatter.string(from: $0) } ?? "—").foregroundColor(IronTheme.metricTime))
+                                    .font(.ironMetric(.caption, weight: .semibold))
+                            }
+                        }
                     }
                 }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.top, 14)
-                .padding(.bottom, isActiveWorkout ? 184 : 120)
             }
         }
+        .listStyle(.insetGrouped)
+        .contentMargins(.bottom, isActiveWorkout ? IronTheme.floatingWorkoutBottomClearance : 24, for: .scrollContent)
         .navigationTitle(plan.displayTitle)
-        .navigationBarTitleDisplayMode(.inline)
+        .navigationBarTitleDisplayMode(.large)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Edit", action: onEdit)
@@ -1025,321 +939,108 @@ private struct WorkoutPlanDetailView: View {
         }
     }
 
-    private var planHero: some View {
-        VStack(alignment: .leading, spacing: 15) {
-            HStack(alignment: .top, spacing: 13) {
-                Image(systemName: "rectangle.stack.fill")
-                    .font(.system(size: 21, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 48, height: 48)
-                    .background(
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .fill(IronTheme.accentSoft)
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(plan.displayTitle)
-                        .font(.title2.weight(.bold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text(plan.comment?.isEmpty == false
-                         ? plan.comment!
-                         : "\(planExercises.count) exercise\(planExercises.count == 1 ? "" : "s") · Saved workout")
-                        .font(.subheadline)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 0) {
-                heroMetric("\(completedWorkouts.count)", label: "SESSIONS")
-                heroMetricDivider
-                heroMetric(latestWorkoutDate, label: "LAST TRAINED")
-                heroMetricDivider
-                heroMetric(displayWeight(totalVolume), label: "TOTAL VOLUME")
-            }
-
-            Button(action: startWorkout) {
-                Label(
-                    isActiveWorkout
-                        ? "Resume workout"
-                        : (canStartWorkout ? "Start workout" : "Finish current workout first"),
-                    systemImage: isActiveWorkout || canStartWorkout ? "play.fill" : "lock.fill"
-                )
-            }
-            .buttonStyle(IronPrimaryButtonStyle())
-            .disabled(!isActiveWorkout && (!canStartWorkout || planExercises.isEmpty))
-            .opacity(isActiveWorkout || (canStartWorkout && !planExercises.isEmpty) ? 1 : 0.52)
-        }
-        .padding(16)
-        .background(RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous).fill(IronTheme.surface))
-    }
-
-    private func heroMetric(_ value: String, label: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value)
-                .font(.system(size: 15, weight: .bold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.68)
-            Text(label)
-                .font(.system(size: 8, weight: .bold))
-                .tracking(0.6)
-                .foregroundColor(IronTheme.tertiaryText)
-                .lineLimit(1)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
-    }
-
-    private var heroMetricDivider: some View {
-        Rectangle()
-            .fill(IronTheme.outline.opacity(0.55))
-            .frame(width: 1, height: 38)
-    }
-
+    @ViewBuilder
     private var trendSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(
-                title: "Training trend",
-                detail: completedWorkouts.isEmpty ? "NO HISTORY" : "LAST \(min(completedWorkouts.count, 8))"
-            )
-
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(latestMetricValue)
-                        .font(.system(size: 26, weight: .bold).monospacedDigit())
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("Latest \(selectedMetric.title.lowercased())")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-                Spacer()
-                Image(systemName: selectedMetric.icon)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(IronTheme.accent)
-                    .frame(width: 40, height: 40)
-                    .background(Circle().fill(IronTheme.accentSoft))
-            }
-
+        Section {
             if trendPoints.isEmpty {
-                VStack(spacing: 9) {
-                    Image(systemName: "chart.xyaxis.line")
-                        .font(.system(size: 28, weight: .semibold))
-                        .foregroundColor(IronTheme.accent)
-                    Text("Complete this workout to start its trend")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("Volume, repetitions, and duration will appear here after your first saved session.")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                        .multilineTextAlignment(.center)
-                }
-                .frame(maxWidth: .infinity, minHeight: 132)
-                .padding(.vertical, 8)
-            } else {
-                WorkoutPlanTrendChart(
-                    points: trendPoints,
-                    valueFormatter: chartValueLabel,
-                    metricTitle: selectedMetric.title,
-                    volumeFormatter: displayWeight
+                ContentUnavailableView(
+                    "No Trend Yet",
+                    systemImage: "chart.xyaxis.line",
+                    description: Text("Volume, repetitions, and duration appear here after your first saved session.")
                 )
-            }
-
-            Picker("Trend metric", selection: $selectedMetric) {
-                ForEach(WorkoutPlanTrendMetric.allCases) { metric in
-                    Text(metric.title)
-                        .tag(metric)
-                }
-            }
-            .pickerStyle(.segmented)
-        }
-    }
-
-    private var exerciseSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(title: "Exercises", detail: "\(planExercises.count) TOTAL")
-
-            if planExercises.isEmpty {
-                Button(action: onEdit) {
-                    Label("Add exercises to this workout", systemImage: "plus")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(IronSecondaryButtonStyle())
+                .listRowBackground(Color.clear)
             } else {
-                VStack(spacing: 0) {
-                    ForEach(Array(planExercises.enumerated()), id: \.element.id) { index, planExercise in
-                        planExerciseRow(planExercise, index: index)
-                        if index < planExercises.count - 1 {
-                            IronHairline().padding(.leading, 60)
-                        }
+                VStack(alignment: .leading, spacing: 10) {
+                    metricValueText(latestWorkout.map(metricValue(for:)) ?? 0)
+                        .font(.ironMetric(.title2))
+                        .foregroundStyle(selectedMetric.color)
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedMetric)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+
+                    WorkoutPlanTrendChart(
+                        points: trendPoints,
+                        valueFormatter: chartValueLabel,
+                        valueText: metricValueText,
+                        metricTitle: selectedMetric.title,
+                        metricColor: selectedMetric.color,
+                        volumeFormatter: displayWeight
+                    )
+                }
+                .padding(.vertical, 6)
+
+                Picker("Metric", selection: $selectedMetric) {
+                    ForEach(WorkoutPlanTrendMetric.allCases) { metric in
+                        Text(metric.title).tag(metric)
                     }
                 }
+                .pickerStyle(.segmented)
+                .listRowBackground(Color.clear)
+                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            }
+        } header: {
+            Text("Training Trend")
+        } footer: {
+            if !trendPoints.isEmpty {
+                Text("Latest \(selectedMetric.title.lowercased()) across your last \(trendPoints.count) session\(trendPoints.count == 1 ? "" : "s").")
             }
         }
-    }
-
-    private func planExerciseRow(_ planExercise: WorkoutRoutineExercise, index: Int) -> some View {
-        let exercise = planExercise.exercise(in: exerciseStore.exercises)
-        let sets = planExercise.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
-
-        return VStack(alignment: .leading, spacing: 11) {
-            planExerciseHeader(planExercise, exercise: exercise, index: index)
-
-            if sets.isEmpty {
-                Text("No target sets")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-            } else {
-                VStack(spacing: 0) {
-                    HStack(spacing: 10) {
-                        Text("SET")
-                            .frame(width: 42, alignment: .center)
-                        Text("TARGET")
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .font(.system(size: 10, weight: .bold))
-                    .tracking(0.65)
-                    .foregroundColor(IronTheme.tertiaryText)
-                    .frame(height: 28)
-
-                    ForEach(Array(sets.prefix(4).enumerated()), id: \.element.id) { setIndex, set in
-                        targetSetPreviewRow(set, index: setIndex)
-                    }
-
-                    if sets.count > 4 {
-                        Text("+\(sets.count - 4) more target set\(sets.count - 4 == 1 ? "" : "s")")
-                            .font(.caption.weight(.semibold))
-                            .foregroundColor(IronTheme.secondaryText)
-                            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
-                            .padding(.leading, 52)
-                    }
-                }
-            }
-        }
-        .padding(.vertical, 14)
     }
 
     @ViewBuilder
-    private func planExerciseHeader(
-        _ planExercise: WorkoutRoutineExercise,
-        exercise: Exercise?,
-        index: Int
-    ) -> some View {
+    private var exerciseSection: some View {
+        Section("Exercises") {
+            if planExercises.isEmpty {
+                Button("Add Exercises", systemImage: "plus", action: onEdit)
+            } else {
+                ForEach(planExercises, id: \.id) { planExercise in
+                    planExerciseRow(planExercise)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func planExerciseRow(_ planExercise: WorkoutRoutineExercise) -> some View {
+        let exercise = planExercise.exercise(in: exerciseStore.exercises)
+        let sets = planExercise.workoutRoutineSets?.array as? [WorkoutRoutineSet] ?? []
+        let summary: Text = sets.isEmpty
+            ? Text("No target sets").foregroundColor(IronTheme.secondaryText)
+            : sets.enumerated().map { targetSetSummary($0.element, index: $0.offset) }
+                .reduce(Text("")) { result, next in result + next + Text("  ") }
+
         if let exercise {
-            NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+            NavigationLink {
+                ExerciseDetailView(exercise: exercise)
+            } label: {
                 HStack(spacing: 12) {
-                    ExerciseDiagramThumbnail(exercise: exercise, size: 48)
+                    ExerciseDiagramThumbnail(exercise: exercise, size: 40)
 
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(exercise.title)
-                            .font(.headline.weight(.semibold))
-                            .foregroundColor(IronTheme.accent)
                             .lineLimit(2)
-                        Text(planExercise.restTimerDurationValue.map(restTimerText) ?? "Workout default rest")
-                            .font(.caption)
-                            .foregroundColor(IronTheme.accent)
-                    }
-
-                    Spacer(minLength: 8)
-
-                    Text("\(index + 1)")
-                        .font(.caption.weight(.bold).monospacedDigit())
-                        .foregroundColor(IronTheme.tertiaryText)
-                        .frame(minWidth: 20)
-
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(IronTheme.tertiaryText)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens exercise details")
-        } else {
-            HStack(spacing: 12) {
-                Circle()
-                    .fill(IronTheme.raisedSurface)
-                    .frame(width: 48, height: 48)
-                    .overlay(Image(systemName: "dumbbell.fill").foregroundColor(IronTheme.accent))
-                Text("Unknown exercise")
-                    .font(.headline.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-
-                Spacer(minLength: 8)
-
-                Text("\(index + 1)")
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.tertiaryText)
-            }
-        }
-    }
-
-    private var recentSessionsSection: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            IronSectionTitle(title: "Recent sessions", detail: "\(completedWorkouts.count) TOTAL")
-
-            VStack(spacing: 0) {
-                ForEach(Array(completedWorkouts.prefix(4).enumerated()), id: \.element.id) { index, workout in
-                    NavigationLink(destination: WorkoutDetailView(workout: workout)) {
-                        HStack(spacing: 12) {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 12, weight: .heavy))
-                                .foregroundColor(IronTheme.onAccent)
-                                .frame(width: 32, height: 32)
-                                .background(Circle().fill(IronTheme.success))
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
-                                    .font(.subheadline.weight(.semibold))
-                                    .foregroundColor(IronTheme.primaryText)
-                                Text("\(workout.numberOfCompletedSets ?? 0) sets · \(displayWeight(workout.totalCompletedWeight ?? 0))")
-                                    .font(.caption)
-                                    .foregroundColor(IronTheme.secondaryText)
-                            }
-                            Spacer()
-                            Text(workout.duration.flatMap { Workout.durationFormatter.string(from: $0) } ?? "—")
-                                .font(.caption.weight(.semibold).monospacedDigit())
-                                .foregroundColor(IronTheme.secondaryText)
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.bold))
-                                .foregroundColor(IronTheme.tertiaryText)
+                        summary
+                            .font(.ironMetric(.caption, weight: .semibold))
+                            .lineLimit(2)
+                        if let rest = planExercise.restTimerDurationValue {
+                            Text(restTimerText(rest))
+                                .font(.ironMetric(.caption2, weight: .semibold))
+                                .foregroundStyle(IronTheme.metricTime)
                         }
-                        .frame(minHeight: 62)
-                    }
-                    .buttonStyle(.plain)
-
-                    if index < min(completedWorkouts.count, 4) - 1 {
-                        IronHairline().padding(.leading, 58)
                     }
                 }
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Unknown Exercise")
+                summary
+                    .font(.ironMetric(.caption, weight: .semibold))
             }
         }
     }
 
-    private var sectionSeparator: some View {
-        IronHairline(opacity: 0.52)
-    }
-
-    private func targetSetPreviewRow(_ set: WorkoutRoutineSet, index: Int) -> some View {
-        HStack(spacing: 10) {
-            Text(targetSetLabel(set, index: index))
-                .font(.system(size: 13, weight: .bold).monospacedDigit())
-                .foregroundColor(set.tagValue == .warmUp ? IronTheme.warning : IronTheme.primaryText)
-                .frame(width: 42, height: 34)
-                .background(
-                    Capsule(style: .continuous)
-                        .fill(IronTheme.raisedSurface)
-                )
-
-            Text(targetSetText(set))
-                .font(.system(size: 14, weight: .semibold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.72)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(minHeight: 40)
+    private func targetSetSummary(_ set: WorkoutRoutineSet, index: Int) -> Text {
+        Text(targetSetLabel(set, index: index) + ": ").foregroundColor(IronTheme.metricSets)
+            + targetSetText(set)
     }
 
     private func targetSetLabel(_ set: WorkoutRoutineSet, index: Int) -> String {
@@ -1385,24 +1086,27 @@ private struct WorkoutPlanDetailView: View {
             .reduce(0) { $0 + ($1.numberOfCompletedRepetitions ?? 0) }
     }
 
-    private var latestMetricValue: String {
-        guard let latestWorkout else { return "—" }
-        return chartValueLabel(metricValue(for: latestWorkout))
-    }
-
     private func chartValueLabel(_ value: Double) -> String {
         switch selectedMetric {
         case .volume:
-            let suffix = settingsStore.weightUnit == .metric ? "kg" : "lb"
-            return value >= 1_000
-                ? String(format: "%.1fk %@", value / 1_000, suffix)
-                : String(format: "%.0f %@", value, suffix)
+            return (settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "—")
+                + " " + settingsStore.weightUnit.unit.symbol
         case .repetitions:
             return String(format: "%.0f", value)
         case .duration:
             if value >= 60 { return String(format: "%.1fh", value / 60) }
             return String(format: "%.0fm", value)
         }
+    }
+
+    private func metricValueText(_ value: Double) -> Text {
+        if selectedMetric == .volume {
+            return Text(settingsStore.weightUnit.displayNumberFormatter.string(from: value as NSNumber) ?? "—")
+                .foregroundColor(IronTheme.metricVolume)
+                + Text(" " + settingsStore.weightUnit.unit.symbol)
+                    .font(.caption).foregroundColor(IronTheme.secondaryText)
+        }
+        return Text(chartValueLabel(value)).foregroundColor(selectedMetric.color)
     }
 
     private var latestWorkoutDate: String {
@@ -1413,10 +1117,14 @@ private struct WorkoutPlanDetailView: View {
     }
 
     private func displayWeight(_ kilograms: Double) -> String {
+        WeightUnit.format(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
+    }
+
+    private func volumeText(_ kilograms: Double) -> Text {
         let display = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
-        let suffix = settingsStore.weightUnit == .metric ? "kg" : "lb"
-        if display >= 10_000 { return String(format: "%.1fk %@", display / 1_000, suffix) }
-        return String(format: display >= 100 ? "%.0f %@" : "%.1f %@", display, suffix)
+        return Text(settingsStore.weightUnit.displayNumberFormatter.string(from: display as NSNumber) ?? "—")
+            .foregroundColor(IronTheme.metricVolume)
+            + Text(" " + settingsStore.weightUnit.unit.symbol).font(.caption).foregroundColor(IronTheme.secondaryText)
     }
 
     private func restTimerText(_ duration: TimeInterval) -> String {
@@ -1426,13 +1134,15 @@ private struct WorkoutPlanDetailView: View {
         return "Rest \(formatter.string(from: duration) ?? "Off")"
     }
 
-    private func targetSetText(_ set: WorkoutRoutineSet) -> String {
+    private func targetSetText(_ set: WorkoutRoutineSet) -> Text {
         if let duration = set.durationValue {
             let durationTitle = targetDurationText(duration)
-            guard let kilograms = set.weightValue else { return durationTitle }
+            guard let kilograms = set.weightValue else { return Text(durationTitle).foregroundColor(IronTheme.metricTime) }
             let display = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
-            let weight = settingsStore.weightUnit.numberFormatter.string(from: NSNumber(value: display)) ?? "—"
-            return "\(weight) · \(durationTitle)"
+            let weight = settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: display)) ?? "—"
+            return Text(weight).foregroundColor(IronTheme.metricVolume)
+                + Text(" " + settingsStore.weightUnit.unit.symbol).font(.caption2).foregroundColor(IronTheme.secondaryText)
+                + Text(" · ") + Text(durationTitle).foregroundColor(IronTheme.metricTime)
         }
 
         let repetitions: String
@@ -1446,10 +1156,12 @@ private struct WorkoutPlanDetailView: View {
             repetitions = "—"
         }
 
-        guard let kilograms = set.weightValue else { return repetitions }
+        guard let kilograms = set.weightValue else { return Text(repetitions).foregroundColor(IronTheme.metricSets) }
         let display = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
-        let weight = settingsStore.weightUnit.numberFormatter.string(from: NSNumber(value: display)) ?? "—"
-        return "\(weight) × \(repetitions)"
+        let weight = settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: display)) ?? "—"
+        return Text(weight).foregroundColor(IronTheme.metricVolume)
+            + Text(" " + settingsStore.weightUnit.unit.symbol).font(.caption2).foregroundColor(IronTheme.secondaryText)
+            + Text(" × ") + Text(repetitions).foregroundColor(IronTheme.metricSets)
     }
 
     private func targetDurationText(_ seconds: TimeInterval) -> String {
@@ -1472,6 +1184,7 @@ private struct SavedWorkoutRow: View {
     let onEdit: () -> Void
     let onDuplicate: () -> Void
     let onDelete: () -> Void
+    let onExport: () -> Void
     let canStartWorkout: Bool
     let isActiveWorkout: Bool
     let onWorkoutStarted: () -> Void
@@ -1491,8 +1204,14 @@ private struct SavedWorkoutRow: View {
         return preview.isEmpty ? count : "\(count) · \(preview)"
     }
 
+    private var canStart: Bool {
+        !workoutExercises.isEmpty && (isActiveWorkout || canStartWorkout)
+    }
+
     var body: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
+            startButton
+
             NavigationLink {
                 WorkoutPlanDetailView(
                     plan: workout,
@@ -1503,79 +1222,69 @@ private struct SavedWorkoutRow: View {
                     onFailure: onFailure
                 )
             } label: {
-                HStack(spacing: 12) {
-                    Image(systemName: isActiveWorkout ? "figure.strengthtraining.traditional" : "dumbbell.fill")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundColor(IronTheme.accent)
-                        .frame(width: 38, height: 38)
-                        .background(Circle().fill(IronTheme.accentSoft))
-
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 6) {
-                            Text(workout.displayTitle)
-                                .font(.body.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                                .lineLimit(1)
-
-                            if isActiveWorkout {
-                                Text("ACTIVE")
-                                    .font(.caption2.weight(.semibold))
-                                    .foregroundColor(IronTheme.accent)
-                            }
-                        }
-
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(workout.displayTitle)
+                            .lineLimit(1)
                         Text(workout.comment?.isEmpty == false ? workout.comment! : workoutSummary)
                             .font(.caption)
-                            .foregroundColor(IronTheme.secondaryText)
+                            .foregroundStyle(.secondary)
                             .lineLimit(2)
                     }
 
                     Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens workout details")
 
-            if workoutExercises.isEmpty {
-                Button(action: onEdit) {
-                    Text("Add")
+                    if isActiveWorkout {
+                        Text("Active")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.tint)
+                    }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-            } else {
-                Button(action: start) {
-                    Text(isActiveWorkout ? "Resume" : "Start")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(!isActiveWorkout && !canStartWorkout)
             }
-
-            Menu {
-                Button(action: onEdit) {
-                    Label("Edit Workout", systemImage: "pencil")
-                }
-                Button(action: onDuplicate) {
-                    Label("Duplicate Workout", systemImage: "doc.on.doc")
-                }
-                Divider()
-                Button(role: .destructive, action: onDelete) {
-                    Label("Delete Workout", systemImage: "trash")
-                }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.body.weight(.semibold))
-                    .foregroundColor(IronTheme.secondaryText)
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Workout actions")
         }
-        .padding(.leading, 12)
-        .padding(.trailing, 4)
-        .padding(.vertical, 10)
-        .frame(minHeight: 72)
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
+            Button("Edit", systemImage: "pencil", action: onEdit)
+                .tint(.gray)
+        }
+        .swipeActions(edge: .leading) {
+            if workoutExercises.isEmpty {
+                Button("Add Exercises", systemImage: "plus", action: onEdit)
+                    .tint(.accentColor)
+            } else {
+                Button(isActiveWorkout ? "Resume" : "Start", systemImage: "play.fill", action: start)
+                    .tint(.accentColor)
+                    .disabled(!isActiveWorkout && !canStartWorkout)
+            }
+        }
+        .contextMenu {
+            if !workoutExercises.isEmpty {
+                Button(isActiveWorkout ? "Resume Workout" : "Start Workout", systemImage: "play.fill", action: start)
+                    .disabled(!isActiveWorkout && !canStartWorkout)
+            }
+            Button("Edit Workout", systemImage: "pencil", action: onEdit)
+            Button("Duplicate Workout", systemImage: "doc.on.doc", action: onDuplicate)
+            Button("Share Workout", systemImage: "square.and.arrow.up", action: onExport)
+            Divider()
+            Button("Delete Workout", systemImage: "trash", role: .destructive, action: onDelete)
+        }
+    }
+
+    /// Starting is the primary reason to open this screen, so it gets a visible
+    /// control rather than living only in the swipe and context menus.
+    private var startButton: some View {
+        Button(action: start) {
+            Image(systemName: isActiveWorkout ? "figure.strengthtraining.traditional" : "play.fill")
+                .font(.footnote.weight(.bold))
+                .foregroundStyle(canStart ? AnyShapeStyle(IronTheme.onAccent) : AnyShapeStyle(.tertiary))
+                .frame(width: 34, height: 34)
+                .background {
+                    Circle().fill(canStart ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.tertiarySystemFill)))
+                }
+        }
+        .buttonStyle(.borderless)
+        .disabled(!canStart)
+        .accessibilityLabel(isActiveWorkout ? "Resume \(workout.displayTitle)" : "Start \(workout.displayTitle)")
     }
 
     private func start() {

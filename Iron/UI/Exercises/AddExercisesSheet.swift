@@ -16,7 +16,6 @@ struct AddExercisesSheet: View {
 
     private let exercises: [Exercise]
     private let recentExercises: [Exercise]
-    private let usesModalSurface: Bool
     private let title: String
     private let actionTitle: String
     private let maximumSelectionCount: Int?
@@ -34,7 +33,6 @@ struct AddExercisesSheet: View {
     init(
         exercises: [Exercise],
         recentExercises: [Exercise],
-        usesModalSurface: Bool = false,
         title: String = "Add Exercise",
         actionTitle: String = "Add",
         maximumSelectionCount: Int? = nil,
@@ -44,7 +42,6 @@ struct AddExercisesSheet: View {
     ) {
         self.exercises = exercises
         self.recentExercises = recentExercises
-        self.usesModalSurface = usesModalSurface
         self.title = title
         self.actionTitle = actionTitle
         self.maximumSelectionCount = maximumSelectionCount
@@ -69,45 +66,26 @@ struct AddExercisesSheet: View {
         exerciseStore.shownExercises.isEmpty ? exercises : exerciseStore.shownExercises
     }
 
-    private var equipmentPopupActions: [IronPopupAction] {
-        [IronPopupAction(
-            title: "All Equipment",
-            systemImage: "dumbbell.fill",
-            isSelected: selectedEquipment == nil
-        ) { selectedEquipment = nil }] + equipment.map { item in
-            IronPopupAction(
-                id: "equipment-\(item)",
-                title: item.capitalized,
-                systemImage: "dumbbell",
-                isSelected: selectedEquipment == item
-            ) { selectedEquipment = item }
-        }
-    }
-
-    private var musclePopupActions: [IronPopupAction] {
-        [IronPopupAction(
-            title: "All Muscles",
-            systemImage: "figure.strengthtraining.traditional",
-            isSelected: selectedMuscleGroup == nil
-        ) { selectedMuscleGroup = nil }] + muscleGroups.map { group in
-            IronPopupAction(
-                id: "muscle-\(group)",
-                title: group.capitalized,
-                systemImage: "figure.strengthtraining.traditional",
-                isSelected: selectedMuscleGroup == group
-            ) { selectedMuscleGroup = group }
-        }
-    }
-
-    private var filteredExercises: [Exercise] {
-        let matches = ExerciseStore.filter(exercises: availableExercises, using: search)
+    private var matchingExercises: [Exercise] {
+        ExerciseStore.filter(exercises: availableExercises, using: search)
             .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
             .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+    }
 
-        guard search.isEmpty, selectedMuscleGroup == nil, selectedEquipment == nil else { return matches }
+    /// Recents only earn their own section while browsing. Once the person
+    /// searches or filters, a pinned Recent group buries the actual matches.
+    private var showsRecentSection: Bool {
+        search.isEmpty
+            && selectedMuscleGroup == nil
+            && selectedEquipment == nil
+            && !recentExercises.isEmpty
+    }
+
+    private var filteredExercises: [Exercise] {
+        guard showsRecentSection else { return matchingExercises }
         let recentSet = Set(recentExercises)
-        return recentExercises + matches.filter { !recentSet.contains($0) }
+        return recentExercises + matchingExercises.filter { !recentSet.contains($0) }
     }
 
     private func resetAndDismiss() {
@@ -147,79 +125,33 @@ struct AddExercisesSheet: View {
 
     var body: some View {
         NavigationStack {
-            ZStack {
-                shellBackground
-
-                VStack(spacing: 0) {
-                    VStack(spacing: 10) {
-                        HStack(spacing: 10) {
-                            IronPopupMenu(title: "Equipment", actions: equipmentPopupActions) {
-                                filterControl(
-                                    title: selectedEquipment?.capitalized ?? "All Equipment",
-                                    icon: "dumbbell.fill",
-                                    active: selectedEquipment != nil
-                                )
-                            }
-
-                            IronPopupMenu(title: "Muscle group", actions: musclePopupActions) {
-                                filterControl(
-                                    title: selectedMuscleGroup?.capitalized ?? "All Muscles",
-                                    icon: "figure.strengthtraining.traditional",
-                                    active: selectedMuscleGroup != nil
-                                )
-                            }
+            List {
+                if matchingExercises.isEmpty {
+                    emptyState
+                } else if showsRecentSection {
+                    Section("Recent") {
+                        ForEach(recentExercises) { exercise in
+                            exerciseRow(exercise)
                         }
                     }
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.top, 8)
-                    .padding(.bottom, 8)
 
-                    HStack {
-                        Text(search.isEmpty && selectedMuscleGroup == nil && selectedEquipment == nil && !recentExercises.isEmpty
-                             ? "Recent first"
-                             : "\(filteredExercises.count) results")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.secondaryText)
-                        Spacer()
-                        if !exerciseSelectorSelection.isEmpty {
-                            HStack(spacing: 8) {
-                                Text("\(exerciseSelectorSelection.count) selected")
-                                    .font(.caption.weight(.semibold))
-                                    .foregroundColor(IronTheme.secondaryText)
-
-                                Button(action: addSelectedExercises) {
-                                    Text(confirmationTitle)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.small)
-                                .accessibilityHint("Adds the selected exercises to the workout")
-                            }
-                        } else {
-                            Button(action: { showingCreateExercise = true }) {
-                                Label("Create", systemImage: "plus")
-                                    .font(.caption.weight(.bold))
-                                    .foregroundColor(IronTheme.accent)
-                                    .padding(.horizontal, 10)
-                                    .frame(minHeight: 44)
-                                    .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Create custom exercise")
+                    let recentSet = Set(recentExercises)
+                    Section("All Exercises") {
+                        ForEach(matchingExercises.filter { !recentSet.contains($0) }) { exercise in
+                            exerciseRow(exercise)
                         }
                     }
-                    .padding(.horizontal, IronTheme.horizontalPadding)
-                    .padding(.vertical, 8)
-
-                    ScrollView(showsIndicators: false) {
-                        LazyVStack(spacing: 0) {
-                            ForEach(filteredExercises) { exercise in
-                                exerciseRow(exercise)
-                            }
+                } else {
+                    Section {
+                        ForEach(matchingExercises) { exercise in
+                            exerciseRow(exercise)
                         }
-                        .padding(.bottom, 28)
+                    } footer: {
+                        Text("\(matchingExercises.count) exercises")
                     }
                 }
             }
+            .listStyle(.insetGrouped)
             .navigationTitle(title)
             .navigationBarTitleDisplayMode(.inline)
             .searchable(text: $search, prompt: "Search exercises")
@@ -228,18 +160,48 @@ struct AddExercisesSheet: View {
                     Button("Cancel", action: resetAndDismiss)
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(
-                        confirmationTitle,
-                        action: addSelectedExercises
-                    )
-                    .fontWeight(.semibold)
-                    .disabled(exerciseSelectorSelection.isEmpty)
+                    Button(confirmationTitle, action: addSelectedExercises)
+                        .fontWeight(.semibold)
+                        .disabled(exerciseSelectorSelection.isEmpty)
+                }
+                ToolbarItemGroup(placement: .bottomBar) {
+                    Menu {
+                        Picker("Muscle", selection: $selectedMuscleGroup) {
+                            Text("All Muscles").tag(String?.none)
+                            ForEach(muscleGroups, id: \.self) { group in
+                                Text(group.capitalized).tag(String?.some(group))
+                            }
+                        }
+                    } label: {
+                        Text(selectedMuscleGroup?.capitalized ?? "Muscle")
+                            .lineLimit(1)
+                    }
+                    .accessibilityLabel("Filter by muscle group")
+
+                    Menu {
+                        Picker("Equipment", selection: $selectedEquipment) {
+                            Text("All Equipment").tag(String?.none)
+                            ForEach(equipment, id: \.self) { item in
+                                Text(item.capitalized).tag(String?.some(item))
+                            }
+                        }
+                    } label: {
+                        Text(selectedEquipment?.capitalized ?? "Equipment")
+                            .lineLimit(1)
+                    }
+                    .accessibilityLabel("Filter by equipment")
+
+                    Spacer()
+
+                    Button("Create Exercise", systemImage: "plus") {
+                        showingCreateExercise = true
+                    }
+                    .labelStyle(.iconOnly)
                 }
             }
         }
         .sheet(isPresented: $showingCreateExercise) {
             CreateCustomExerciseSheet(
-                usesModalSurface: usesModalSurface,
                 onDismiss: { showingCreateExercise = false }
             )
             .environmentObject(exerciseStore)
@@ -262,59 +224,81 @@ struct AddExercisesSheet: View {
     }
 
     @ViewBuilder
-    private var shellBackground: some View {
-        if usesModalSurface {
-            IronModalBackground()
+    private var emptyState: some View {
+        if !search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            ContentUnavailableView.search(text: search)
         } else {
-            IronScreenBackground()
+            ContentUnavailableView {
+                Label("No matching exercises", systemImage: "line.3.horizontal.decrease")
+            } description: {
+                Text("Try a different muscle group or equipment.")
+            } actions: {
+                Button("Clear Filters") {
+                    selectedMuscleGroup = nil
+                    selectedEquipment = nil
+                }
+            }
         }
     }
 
     private func exerciseRow(_ exercise: Exercise) -> some View {
-        let selected = exerciseSelectorSelection.contains(exercise)
         let selectionNumber = exerciseSelectorSelection.firstIndex(of: exercise).map { $0 + 1 }
+
         return HStack(spacing: 12) {
             Button(action: { toggle(exercise) }) {
-                HStack(spacing: 13) {
-                    ExerciseDiagramThumbnail(exercise: exercise, size: 58)
-                    VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 12) {
+                    selectionIndicator(number: selectionNumber)
+
+                    ExerciseDiagramThumbnail(exercise: exercise, size: 52)
+
+                    VStack(alignment: .leading, spacing: 2) {
                         Text(exercise.title)
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(IronTheme.primaryText)
+                            .font(.body)
                             .lineLimit(2)
                         Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                            .font(.caption.weight(.medium))
-                            .foregroundColor(IronTheme.secondaryText)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                    Spacer()
-                    if let selectionNumber = selectionNumber {
-                        Text("\(selectionNumber)")
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundColor(IronTheme.onAccent)
-                            .frame(width: 25, height: 25)
-                            .background(Circle().fill(IronTheme.accent))
-                            .accessibilityLabel("Selection \(selectionNumber)")
-                    } else {
-                        Image(systemName: "circle")
-                            .font(.title3.weight(.bold))
-                            .foregroundColor(IronTheme.tertiaryText)
-                    }
+
+                    Spacer(minLength: 0)
                 }
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
 
             Button(action: { detailExercise = exercise }) {
-                Image(systemName: "info.circle.fill")
+                Image(systemName: "info.circle")
                     .font(.title3)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .frame(width: 44, height: 44)
-                    .contentShape(Circle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.borderless)
             .accessibilityLabel("View \(exercise.title) details")
         }
-        .ironTonalListRow(isSelected: selected)
+    }
+
+    /// Ordered selection mirrors Photos: a numbered fill when the order matters,
+    /// a plain checkmark when only one exercise can be chosen.
+    @ViewBuilder
+    private func selectionIndicator(number: Int?) -> some View {
+        if let number {
+            if maximumSelectionCount == 1 {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.title3)
+                    .foregroundStyle(.tint)
+                    .accessibilityLabel("Selected")
+            } else {
+                Text("\(number)")
+                    .font(.caption.weight(.semibold).monospacedDigit())
+                    .foregroundStyle(.white)
+                    .frame(width: 24, height: 24)
+                    .background(Circle().fill(.tint))
+                    .accessibilityLabel("Selection \(number)")
+            }
+        } else {
+            Image(systemName: "circle")
+                .font(.title3)
+                .foregroundStyle(.tertiary)
+                .accessibilityLabel("Not selected")
+        }
     }
 
     private func toggle(_ exercise: Exercise) {
@@ -342,30 +326,6 @@ struct AddExercisesSheet: View {
         return maximumSelectionCount == 1
             ? actionTitle
             : "\(actionTitle) \(exerciseSelectorSelection.count)"
-    }
-
-    private func filterControl(title: String, icon: String, active: Bool) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: icon)
-                .font(.caption.weight(.bold))
-                .foregroundColor(active ? IronTheme.accent : IronTheme.secondaryText)
-            Text(title)
-                .font(.subheadline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
-                .layoutPriority(1)
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.down")
-                .font(.caption2.weight(.bold))
-                .foregroundColor(IronTheme.tertiaryText)
-        }
-        .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                .fill(active ? IronTheme.accentSoft : IronTheme.raisedSurface)
-        )
     }
 }
 

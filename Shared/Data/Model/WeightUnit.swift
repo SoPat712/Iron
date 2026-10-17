@@ -51,10 +51,18 @@ extension WeightUnit {
         return numberFormatter
     }
     
+    /// Grouped presentation values; numeric editors keep `numberFormatter`.
+    var displayNumberFormatter: NumberFormatter {
+        let formatter = numberFormatter
+        formatter.numberStyle = .decimal
+        formatter.usesGroupingSeparator = true
+        return formatter
+    }
+
     var formatter: MeasurementFormatter {
         let formatter = MeasurementFormatter()
         formatter.unitOptions = .providedUnit
-        formatter.numberFormatter = numberFormatter
+        formatter.numberFormatter = displayNumberFormatter
         return formatter
     }
 }

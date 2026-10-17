@@ -16,6 +16,7 @@ private enum KeyboardType {
 }
 
 struct WorkoutSetEditor : View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var settingsStore: SettingsStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     
@@ -110,7 +111,7 @@ struct WorkoutSetEditor : View {
         
     private var hideKeyboardButton: some View {
         Button(action: {
-            withAnimation {
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 self.showKeyboard = .none
             }
         }) {
@@ -162,7 +163,7 @@ struct WorkoutSetEditor : View {
             },
             onTextTapped: {
                 if self.showKeyboard == .none {
-                    withAnimation {
+                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                         self.showKeyboard = .weight
                     }
                 } else {
@@ -180,7 +181,7 @@ struct WorkoutSetEditor : View {
             showCursor: showKeyboard == .repetitions,
             onTextTapped: {
                 if self.showKeyboard == .none {
-                    withAnimation {
+                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                         self.showKeyboard = .repetitions
                     }
                 } else {
@@ -210,9 +211,9 @@ struct WorkoutSetEditor : View {
             moreSheet
         case .plates:
             IronUtilitySheet(
-                title: "Plate calculator",
-                subtitle: "Load each side of the bar",
-                systemImage: "circle.grid.cross",
+                title: "Plate Calculator",
+                subtitle: "",
+                systemImage: "plusminus",
                 onClose: { activeSheet = nil }
             ) {
                 PlateCalculatorView(
@@ -224,14 +225,12 @@ struct WorkoutSetEditor : View {
                     }
                 )
             }
-            .presentationDetents([.fraction(0.78)])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.scrolls)
-            .presentationBackground(IronTheme.modalSurface)
         case .warmups:
             IronUtilitySheet(
-                title: "Warm-up calculator",
-                subtitle: "Build up to your working weight",
+                title: "Warm-Up Calculator",
+                subtitle: "",
                 systemImage: "flame",
                 onClose: { activeSheet = nil }
             ) {
@@ -241,10 +240,8 @@ struct WorkoutSetEditor : View {
                     onAdd: addWarmupSets
                 )
             }
-            .presentationDetents([.height(620)])
+            .presentationDetents([.large])
             .presentationDragIndicator(.visible)
-            .presentationContentInteraction(.scrolls)
-            .presentationBackground(IronTheme.modalSurface)
         }
     }
 
@@ -270,16 +267,16 @@ struct WorkoutSetEditor : View {
     private var barbellTools: some View {
         HStack(spacing: 10) {
             Button(action: { activeSheet = .plates }) {
-                Label("Plates", systemImage: "circle.grid.cross")
+                Label("Plates", systemImage: "plusminus")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(IronSecondaryButtonStyle())
+            .buttonStyle(.bordered)
 
             Button(action: { activeSheet = .warmups }) {
                 Label("Warm-up", systemImage: "flame.fill")
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(IronSecondaryButtonStyle())
+            .buttonStyle(.bordered)
         }
     }
     
@@ -294,7 +291,7 @@ struct WorkoutSetEditor : View {
                 )
                 VStack(spacing: 0) {
                     NumericKeyboard.imageActionKeyboardButton(label: Image(systemName: "keyboard.chevron.compact.down"), width: geometry.size.width / 4) {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .none
                         }
                     }
@@ -372,17 +369,17 @@ struct WorkoutSetEditor : View {
                 
                 if abs(height) > abs(width) {
                     if height > 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .none
                         }
                     }
                 } else {
                     if width > 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .repetitions
                         }
                     } else if width < 200 {
-                        withAnimation {
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                             self.showKeyboard = .weight
                         }
                     }
@@ -400,6 +397,122 @@ struct WarmupRecommendation: Identifiable, Hashable {
     let repetitions: Int
 
     var id: String { "\(percentage)-\(weight)-\(repetitions)" }
+}
+
+/// Competition plate colours, so the diagram matches what the user is looking at
+/// on the rack rather than inventing a palette.
+enum PlateAppearance {
+    static func color(for weight: Double, unit: WeightUnit) -> Color {
+        if unit == .metric {
+            switch weight {
+            case 25: return Color(red: 0.80, green: 0.16, blue: 0.16)
+            case 20: return Color(red: 0.13, green: 0.35, blue: 0.72)
+            case 15: return Color(red: 0.90, green: 0.70, blue: 0.10)
+            case 10: return Color(red: 0.16, green: 0.52, blue: 0.28)
+            case 5: return Color(.systemGray5)
+            case 2.5: return Color(red: 0.55, green: 0.16, blue: 0.16)
+            default: return Color(.systemGray3)
+            }
+        }
+        switch weight {
+        case 45: return Color(red: 0.13, green: 0.35, blue: 0.72)
+        case 35: return Color(red: 0.90, green: 0.70, blue: 0.10)
+        case 25: return Color(red: 0.16, green: 0.52, blue: 0.28)
+        case 10: return Color(.systemGray5)
+        case 5: return Color(red: 0.80, green: 0.16, blue: 0.16)
+        default: return Color(.systemGray3)
+        }
+    }
+
+    /// Heavier plates are both wider and taller, matching real diameters closely
+    /// enough to be read at a glance.
+    static func height(for weight: Double, unit: WeightUnit, maximum: CGFloat) -> CGFloat {
+        let heaviest: Double = unit == .metric ? 25 : 45
+        let ratio = min(max(weight / heaviest, 0.28), 1)
+        return maximum * (0.44 + 0.56 * ratio)
+    }
+
+    static func width(for weight: Double, unit: WeightUnit) -> CGFloat {
+        let heaviest: Double = unit == .metric ? 25 : 45
+        let ratio = min(max(weight / heaviest, 0.16), 1)
+        return 7 + 7 * ratio
+    }
+}
+
+private struct BarbellLoadDiagram: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let platesPerSide: [(weight: Double, count: Int)]
+    let unit: WeightUnit
+
+    private let diagramHeight: CGFloat = 92
+
+    private var loadedPlates: [Double] {
+        platesPerSide.flatMap { Array(repeating: $0.weight, count: $0.count) }
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            shaft
+            collar
+
+            if loadedPlates.isEmpty {
+                Text("Empty bar")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 10)
+            } else {
+                HStack(spacing: 2) {
+                    ForEach(Array(loadedPlates.enumerated()), id: \.offset) { _, weight in
+                        plate(weight)
+                    }
+                }
+                .padding(.leading, 2)
+            }
+        }
+        .frame(height: diagramHeight)
+        .frame(maxWidth: .infinity)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: loadedPlates)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Barbell diagram")
+        .accessibilityValue(
+            loadedPlates.isEmpty
+                ? "Empty bar"
+                : platesPerSide
+                    .map { "\($0.count) times \($0.weight.formatted()) \(unit.unit.symbol)" }
+                    .joined(separator: ", ")
+        )
+    }
+
+    private var shaft: some View {
+        Capsule()
+            .fill(
+                LinearGradient(
+                    colors: [Color(.systemGray4), Color(.systemGray2), Color(.systemGray4)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+            )
+            .frame(width: 66, height: 9)
+    }
+
+    private var collar: some View {
+        RoundedRectangle(cornerRadius: 2, style: .continuous)
+            .fill(Color(.systemGray2))
+            .frame(width: 8, height: 28)
+    }
+
+    private func plate(_ weight: Double) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 3, style: .continuous)
+        return shape
+            .fill(PlateAppearance.color(for: weight, unit: unit))
+            .overlay(shape.stroke(Color.black.opacity(0.18), lineWidth: 0.5))
+            .frame(
+                width: PlateAppearance.width(for: weight, unit: unit),
+                height: PlateAppearance.height(for: weight, unit: unit, maximum: diagramHeight)
+            )
+            .shadow(color: .black.opacity(0.12), radius: 1.5, x: 0.5, y: 1)
+            .transition(reduceMotion ? .opacity : .scale(scale: 0.6).combined(with: .opacity))
+    }
 }
 
 struct PlateCalculatorView: View {
@@ -442,267 +555,94 @@ struct PlateCalculatorView: View {
         abs(loadedWeight - targetWeight) < 0.001
     }
 
-    private func plateColor(_ weight: Double) -> Color {
-        if unit == .metric {
-            switch weight {
-            case 25: return IronTheme.danger
-            case 20: return IronTheme.accent
-            case 15: return Color.yellow
-            case 10: return IronTheme.success
-            case 5: return Color(UIColor.systemGray3)
-            case 2.5: return IronTheme.danger
-            case 1.25: return IronTheme.success
-            default: return Color(UIColor.systemGray4)
-            }
-        } else {
-            switch weight {
-            case 45: return IronTheme.accent
-            case 35: return Color.yellow
-            case 25: return IronTheme.success
-            case 10: return Color(UIColor.systemGray3)
-            case 5: return IronTheme.danger
-            case 2.5: return IronTheme.success
-            default: return Color(UIColor.systemGray4)
-            }
-        }
-    }
-
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView(showsIndicators: false) {
-                VStack(spacing: 12) {
-                    targetLoadCard
-                    barWeightCard
-                    plateLoadCard
+        List {
+            Section {
+                VStack(spacing: 16) {
+                    VStack(spacing: 2) {
+                        Text("\(weightTitle(loadedWeight)) \(unit.unit.symbol)")
+                            .font(.system(size: 42, weight: .semibold).monospacedDigit())
+                            .contentTransition(.numericText())
+
+                        Text(isExactLoad
+                             ? "Loads your target exactly"
+                             : "Closest to \(weightTitle(targetWeight)) \(unit.unit.symbol)")
+                        .font(.footnote)
+                        .foregroundStyle(isExactLoad ? AnyShapeStyle(.secondary) : AnyShapeStyle(Color.orange))
+                    }
+                    .accessibilityElement(children: .combine)
+                    .accessibilityLabel("Loaded weight")
+                    .accessibilityValue("\(weightTitle(loadedWeight)) \(unit.unit.symbol)")
+
+                    BarbellLoadDiagram(platesPerSide: platesPerSide, unit: unit)
+
+                    Text(platesPerSide.isEmpty
+                         ? "Empty bar"
+                         : "\(weightTitle(plateWeightPerSide)) \(unit.unit.symbol) per side")
+                    .font(.footnote.weight(.medium))
+                    .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.bottom, 14)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+                .listRowSeparator(.hidden)
             }
 
-            IronHairline()
-
-            Button {
-                onApply(loadedWeight)
-            } label: {
-                Text("Use \(weightTitle(loadedWeight)) \(unit.unit.symbol)")
-            }
-            .buttonStyle(IronPrimaryButtonStyle())
-            .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.top, 12)
-            .padding(.bottom, 12)
-            .background(IronTheme.modalSurface)
-        }
-        .background(IronTheme.modalSurface)
-        .sensoryFeedback(.selection, trigger: targetWeight)
-    }
-
-    private var targetLoadCard: some View {
-        VStack(spacing: 10) {
-            Text("TARGET LOAD")
-                .font(.system(size: 10, weight: .bold))
-                .tracking(1.1)
-                .foregroundColor(IronTheme.secondaryText)
-
-            HStack(spacing: 18) {
-                loadControlButton(
-                    systemImage: "minus",
-                    accessibilityLabel: "Decrease target load"
+            Section {
+                Stepper(
+                    onIncrement: targetWeight >= 2000 ? nil : { adjustTarget(by: unit.barbellIncrement) },
+                    onDecrement: targetWeight <= barWeight ? nil : { adjustTarget(by: -unit.barbellIncrement) }
                 ) {
-                    adjustTarget(by: -unit.barbellIncrement)
+                    LabeledContent("Target", value: "\(weightTitle(targetWeight)) \(unit.unit.symbol)")
+                        .monospacedDigit()
                 }
-                .disabled(targetWeight <= barWeight)
 
-                VStack(spacing: 0) {
-                    Text(weightTitle(targetWeight))
-                        .font(.system(size: 44, weight: .bold).monospacedDigit())
-                        .foregroundColor(IronTheme.primaryText)
-                        .contentTransition(.numericText())
-                    Text(unit.unit.symbol)
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-                .frame(minWidth: 120)
-
-                loadControlButton(
-                    systemImage: "plus",
-                    accessibilityLabel: "Increase target load"
+                Stepper(
+                    onIncrement: barWeight >= 100 ? nil : { adjustBar(by: 5) },
+                    onDecrement: barWeight <= 0 ? nil : { adjustBar(by: -5) }
                 ) {
-                    adjustTarget(by: unit.barbellIncrement)
+                    LabeledContent("Bar", value: "\(weightTitle(barWeight)) \(unit.unit.symbol)")
+                        .monospacedDigit()
                 }
-                .disabled(targetWeight >= 2000)
+            } header: {
+                Text("Load")
+            } footer: {
+                Text("Target moves in \(weightTitle(unit.barbellIncrement)) \(unit.unit.symbol) steps and includes the bar.")
             }
 
-            Text("\(weightTitle(unit.barbellIncrement)) \(unit.unit.symbol) steps")
-                .font(.caption)
-                .foregroundColor(IronTheme.secondaryText)
-        }
-        .padding(16)
-        .frame(maxWidth: .infinity)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
-
-    private var barWeightCard: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("Bar weight")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                Text("Included in the target")
-                    .font(.caption)
-                    .foregroundColor(IronTheme.secondaryText)
-            }
-
-            Spacer(minLength: 8)
-
-            compactLoadControl(systemImage: "minus") {
-                adjustBar(by: -5)
-            }
-            .disabled(barWeight <= 0)
-
-            Text("\(weightTitle(barWeight)) \(unit.unit.symbol)")
-                .font(.system(size: 15, weight: .bold).monospacedDigit())
-                .foregroundColor(IronTheme.primaryText)
-                .frame(minWidth: 56)
-
-            compactLoadControl(systemImage: "plus") {
-                adjustBar(by: 5)
-            }
-            .disabled(barWeight >= 100)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.raisedSurface)
-        )
-    }
-
-    private var plateLoadCard: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Per side")
-                        .font(.headline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Label(
-                        isExactLoad ? "Exact target" : "Closest possible load",
-                        systemImage: isExactLoad ? "checkmark.circle.fill" : "exclamationmark.circle.fill"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(isExactLoad ? IronTheme.success : IronTheme.warning)
-                }
-
-                Spacer()
-
-                Text("\(weightTitle(plateWeightPerSide)) \(unit.unit.symbol)")
-                    .font(.subheadline.weight(.bold).monospacedDigit())
-                    .foregroundColor(IronTheme.primaryText)
-                    .accessibilityLabel("\(weightTitle(plateWeightPerSide)) \(unit.unit.symbol) per side")
-            }
-
-            if platesPerSide.isEmpty {
-                Label(
-                    targetWeight < barWeight ? "Target is lighter than this bar" : "Use the empty bar",
-                    systemImage: "minus.circle"
-                )
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .frame(maxWidth: .infinity, minHeight: 92, alignment: .leading)
-            } else {
-                plateStackVisualization
-
-                LazyVGrid(
-                    columns: [GridItem(.adaptive(minimum: 88), spacing: 8)],
-                    alignment: .leading,
-                    spacing: 8
-                ) {
+            if !platesPerSide.isEmpty {
+                Section("Plates Per Side") {
                     ForEach(platesPerSide, id: \.weight) { plate in
-                        HStack(spacing: 7) {
-                            Circle()
-                                .fill(plateColor(plate.weight))
-                                .frame(width: 10, height: 10)
-                                .overlay(Circle().stroke(IronTheme.outline.opacity(0.5), lineWidth: 0.5))
-                            Text("\(plate.count) × \(weightTitle(plate.weight))")
-                                .font(.caption.weight(.semibold).monospacedDigit())
-                                .foregroundColor(IronTheme.primaryText)
+                        LabeledContent {
+                            Text("× \(plate.count)")
+                                .monospacedDigit()
+                                .foregroundStyle(.secondary)
+                        } label: {
+                            HStack(spacing: 10) {
+                                Capsule()
+                                    .fill(PlateAppearance.color(for: plate.weight, unit: unit))
+                                    .overlay(Capsule().stroke(Color(.separator), lineWidth: 0.5))
+                                    .frame(width: 12, height: 20)
+                                Text("\(weightTitle(plate.weight)) \(unit.unit.symbol)")
+                                    .monospacedDigit()
+                            }
                         }
-                        .padding(.horizontal, 11)
-                        .frame(height: 34)
-                        .background(Capsule(style: .continuous).fill(IronTheme.raisedSurface))
                     }
                 }
             }
-        }
-        .padding(16)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
 
-    private var plateStackVisualization: some View {
-        HStack(alignment: .center, spacing: 0) {
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(IronTheme.tertiaryText)
-                .frame(width: 58, height: 9)
-            RoundedRectangle(cornerRadius: 3, style: .continuous)
-                .fill(IronTheme.secondaryText)
-                .frame(width: 18, height: 19)
-
-            HStack(alignment: .center, spacing: 4) {
-                ForEach(Array(platesPerSide.enumerated()), id: \.offset) { _, plate in
-                    ForEach(0..<plate.count, id: \.self) { _ in
-                        RoundedRectangle(cornerRadius: 3, style: .continuous)
-                            .fill(plateColor(plate.weight))
-                            .frame(
-                                width: plate.weight >= 20 ? 16 : 12,
-                                height: min(82, 30 + CGFloat(plate.weight) * 2)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 3, style: .continuous)
-                                    .stroke(IronTheme.outline.opacity(0.5), lineWidth: 0.5)
-                            )
-                    }
+            Section {
+                Button("Use \(weightTitle(loadedWeight)) \(unit.unit.symbol)") {
+                    onApply(loadedWeight)
+                }
+                .fontWeight(.semibold)
+            } footer: {
+                if platesPerSide.isEmpty && targetWeight < barWeight {
+                    Text("Your target is lighter than the bar on its own.")
                 }
             }
-            .padding(.leading, 5)
-
-            Spacer(minLength: 0)
         }
-        .frame(maxWidth: .infinity, minHeight: 92, alignment: .center)
-    }
-
-    private func loadControlButton(
-        systemImage: String,
-        accessibilityLabel: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 20, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: 52, height: 52)
-                .background(Circle().fill(IronTheme.accentSoft))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(accessibilityLabel)
-    }
-
-    private func compactLoadControl(
-        systemImage: String,
-        action: @escaping () -> Void
-    ) -> some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 13, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-                .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
-                .background(Circle().fill(IronTheme.accentSoft))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(systemImage == "plus" ? "Increase bar weight" : "Decrease bar weight")
+        .listStyle(.insetGrouped)
+        .sensoryFeedback(.selection, trigger: targetWeight)
     }
 
     private func adjustTarget(by amount: Double) {
@@ -739,72 +679,46 @@ struct WarmupCalculatorView: View {
     }
 
     var body: some View {
-        ZStack {
-            IronModalBackground()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text("Working set")
-                            .font(.subheadline.weight(.medium))
-                            .foregroundColor(IronTheme.secondaryText)
-                        Text("\(workingWeight, specifier: "%g") \(unit.unit.symbol)")
-                            .font(.system(size: 34, weight: .bold))
-                            .foregroundColor(IronTheme.primaryText)
-                        Text("Progressive sets are rounded to your barbell increment.")
-                            .font(.footnote)
-                            .foregroundColor(IronTheme.secondaryText)
-                    }
+        List {
+            Section {
+                LabeledContent("Working Set", value: "\(String(format: "%g", workingWeight)) \(unit.unit.symbol)")
+                    .monospacedDigit()
+            } footer: {
+                Text("Warm-up weights are rounded to your barbell increment.")
+            }
 
-                    if recommendations.isEmpty {
-                        VStack(spacing: 10) {
-                            Image(systemName: "checkmark.circle.fill")
-                                .font(.system(size: 28, weight: .bold))
-                                .foregroundColor(IronTheme.success)
-                            Text("No lighter warm-up is needed")
-                                .font(.headline.weight(.semibold))
-                                .foregroundColor(IronTheme.primaryText)
-                            Text("This working set is already at the selected bar weight.")
-                                .font(.footnote)
-                                .foregroundColor(IronTheme.secondaryText)
-                                .multilineTextAlignment(.center)
+            if recommendations.isEmpty {
+                Section {
+                    ContentUnavailableView(
+                        "No Warm-Up Needed",
+                        systemImage: "checkmark.circle",
+                        description: Text("This working set is already at the selected bar weight.")
+                    )
+                    .listRowBackground(Color.clear)
+                }
+            } else {
+                Section("Warm-Up Sets") {
+                    ForEach(recommendations) { item in
+                        LabeledContent {
+                            Text("\(item.repetitions) reps")
+                                .foregroundStyle(.secondary)
+                        } label: {
+                            Text("\(item.weight, specifier: "%g") \(unit.unit.symbol)")
+                                .monospacedDigit()
+                            Text("\(Int(item.percentage * 100))% of working set")
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 24)
-                        .padding(.horizontal, 18)
-                        .background(RoundedRectangle(cornerRadius: IronTheme.cornerRadius).fill(IronTheme.surface))
-                    } else {
-                        VStack(spacing: 0) {
-                            ForEach(recommendations) { item in
-                                HStack {
-                                    Text("\(Int(item.percentage * 100))%")
-                                        .font(.caption.weight(.bold))
-                                        .foregroundColor(IronTheme.accent)
-                                        .frame(width: 42, alignment: .leading)
-                                    Text("\(item.weight, specifier: "%g") \(unit.unit.symbol)")
-                                        .font(.headline.monospacedDigit())
-                                        .foregroundColor(IronTheme.primaryText)
-                                    Spacer()
-                                    Text("\(item.repetitions) reps")
-                                        .foregroundColor(IronTheme.secondaryText)
-                                }
-                                .padding(.vertical, 13)
-                                if item.id != recommendations.last?.id {
-                                    Divider().background(IronTheme.outline)
-                                }
-                            }
-                        }
-                        .padding(.horizontal, 16)
-                        .background(RoundedRectangle(cornerRadius: IronTheme.cornerRadius).fill(IronTheme.surface))
-
-                        Button("Add \(recommendations.count) warm-up sets") {
-                            onAdd(recommendations)
-                        }
-                        .buttonStyle(IronPrimaryButtonStyle())
                     }
                 }
-                .padding(IronTheme.horizontalPadding)
+
+                Section {
+                    Button("Add \(recommendations.count) Warm-Up Sets") {
+                        onAdd(recommendations)
+                    }
+                    .fontWeight(.semibold)
+                }
             }
         }
+        .listStyle(.insetGrouped)
     }
 }
 

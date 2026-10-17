@@ -20,9 +20,29 @@ struct WorkoutDetailBannerView : View {
     private var bannerViewEntries: [BannerViewEntry] {
         var entries = [BannerViewEntry]()
 
-        entries.append(BannerViewEntry(id: 0, title: Text("Duration"), text: Text(Workout.durationFormatter.string(from: workout.safeDuration) ?? "")))
-        entries.append(BannerViewEntry(id: 1, title: Text("Sets"), text: Text(String(workout.numberOfCompletedSets ?? 0))))
-        entries.append(BannerViewEntry(id: 2, title: Text("Weight"), text: Text(WeightUnit.format(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit))))
+        entries.append(BannerViewEntry(
+            id: 0,
+            title: Text("Duration").fontWeight(.semibold).foregroundColor(IronTheme.metricTime),
+            text: Text(Workout.durationFormatter.string(from: workout.safeDuration) ?? "")
+                .font(.ironMetric(.title2)).foregroundColor(IronTheme.metricTime)
+        ))
+        entries.append(BannerViewEntry(
+            id: 1,
+            title: Text("Sets").fontWeight(.semibold).foregroundColor(IronTheme.metricSets),
+            text: Text(String(workout.numberOfCompletedSets ?? 0))
+                .font(.ironMetric(.title2)).foregroundColor(IronTheme.metricSets)
+        ))
+        let volume = WeightUnit.convert(
+            weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit
+        )
+        entries.append(BannerViewEntry(
+            id: 2,
+            title: Text("Volume").fontWeight(.semibold).foregroundColor(IronTheme.metricVolume),
+            text: Text(settingsStore.weightUnit.displayNumberFormatter.string(from: volume as NSNumber) ?? "—")
+                .font(.ironMetric(.title2)).foregroundColor(IronTheme.metricVolume)
+                + Text(" \(settingsStore.weightUnit.unit.symbol)")
+                    .font(.caption).foregroundColor(IronTheme.secondaryText)
+        ))
         return entries
     }
 }

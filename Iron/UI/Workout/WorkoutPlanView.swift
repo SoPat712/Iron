@@ -15,6 +15,7 @@ import WorkoutDataKit
 /// routine summaries, and the destructive controls visually separate in both
 /// light and dark appearances.
 struct WorkoutPlanView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject var exerciseStore: ExerciseStore
     @Environment(\.managedObjectContext) var managedObjectContext
 
@@ -79,129 +80,47 @@ struct WorkoutPlanView: View {
         managedObjectContext.saveOrCrash()
     }
 
-    private func routinePopupActions(_ routine: WorkoutRoutine, index: Int) -> [IronPopupAction] {
-        var actions: [IronPopupAction] = []
-        if index > 0 {
-            actions.append(IronPopupAction(title: "Move Up", systemImage: "arrow.up") {
-                moveRoutine(from: index, to: index - 1)
-            })
-        }
-        if index < workoutRoutines.count - 1 {
-            actions.append(IronPopupAction(title: "Move Down", systemImage: "arrow.down") {
-                moveRoutine(from: index, to: index + 1)
-            })
-        }
-        actions.append(IronPopupAction(
-            title: "Delete Workout",
-            systemImage: "trash",
-            role: .destructive
-        ) {
-            requestDelete(routine)
-        })
-        return actions
-    }
-
-    private func routineRow(_ routine: WorkoutRoutine, index: Int) -> some View {
-        HStack(spacing: 12) {
-            NavigationLink(destination: WorkoutRoutineView(workoutRoutine: routine)) {
-                HStack(spacing: 12) {
-                    ZStack {
-                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                            .fill(IronTheme.accentSoft)
-                        Image(systemName: "list.bullet.rectangle.portrait")
-                            .font(.system(size: 19, weight: .bold))
-                            .foregroundColor(IronTheme.accent)
-                    }
-                    .frame(width: 48, height: 48)
-
-                    VStack(alignment: .leading, spacing: 5) {
-                        Text(routine.displayTitle)
-                            .font(.system(size: 17, weight: .semibold))
-                            .foregroundColor(IronTheme.primaryText)
-                            .lineLimit(1)
-                        Text(routine.subtitle(in: exerciseStore.exercises))
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(IronTheme.secondaryText)
-                            .lineLimit(2)
-                    }
-
-                    Spacer(minLength: 4)
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundColor(IronTheme.tertiaryText)
-                }
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-
-            IronPopupMenu(title: "Workout actions", actions: routinePopupActions(routine, index: index)) {
-                Image(systemName: "ellipsis.circle")
-                    .font(.title3.weight(.semibold))
-                    .foregroundColor(IronTheme.primaryText)
-                    .frame(width: 42, height: 42)
-                    .contentShape(Rectangle())
-            }
-            .accessibilityLabel("Actions for \(routine.displayTitle)")
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-    }
-
     var body: some View {
-        ZStack {
-            IronScreenBackground()
+        List {
+            Section("Workout Details") {
+                TextField("Workout title", text: workoutPlanTitle, onEditingChanged: { isEditing in
+                    if !isEditing { saveWorkoutPlanTitle() }
+                })
+                .textInputAutocapitalization(.words)
+            }
 
-            ScrollView {
-                VStack(alignment: .leading, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 10) {
-                        Text("WORKOUT DETAILS")
-                            .font(.system(size: 11, weight: .bold))
-                            .tracking(1.1)
-                            .foregroundColor(IronTheme.secondaryText)
-
-                        TextField("Workout title", text: workoutPlanTitle, onEditingChanged: { isEditing in
-                            if !isEditing { saveWorkoutPlanTitle() }
-                        })
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(IronTheme.primaryText)
-                        .textInputAutocapitalization(.words)
-                        .padding(.horizontal, 14)
-                        .frame(minHeight: 52)
-                        .background(
-                            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                .fill(IronTheme.field)
-                        )
+            Section {
+                if workoutRoutines.isEmpty {
+                    ContentUnavailableView {
+                        Label("No Workouts Yet", systemImage: "figure.strengthtraining.traditional")
+                    } description: {
+                        Text("Add a workout to start choosing exercises.")
                     }
-
-                    VStack(alignment: .leading, spacing: 12) {
-                        HStack(alignment: .firstTextBaseline) {
-                            IronSectionTitle(title: "Workouts", detail: "\(workoutRoutines.count)")
-                        }
-
-                        if workoutRoutines.isEmpty {
-                            emptyRoutinesCard
-                        } else {
-                            ForEach(Array(workoutRoutines.enumerated()), id: \.element.id) { index, routine in
-                                routineRow(routine, index: index)
-                            }
-                        }
-
-                        Button(action: createWorkoutRoutine) {
-                            Label("Add Workout", systemImage: "plus")
-                        }
-                        .buttonStyle(IronPrimaryButtonStyle())
+                } else {
+                    ForEach(Array(workoutRoutines.enumerated()), id: \.element.id) { index, routine in
+                        routineRow(routine, index: index)
+                            .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
+                    }
+                    .onMove { source, destination in
+                        guard let first = source.first else { return }
+                        moveRoutine(from: first, to: destination > first ? destination - 1 : destination)
                     }
                 }
-                .padding(.horizontal, IronTheme.horizontalPadding)
-                .padding(.top, 18)
-                .padding(.bottom, IronTheme.floatingWorkoutBottomClearance)
+            } header: {
+                Text("Workouts")
+            }
+
+            Section {
+                Button("Add Workout", systemImage: "plus", action: createWorkoutRoutine)
             }
         }
+        .listStyle(.insetGrouped)
+        .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: workoutRoutines.map(\.objectID))
         .navigationTitle(workoutPlan.displayTitle)
         .navigationBarTitleDisplayMode(.inline)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
+        }
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") { saveWorkoutPlanTitle() }
@@ -220,29 +139,35 @@ struct WorkoutPlanView: View {
         .onDisappear {
             saveWorkoutPlanTitle()
         }
-        .ironScreen()
     }
 
-    private var emptyRoutinesCard: some View {
-        VStack(spacing: 10) {
-            Image(systemName: "figure.strengthtraining.traditional")
-                .font(.system(size: 25, weight: .bold))
-                .foregroundColor(IronTheme.accent)
-            Text("No workouts yet")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Add a workout to start choosing exercises.")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
+    private func routineRow(_ routine: WorkoutRoutine, index: Int) -> some View {
+        NavigationLink(destination: WorkoutRoutineView(workoutRoutine: routine)) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(routine.displayTitle)
+                    .lineLimit(1)
+                Text(routine.subtitle(in: exerciseStore.exercises))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
-        .padding(.horizontal, 18)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
+        .swipeActions(edge: .trailing) {
+            Button("Delete", systemImage: "trash", role: .destructive) {
+                requestDelete(routine)
+            }
+        }
+        .contextMenu {
+            if index > 0 {
+                Button("Move Up", systemImage: "arrow.up") { moveRoutine(from: index, to: index - 1) }
+            }
+            if index < workoutRoutines.count - 1 {
+                Button("Move Down", systemImage: "arrow.down") { moveRoutine(from: index, to: index + 1) }
+            }
+            Button("Delete Workout", systemImage: "trash", role: .destructive) {
+                requestDelete(routine)
+            }
+        }
     }
 }
 

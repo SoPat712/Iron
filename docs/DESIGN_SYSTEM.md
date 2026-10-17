@@ -1,4 +1,4 @@
-# Iron Cupertino Design System
+# Iron Design System
 
 Iron should feel like a private strength-training app designed by Apple: direct,
 calm, data-rich, and native to iPhone and Apple Watch. Hevy remains a functional
@@ -26,8 +26,10 @@ The primary references are Apple's Human Interface Guidelines for
 4. Reserve Liquid Glass for layers that float above changing content — the active
    workout accessory, the Home weekly hero, and the logger summary pill. Glass is
    depth, not another stacked card.
-5. Use tint sparingly. Blue means action or selection, green means completion,
-   orange means warning or attention, and red means destructive or failed.
+5. Use tint sparingly and give it meaning. System blue means actions, workouts,
+   selection, and completed sets. Metric roles distinguish sets, volume, time,
+   effort, records, and body measurements. Warning and destructive colors retain
+   their status meanings; muscle-group tags stay neutral.
 6. Preserve data density during a workout. Native does not mean sparse.
 7. Every animation must explain navigation, continuity, or a state change.
 8. Respect Dynamic Type, VoiceOver, Reduce Motion, safe areas, and a 44-point
@@ -39,20 +41,38 @@ Production views consume `IronTheme`, whose roles map to adaptive UIKit colors.
 
 | Iron role | Apple semantic role | Use |
 | --- | --- | --- |
-| `accent` | `systemBlue` | Navigation, selected controls, primary actions |
-| `success` | `systemGreen` | Completed sets and successful operations |
+| `accent` / `accentSoft` | `systemBlue` / soft blue | Navigation, actions, workouts, selection, completed-set checks/badges/tints |
+| `metricSets` / `metricSetsContainer` | `systemOrange` / soft orange | Set counts and warm-up sets |
+| `metricVolume` / `metricVolumeContainer` | `systemGreen` / soft green | Weight moved (volume) |
+| `metricTime` / `metricTimeContainer` | `systemCyan` / soft cyan | Duration, rest countdown, and rest connectors |
+| `metricEffort` / `metricEffortContainer` | `systemPink` / soft pink | RPE and session effort |
+| `metricRecord` / `metricRecordContainer` | `systemYellow` / soft yellow | Personal records and trophies |
+| `metricBody` / `metricBodyContainer` | `systemPurple` / soft purple | Body measurements |
+| `success` | `systemGreen` | Sync status dots and success messages only |
 | `warning` | `systemOrange` | Attention and overtime |
 | `danger` | `systemRed` | Destructive actions and errors |
 | `background` | `systemGroupedBackground` | Full-screen editors that cannot use a `List` |
 | `surface` | `secondarySystemGroupedBackground` | Only where a `Section` row is impossible |
 | `raisedSurface` | `tertiarySystemGroupedBackground` | Nested low-emphasis surfaces |
 | `field` | `secondarySystemFill` | Input and compact control backgrounds |
+| `tertiaryFill` | `tertiarySystemFill` | Current-set capsule fields and rest ring tracks |
 | `outline` | `separator` | Hairlines only, not card borders |
 | text roles | `label`, `secondaryLabel`, `tertiaryLabel` | Text hierarchy |
 
 `List`, `Form`, and sheets receive no explicit background. `IronTheme.surface` and
 `raisedSurface` are for the few surfaces the platform cannot express — prefer a
 `Section` row every time.
+
+The six metric containers use their adaptive system hue at 0.18 opacity. Keep
+metric colors on numbers, short labels, icons, and soft containers. Cyan and yellow
+foreground text on light backgrounds must be semibold or bold and must never be
+used for body copy. Units use smaller secondary text. Do not use green to paint a
+completed set: completion is blue. Legacy `successContainer`, `successControl`,
+and `onSuccessContainer` remain for source compatibility during migration and must
+not be used by new set-row treatments.
+
+Muscle-group tags use `secondarySystemFill` with `secondaryLabel` text, or plain
+secondary text. Do not assign colors to individual muscle groups.
 
 Do not hard-code black, white, gray, or RGB values for application chrome.
 Exercise diagrams and user photos are the exceptions: they use fixed media roles
@@ -69,21 +89,24 @@ reintroduce them or an equivalent under a new name.
 | `IronSectionTitle` | `Section` header, or `Text` in a footer |
 | `IronHairline` | `Divider` |
 | `IronDestinationHeader`, `ironDestinationScreen` | `.navigationTitle` plus `ToolbarItem` |
-| `IronMetricTile` | `LabeledContent` rows |
+| `IronMetricTile` | `LabeledContent` rows or metric columns inside one aggregate section |
 | `IronPrimaryButtonStyle`, `IronSecondaryButtonStyle`, `IronIconButtonStyle` | `.borderedProminent`, `.bordered`, `.borderless` |
 | `IronCompactPillButtonStyle`, `IronChoicePillButtonStyle`, `IronUtilityPillButtonStyle` | `Picker`, or `.bordered` with `.buttonBorderShape(.capsule)` |
 | `IronKeyboardAccessoryButtonStyle` | Plain `Button` in a `.keyboard` toolbar |
 | `IronPopupMenu`, `IronPopupAction` | `Menu`, `swipeActions`, `contextMenu` |
-| `IronEffortCarousel` | `Picker` |
+| `IronEffortCarousel` | `Picker` for RPE; the completion editor uses the ten-segment effort control |
 | `IronDateTimeButton` | `DatePicker` |
 | `WatchCard`, `WatchActionButtonStyle` | watchOS `List`/`Section`, `.bordered` buttons |
 | Custom `Canvas`/`Path` chart drawing | Swift Charts |
 | `presentationBackground`, `toolbarBackground` | Nothing — let the system render it |
 
-What remains in `SwiftUISupport.swift` is deliberately small: the semantic palette,
-the two Liquid Glass modifiers, `IronMotion`, and the few sheets that carry more
+The shared foundation stays small: the semantic palette, `Font.ironMetric`, the
+Liquid Glass modifiers, `IronMotion`, completion/entrance feedback helpers,
+`IronRestRing`, and the few sheets that carry more
 explanation than an `.alert` can (`IronUtilitySheet`, `IronConfirmationSheet`,
 `IronStatusSheet`, `IronDateTimePickerSheet`, `IronDurationPickerSheet`).
+`UI/Components/IronSessionStrip.swift` supplies the reusable full and compact
+session timeline; it owns no workout persistence or timer logic.
 
 ## Geometry and spacing
 
@@ -98,8 +121,9 @@ explanation than an `.alert` can (`IronUtilitySheet`, `IronConfirmationSheet`,
 | Floating workout clearance | `IronTheme.floatingWorkoutBottomClearance` | 152 pt |
 
 Capsules are reserved for compact status controls, prominent toolbar actions,
-the floating active-workout accessory, and the workout logger's set controls and
-completed-set wash. Other fields, cards, rows, and full-width buttons use continuous
+the floating active-workout accessory, the rest pill, and the workout logger's
+current-set fields. Completed rows use a faint accent fill in a continuous rounded
+rectangle at the existing inset. Other fields, cards, rows, and full-width buttons use continuous
 rounded rectangles. Grouped sections do not get decorative outlines or shadows.
 
 ## Typography
@@ -110,8 +134,14 @@ rounded rectangles. Grouped sections do not get decorative outlines or shadows.
 - Screen section titles use `title3` semibold; Settings/Form section labels can
   use `footnote` or `caption` with secondary color.
 - Body copy uses `body` or `subheadline`; supporting metadata uses `caption`.
-- Numeric workout values may use `monospacedDigit()` but keep the surrounding
-  semantic text style.
+- Every metric number — weights, reps, volume, durations, timers, counts, and RPE —
+  uses SF Pro bold with fixed-width digits. Dense rows may use semibold. Use
+  `.font(.ironMetric(.title2))` or `.font(.ironMetric(.body, weight: .semibold))`;
+  the helper keeps the semantic style and applies `.monospacedDigit()`. Do not use
+  rounded font design.
+- Units such as “lb” and “kg” use a smaller semantic style and secondary text.
+- Changing metric values use `.contentTransition(.numericText())` with
+  Reduce-Motion-aware `IronMotion` animation.
 - Avoid custom point sizes unless a chart, timer, or compact workout grid has a
   measured requirement.
 - At accessibility text sizes, exercise names wrap and muscle/equipment labels
@@ -148,13 +178,32 @@ scrolling: the accessory adopts its inline layout between the current destinatio
 Settings, then returns to the full-width layout when the bar expands. The expanded
 accessory contains resume, expand, and discard actions.
 
+## Home and History
+
+Home keeps its sections and their order. The weekly hero has three metric columns:
+Workouts in accent, Sets in `metricSets`, and Volume in `metricVolume`. Each uses a
+32-point soft-filled icon chip and bold monospaced values. Daily bars are accent on
+a neutral track; today's label is bold accent. The “Best day …” caption highlights
+its value in `metricVolume`. Resume/Start stays unchanged. Add a trailing flame
+streak chip in accent soft fill to “Last 4 Weeks” when a streak exists. Calendar
+trained days remain accent-filled.
+
+History rows show the workout title, date and neutral muscle metadata, followed by
+a metric line such as “1h 02m · 14 sets · 9,860 lb” with duration, sets, and volume
+in their metric roles. Trailing PR-count trophies use `metricRecordContainer`;
+session effort, when rated, uses `metricEffortContainer` with an “RPE 8” label.
+Reuse `IronSessionStrip` in compact size. Group by week with workout-count and
+volume totals in accent and `metricVolume` when the existing fetches support it.
+
 ## Controls
 
 - Use native `Toggle` with `.switch` and the app tint.
 - Use native `Menu` and `Button(role:)` for pull-down actions.
 - Use `Picker` or a system wheel for ordered choices such as effort/RPE and 1RM
   limits. The active rest timer is the deliberate exception: its compact radial
-  dial supports direct 15-second adjustment with haptic and audio notches.
+  dial supports direct 15-second adjustment with haptic and audio notches. Session
+  effort in the completion editor is the other exception: ten directly adjustable
+  segments with selection feedback and an accessibility adjustable action.
 - Primary actions use `.borderedProminent`. Limit each surface to one visually
   dominant action.
 - Secondary actions use `.bordered` or a plain text toolbar action.
@@ -203,16 +252,37 @@ accessory contains resume, expand, and discard actions.
 - A named saved workout remains named throughout the active and completed workout.
 - Weight and repetition fields accept only valid numeric input. Focusing a weight field
   shows the plate-calculator control beside the keyboard-dismiss control.
-- Completing a set paints one rounded semantic-green wash from edge to edge inside
-  its exercise surface and highlights every editable/control value without changing
-  row padding, width, or column geometry; completion is never communicated by color alone.
+- Keep the refined table columns (Set · Previous · lb · Reps · RPE · ✓) and
+  `InlineWorkoutSetLayout` geometry. Row height, padding, width, and column positions
+  never change between states:
+  - **Done:** a leading accent sweep settles to a faint 0.10–0.14 accent tint in a
+    continuous rounded rectangle. Weight/reps become plain bold numbers without
+    field fills. The circular set badge has accent soft fill and an accent number;
+    RPE uses `metricEffort`. The check is `checkmark.circle.fill` in accent with a
+    white checkmark. Never use a green completed-set wash.
+  - **Current:** the first incomplete set uses a raised `secondarySystemFill`-like
+    row surface, capsule fields on `tertiarySystemFill`, an accent-ring badge and
+    check, and an RPE field on `metricEffortContainer`.
+  - **Upcoming:** secondary values, neutral filled badge, and neutral-ring check.
+  - **Warm-up:** “W” in `metricSets` on `metricSetsContainer`.
+  Completion always includes a check and badge change as well as color. Preserve
+  numeric input sanitizing, plate calculator, RPE picker, duration sets, inline
+  set timer, accessibility labels, and all existing actions.
 - Set deletion is a trailing swipe reveal. The red action expands behind the full row
   as the row moves and appears only during the swipe.
 - The active rest timer appears below the sets of the exercise that triggered it as a
-  full-width Liquid Glass status pill. Its four separate compact controls share
-  one geometry token and are distributed evenly: minus 15 seconds, pause/resume,
-  plus 15 seconds, and stop. The radial editor scrubs locally and commits on
+  full-width rounded pill on `metricTimeContainer`. Its leading `IronRestRing`
+  drains as time passes: a `tertiarySystemFill` track, `metricTime` progress,
+  approximately 4-point stroke, and round caps. Remaining time is bold monospaced
+  `metricTime`, with a secondary “Rest of 2:30” caption. Four separate 44-point
+  circular controls use neutral fill: minus 15 seconds, pause/resume, plus 15
+  seconds, and skip. Share `IronTheme.iconButtonSize` and distribute the controls
+  evenly. Preserve the shared radial dial, timer store, and all actions.
+  The radial editor scrubs locally and commits on
   release so notification, Watch, and Live Activity updates never block dragging.
+- The logger summary retains Duration / Volume / Sets and its muscle map. Labels
+  use time / volume / sets colors; values use bold monospaced primary text and
+  `.contentTransition(.numericText())`.
 - The session muscle map highlights only muscles represented by completed sets;
   primary and secondary muscles use distinct emphasis and update during the workout.
 - Exercise actions are Replace, Superset, and Remove. Reordering is direct manipulation:
@@ -238,10 +308,42 @@ start/end or duration, session effort, notes, media, saved-workout update prefer
 Health export state, exercise and set summary, save, and discard. The hierarchy uses
 grouped Apple sections rather than nested cards or an overlay on the logger.
 
+1. Header: workout name, date/time range, and a small accent circle icon.
+2. One metrics grid, three columns by two rows: Duration (`metricTime`), Volume
+   (`metricVolume`), Sets (`metricSets`), Exercises (`accent`), Avg RPE
+   (`metricEffort`), and Records (`metricRecord`). Labels are primary text; values
+   are bold monospaced in the metric role. Keep the grid legible at Dynamic Type sizes.
+3. Session strip: completed sets ordered by `WorkoutSet.completedAt`, grouped into
+   contiguous exercise runs with small gaps. Thin rounded bars scale by weight ×
+   reps; duration/bodyweight sets use a constant fallback. Warm-ups use `metricSets`,
+   `isPersonalRecord` sets use `metricRecord`, and other sets use accent. Thin soft
+   `metricTime` connectors represent rests, without claiming precise rest duration.
+   Short exercise labels sit below groups, followed by a legend. Supply an accessible
+   summary label. `IronSessionStrip` accepts plain groups with relative volumes in
+   0...1 and kinds `warmUp`, `normal`, or `record`; callers own ordering, volume
+   normalization, fallback values, and record classification. Its compact size
+   omits labels and legend. Long strips scroll horizontally.
+4. Effort: “How hard was it?” uses ten rounded segments bound to `sessionEffort`
+   (0 = not rated). Tap or drag to set, fill left to right in `metricEffort`, and
+   show a trailing label such as “8 · Hard”: 1–3 Easy, 4–6 Moderate, 7–8 Hard,
+   9–10 All Out. Use selection haptics per step and VoiceOver increment/decrement.
+5. Records: trophy icons in `metricRecordContainer` circles and a list of this
+   workout's PR sets. Hide the section when there are none.
+6. Keep the saved-workout update toggle and Apple Health row, plus notes, media,
+   exercise/set details, Save, and Discard.
+
+Metrics rise with opacity and an 8-point offset, staggered about 40 ms. Session
+bars grow from their baseline per exercise; effort segments fill left to right;
+trophies bounce with `.symbolEffect(.bounce)`. Reduce Motion replaces these spatial
+effects with a short fade. Decorative motion must never delay Save or dismissal.
+
 ## Data visualization
 
 - All charts use Swift Charts. Hand-drawn `Canvas`, `Path`, or `GeometryReader`
   plotting and third-party chart libraries are not permitted.
+- The session strip is a deliberate plain-stack exception: rounded shapes in
+  `HStack`/`VStack` may render its ordered mini timeline, or use Swift Charts if
+  readable. Do not use `GeometryReader` plotting for it.
 - Selection uses `chartXSelection`; axes use `AxisMarks` with automatic tick counts.
 - Data marks are the most prominent element; axes and framing are secondary.
 - Tapping or horizontally scrubbing selects the nearest point and shows exact period,
@@ -283,8 +385,29 @@ grouped Apple sections rather than nested cards or an overlay on the logger.
   selection and value changes, and the spring tokens for direct manipulation.
 - Haptics reinforce set completion, deletion, and discrete picker changes.
 - Never delay dismissal solely to play a decorative animation.
-- Read `accessibilityReduceMotion` for custom matched-geometry, chart, carousel, and
-  workout-collapse animation.
+- Every custom animation reads `accessibilityReduceMotion` and uses
+  `IronMotion.preferred(_:reduceMotion:)`. Reduce Motion swaps spatial motion for
+  a short fade; haptics still play. This includes matched geometry, charts,
+  entrances, session strips, rings, and workout collapse. Gate symbol bounces and
+  spatial transitions as well.
+
+| Moment | Behavior | Shared API / token |
+| --- | --- | --- |
+| Complete a set | Leading accent sweep, then faint settled tint; check pops and swaps; fields flatten | `.ironSetCompletion(isComplete:)`, `IronMotion.snappy` (spring 0.32 / 0.82), `.symbolEffect(.bounce)`, `.contentTransition(.symbolEffect(.replace))`, success sensory feedback |
+| Counters | Volume, sets, duration, and rest numbers roll | `.contentTransition(.numericText())` with preferred `IronMotion.snappy` |
+| Rest starts | Pill inserts below the triggering set | Move from top + opacity, preferred `IronMotion.collapse` (spring 0.42 / 0.86); fade for Reduce Motion |
+| Rest ends | Ring pulses once, pill removes, next set raises its fields | Phase/keyframe animation; light-impact sensory feedback; fade for Reduce Motion |
+| Next set becomes current | Field backgrounds fade in after about 0.12 seconds | Preferred `IronMotion.snappy.delay(0.12)` |
+| Delete set | Existing swipe, then row collapse | Preferred `IronMotion.collapse`; opacity + scale 0.96 transition, opacity only for Reduce Motion |
+| Open/minimize workout | Preserve existing matched/zoom continuity | Matched transition source / zoom where available; fade for Reduce Motion |
+| Workout complete | Metrics fade/rise 8 points at 40 ms intervals; session bars grow per exercise; trophy bounces | `.ironStaggeredEntrance(index:)`, `IronSessionStrip`, preferred tokens; fade without stagger for Reduce Motion |
+| Effort | Segments fill while dragging | Preferred `IronMotion.snappy`, selection sensory feedback per step |
+| Charts | Bars grow from zero on first appearance | Swift Charts with preferred animation; fade for Reduce Motion |
+| Tabs/scroll | Native large titles and tab minimization | Existing `.tabBarMinimizeBehavior(.onScrollDown)` where supported |
+
+`IronMotion.fade` is ease-in-out over 0.18 seconds. `IronRestRing(progress:)` accepts
+the remaining fraction (1 = full, 0 = elapsed); the caller owns timer logic and may
+hide the ring from VoiceOver when the pill already announces the countdown.
 
 ## Exercise media and attribution
 

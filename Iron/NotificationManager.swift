@@ -128,7 +128,7 @@ class NotificationManager: NSObject {
                         appSoundsEnabled: playsSound,
                         systemSoundSetting: settings.soundSetting
                     ) {
-                        content.sound = UNNotificationSound.default
+                        content.sound = UNNotificationSound(named: UNNotificationSoundName("rest_complete.caf"))
                     }
                     content.categoryIdentifier = NotificationCategoryIdentifier.restTimerUp.rawValue
                     if #available(iOS 15.0, *) {

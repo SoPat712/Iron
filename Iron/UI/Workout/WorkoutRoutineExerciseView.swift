@@ -10,6 +10,7 @@ import SwiftUI
 import WorkoutDataKit
 
 struct WorkoutRoutineExerciseView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.managedObjectContext) var managedObjectContext
     @Environment(\.editMode) var editMode
     @EnvironmentObject var settingsStore: SettingsStore
@@ -51,7 +52,7 @@ struct WorkoutRoutineExerciseView: View {
         
         // only animate if we would show/hide the editor
         if set == nil && selectedWorkoutRoutineSet != nil || set != nil && selectedWorkoutRoutineSet == nil {
-            withAnimation {
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 selectedWorkoutRoutineSet = set
             }
         } else {
@@ -140,7 +141,7 @@ struct WorkoutRoutineExerciseView: View {
             })
             .background(Color(.systemFill).opacity(0.5))
         }
-        .transition(AnyTransition.move(edge: .bottom))
+        .transition(reduceMotion ? .opacity : .move(edge: .bottom))
     }
     
     var body: some View {

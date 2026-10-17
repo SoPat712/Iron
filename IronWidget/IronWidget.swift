@@ -101,14 +101,20 @@ struct LastWorkoutWidgetEntryView : View {
             Spacer(minLength: 0)
 
             Text(headline)
-                .font(.title2.weight(.semibold))
+                .font(.ironMetric(.title2))
+                .foregroundStyle((daysSinceLastWorkout ?? 0) > 1 ? IronTheme.metricTime : IronTheme.primaryText)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
 
-            Text(detail)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
+            if let info = entry.workoutInfo {
+                (Text(Duration.seconds(info.duration).formatted(.units(allowed: [.hours, .minutes], width: .narrow)))
+                    .font(.ironMetric(.caption, weight: .semibold)).foregroundColor(IronTheme.metricTime)
+                 + Text(" · " + info.start.formatted(.dateTime.month(.abbreviated).day()))
+                    .font(.caption).foregroundColor(IronTheme.secondaryText))
+                    .lineLimit(2)
+            } else {
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .containerBackground(.fill.tertiary, for: .widget)
@@ -134,12 +140,12 @@ struct LastWorkoutWidget: Widget {
 }
 
 private enum WorkoutActivityPalette {
-    static let accent = Color.accentColor
-    static let success = Color.green
-    static let surface = Color(.systemBackground)
-    static let onSurface = Color.primary
-    static let secondary = Color.secondary
-    static let onSuccess = Color.white
+    static let accent = IronTheme.accent
+    static let completion = IronTheme.accent
+    static let surface = IronTheme.topBar
+    static let onSurface = IronTheme.primaryText
+    static let secondary = IronTheme.secondaryText
+    static let onAccent = IronTheme.onAccent
     static let compactCornerRadius: CGFloat = 12
 }
 
@@ -158,8 +164,8 @@ struct WorkoutLiveActivityWidget: Widget {
 
                 DynamicIslandExpandedRegion(.trailing) {
                     Text(context.attributes.workoutStart, style: .timer)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(WorkoutActivityPalette.secondary)
+                        .font(.ironMetric(.caption, weight: .semibold))
+                        .foregroundStyle(IronTheme.metricTime)
                         .multilineTextAlignment(.trailing)
                 }
 
@@ -228,6 +234,7 @@ private struct WorkoutActivityFamilyRouter: View {
 /// Compact Smart Stack layout for Apple Watch: one glanceable line of state,
 /// the live value, and rest controls only when they are actionable.
 private struct WorkoutSmartStackView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
@@ -250,8 +257,9 @@ private struct WorkoutSmartStackView: View {
                     Spacer(minLength: 4)
 
                     Text("\(context.state.completedSets)/\(context.state.totalSets)")
-                        .font(.caption2.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.secondary)
+                        .font(.ironMetric(.caption2, weight: .semibold))
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                        .foregroundStyle(IronTheme.metricSets)
                 }
 
                 if phase == .resting, context.state.isRestPaused {
@@ -259,7 +267,8 @@ private struct WorkoutSmartStackView: View {
                 } else if phase == .resting, let end = context.state.restTimerEnd {
                     HStack(spacing: 6) {
                         workoutRestTimerText(until: end)
-                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .foregroundStyle(IronTheme.metricTime)
+                            .font(.ironMetric(.title3, weight: .semibold))
 
                         Spacer(minLength: 4)
 
@@ -274,15 +283,16 @@ private struct WorkoutSmartStackView: View {
                 } else {
                     HStack(spacing: 6) {
                         Text(set?.result.isEmpty == false && set?.result != "—" ? set!.result : "Log a set")
-                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .font(.ironMetric(.title3, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
 
                         Spacer(minLength: 4)
 
                         Text(context.attributes.workoutStart, style: .timer)
-                            .font(.caption2.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(.secondary)
+                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .foregroundStyle(IronTheme.metricTime)
                             .multilineTextAlignment(.trailing)
                             .lineLimit(1)
 
@@ -301,6 +311,7 @@ private struct WorkoutSmartStackView: View {
 }
 
 private struct WorkoutLiveActivityLockScreenView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
@@ -329,15 +340,20 @@ private struct WorkoutLiveActivityLockScreenView: View {
                     Spacer(minLength: 8)
 
                     Text(context.attributes.workoutStart, style: .timer)
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(WorkoutActivityPalette.onSurface)
+                        .font(.ironMetric(.caption, weight: .semibold))
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                        .foregroundStyle(IronTheme.metricTime)
                         .multilineTextAlignment(.trailing)
                         .lineLimit(1)
                         .minimumScaleFactor(0.76)
                 }
 
                 HStack(spacing: 10) {
-                    workoutGlyph(phase: phase, tint: tint)
+                    WorkoutActivityExerciseArtwork(
+                        set: set,
+                        phase: phase,
+                        size: 34
+                    )
 
                     VStack(alignment: .leading, spacing: 2) {
                         Text(primaryTitle(phase: phase, set: set))
@@ -348,7 +364,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
                             .allowsTightening(true)
 
                         Text(secondaryTitle(phase: phase, set: set))
-                            .font(.caption)
+                            .font(.ironMetric(.caption, weight: .semibold))
                             .foregroundStyle(WorkoutActivityPalette.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.68)
@@ -370,10 +386,11 @@ private struct WorkoutLiveActivityLockScreenView: View {
                 } else {
                     HStack(spacing: 10) {
                         Text(activityResult(set))
-                            .font(.title2.weight(.semibold).monospacedDigit())
+                            .font(.ironMetric(.title2, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
                             .foregroundStyle(
                                 phaseIsCompletion(phase)
-                                    ? WorkoutActivityPalette.success
+                                    ? WorkoutActivityPalette.completion
                                     : WorkoutActivityPalette.onSurface
                             )
                             .lineLimit(1)
@@ -382,8 +399,9 @@ private struct WorkoutLiveActivityLockScreenView: View {
                         Spacer(minLength: 8)
 
                         Text("\(context.state.completedSets)/\(context.state.totalSets) sets")
-                            .font(.caption.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(WorkoutActivityPalette.secondary)
+                            .font(.ironMetric(.caption, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
+                            .foregroundStyle(IronTheme.metricSets)
                             .lineLimit(1)
 
                         if phase == .currentSet, let set {
@@ -397,7 +415,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
                                 .font(.system(size: 16, weight: .bold))
                                 .foregroundStyle(
                                     phaseIsCompletion(phase)
-                                        ? WorkoutActivityPalette.onSuccess
+                                        ? WorkoutActivityPalette.onAccent
                                         : tint
                                 )
                                 .frame(width: 38, height: 38)
@@ -416,23 +434,6 @@ private struct WorkoutLiveActivityLockScreenView: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
         }
-    }
-
-    private func workoutGlyph(
-        phase: WorkoutActivityAttributes.Phase,
-        tint: Color
-    ) -> some View {
-        Image(systemName: phase == .resting ? "timer" : "figure.strengthtraining.traditional")
-            .font(.system(size: 17, weight: .semibold))
-            .foregroundStyle(tint)
-            .frame(width: 34, height: 34)
-            .background(
-                RoundedRectangle(
-                    cornerRadius: WorkoutActivityPalette.compactCornerRadius,
-                    style: .continuous
-                )
-                    .fill(tint.opacity(0.14))
-            )
     }
 
     private func primaryTitle(
@@ -478,7 +479,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
                 .overlay(alignment: .leading) {
                     GeometryReader { proxy in
                         Capsule(style: .continuous)
-                            .fill(WorkoutActivityPalette.accent)
+                            .fill(IronTheme.metricTime)
                             .frame(width: proxy.size.width * progress)
                     }
                 }
@@ -519,6 +520,37 @@ private struct WorkoutLiveActivityLockScreenView: View {
 
 }
 
+/// ActivityKit renders a small still from the on-device cache, never a GIF or
+/// a remote request. Rest keeps the timer symbol so its controls remain clear.
+private struct WorkoutActivityExerciseArtwork: View {
+    let set: WorkoutActivityAttributes.SetSnapshot?
+    let phase: WorkoutActivityAttributes.Phase
+    let size: CGFloat
+
+    var body: some View {
+        Group {
+            if phase != .resting,
+               let fileURL = WorkoutLiveActivityArtwork.fileURL(for: set?.artworkFileName),
+               let image = UIImage(contentsOfFile: fileURL.path) {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .padding(size * 0.17)
+                    .frame(width: size, height: size)
+                    .background(IronTheme.diagramCanvas, in: Circle())
+                    .clipShape(Circle())
+            } else {
+                Image(systemName: phase == .resting ? "timer" : "figure.strengthtraining.traditional")
+                    .font(.system(size: size * 0.5, weight: .semibold))
+                    .foregroundStyle(phaseTint(phase))
+                    .frame(width: size, height: size)
+                    .background(phaseTint(phase).opacity(0.14), in: Circle())
+            }
+        }
+        .accessibilityHidden(true)
+    }
+}
+
 /// Keep Skip anchored at the trailing edge while the three rest controls
 /// share the remaining space equally on both full-size activity surfaces.
 private struct WorkoutRunningRestControls: View {
@@ -540,8 +572,8 @@ private struct WorkoutRunningRestControls: View {
                 .accessibilityLabel("Subtract 15 seconds")
 
                 workoutRestTimerText(until: end)
-                    .font((compact ? Font.title3 : Font.title2).weight(.semibold).monospacedDigit())
-                    .foregroundStyle(WorkoutActivityPalette.onSurface)
+                    .font(.ironMetric(compact ? .title3 : .title2))
+                    .foregroundStyle(IronTheme.metricTime)
                     .multilineTextAlignment(.center)
                     .frame(minWidth: 0, maxWidth: .infinity)
                     .lineLimit(1)
@@ -576,10 +608,10 @@ private struct WorkoutActivityControlButtonStyle: ButtonStyle {
 
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .font(.caption.weight(.semibold).monospacedDigit())
+            .font(.ironMetric(.caption, weight: .semibold))
             .foregroundStyle(
                 isProminent
-                    ? WorkoutActivityPalette.onSuccess
+                    ? WorkoutActivityPalette.onAccent
                     : WorkoutActivityPalette.onSurface
             )
             .frame(minWidth: 52, maxWidth: fillsWidth ? .infinity : nil, minHeight: 38)
@@ -597,14 +629,15 @@ private struct WorkoutActivityControlButtonStyle: ButtonStyle {
 }
 
 private struct WorkoutActivityCompletionButtonStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .foregroundStyle(WorkoutActivityPalette.onSuccess)
+            .foregroundStyle(WorkoutActivityPalette.onAccent)
             .background(
                 Circle()
                     .fill(WorkoutActivityPalette.accent)
             )
-            .scaleEffect(configuration.isPressed ? 0.92 : 1)
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.92 : 1)
             .opacity(configuration.isPressed ? 0.78 : 1)
     }
 }
@@ -643,6 +676,7 @@ private struct WorkoutDynamicIslandCenter: View {
 }
 
 private struct WorkoutDynamicIslandBottom: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
@@ -652,25 +686,21 @@ private struct WorkoutDynamicIslandBottom: View {
             let set = context.state.visibleSet(at: presentationDate)
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
-                    Image(systemName: phase == .resting ? "timer" : "dumbbell.fill")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(phaseTint(phase))
-                        .frame(width: 30, height: 30)
-                        .background(phaseTint(phase).opacity(0.16), in: Circle())
+                    WorkoutActivityExerciseArtwork(set: set, phase: phase, size: 30)
 
                     VStack(alignment: .leading, spacing: 1) {
                         Text(dynamicTitle(phase: phase, set: set))
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(
                                 phaseIsCompletion(phase)
-                                    ? WorkoutActivityPalette.success
+                                    ? WorkoutActivityPalette.completion
                                     : WorkoutActivityPalette.onSurface
                             )
                             .lineLimit(1)
                             .minimumScaleFactor(0.70)
 
                         Text(dynamicSubtitle(phase: phase, set: set))
-                            .font(.caption2)
+                            .font(.ironMetric(.caption2, weight: .semibold))
                             .foregroundStyle(WorkoutActivityPalette.secondary)
                             .lineLimit(1)
                             .minimumScaleFactor(0.68)
@@ -691,7 +721,7 @@ private struct WorkoutDynamicIslandBottom: View {
                             .overlay(alignment: .leading) {
                                 GeometryReader { proxy in
                                     Capsule(style: .continuous)
-                                        .fill(WorkoutActivityPalette.accent)
+                                        .fill(IronTheme.metricTime)
                                         .frame(width: proxy.size.width * progress)
                                 }
                             }
@@ -705,10 +735,11 @@ private struct WorkoutDynamicIslandBottom: View {
                 } else {
                     HStack(spacing: 10) {
                         Text(dynamicResult(set))
-                            .font(.title3.weight(.semibold).monospacedDigit())
+                            .font(.ironMetric(.title3, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
                             .foregroundStyle(
                                 phaseIsCompletion(phase)
-                                    ? WorkoutActivityPalette.success
+                                    ? WorkoutActivityPalette.completion
                                     : WorkoutActivityPalette.onSurface
                             )
                             .lineLimit(1)
@@ -716,8 +747,9 @@ private struct WorkoutDynamicIslandBottom: View {
                             .allowsTightening(true)
                         Spacer(minLength: 4)
                         Text("\(context.state.completedSets)/\(context.state.totalSets) sets")
-                            .font(.caption2.weight(.semibold).monospacedDigit())
-                            .foregroundStyle(WorkoutActivityPalette.secondary)
+                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
+                            .foregroundStyle(IronTheme.metricSets)
                             .lineLimit(1)
 
                         if phase == .currentSet, let set {
@@ -729,7 +761,7 @@ private struct WorkoutDynamicIslandBottom: View {
                         } else {
                             Image(systemName: phaseIsCompletion(phase) ? "checkmark.circle.fill" : "checkmark.seal.fill")
                                 .font(.title3)
-                                .foregroundStyle(WorkoutActivityPalette.success)
+                                .foregroundStyle(WorkoutActivityPalette.completion)
                         }
                     }
                 }
@@ -830,6 +862,7 @@ private struct WorkoutDynamicIslandCompactLeading: View {
 }
 
 private struct WorkoutDynamicIslandCompactTrailing: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
@@ -838,33 +871,35 @@ private struct WorkoutDynamicIslandCompactTrailing: View {
             let phase = context.state.resolvedPhase(at: presentationDate)
             if phase == .resting, context.state.isRestPaused {
                 Image(systemName: "pause.fill")
-                    .foregroundStyle(WorkoutActivityPalette.accent)
+                    .foregroundStyle(IronTheme.metricTime)
                     .accessibilityLabel("Rest timer paused")
             } else if phase == .resting, let end = context.state.restTimerEnd {
                 workoutRestTimerText(until: end)
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(WorkoutActivityPalette.accent)
+                    .font(.ironMetric(.caption, weight: .bold))
+                    .foregroundStyle(IronTheme.metricTime)
                     .lineLimit(1)
                     .minimumScaleFactor(0.66)
             } else if phaseIsCompletion(phase) {
                 Image(systemName: "checkmark")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(WorkoutActivityPalette.success)
+                    .foregroundStyle(WorkoutActivityPalette.completion)
             } else if let set = context.state.visibleSet(at: presentationDate) {
                 Text("\(set.setNumber)/\(set.setCount)")
-                    .font(.caption.weight(.bold).monospacedDigit())
-                    .foregroundStyle(WorkoutActivityPalette.onSurface)
+                    .font(.ironMetric(.caption, weight: .bold))
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .foregroundStyle(IronTheme.metricSets)
                     .lineLimit(1)
                     .minimumScaleFactor(0.72)
             } else {
                 Image(systemName: "checkmark")
-                    .foregroundStyle(WorkoutActivityPalette.success)
+                    .foregroundStyle(WorkoutActivityPalette.completion)
             }
         }
     }
 }
 
 private struct WorkoutPausedRestControls: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
     var compact = false
 
@@ -875,8 +910,9 @@ private struct WorkoutPausedRestControls: View {
                     .font(.caption2)
                     .foregroundStyle(WorkoutActivityPalette.secondary)
                 Text(remainingText)
-                    .font(.title3.weight(.semibold).monospacedDigit())
-                    .foregroundStyle(WorkoutActivityPalette.onSurface)
+                    .font(.ironMetric(.title3, weight: .semibold))
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .foregroundStyle(IronTheme.metricTime)
             }
             Spacer(minLength: 4)
             Button(intent: ResumeWorkoutRestTimerIntent(workoutID: context.attributes.workoutID)) {
@@ -953,9 +989,7 @@ private func phaseSystemImage(_ phase: WorkoutActivityAttributes.Phase) -> Strin
 }
 
 private func phaseTint(_ phase: WorkoutActivityAttributes.Phase) -> Color {
-    phaseIsCompletion(phase)
-        ? WorkoutActivityPalette.success
-        : WorkoutActivityPalette.accent
+    phase == .resting ? IronTheme.metricTime : WorkoutActivityPalette.accent
 }
 
 private func phaseIsCompletion(_ phase: WorkoutActivityAttributes.Phase) -> Bool {

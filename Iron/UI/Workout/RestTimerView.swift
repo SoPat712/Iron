@@ -9,7 +9,6 @@
 
 import SwiftUI
 import UIKit
-import AudioToolbox
 
 enum RestTimerSheetLayout {
     static let height: CGFloat = 540
@@ -20,6 +19,7 @@ enum RestTimerSheetLayout {
 }
 
 struct RestTimerView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var restTimerStore: RestTimerStore
 
     @State private var selectedDuration: TimeInterval = 90
@@ -48,7 +48,7 @@ struct RestTimerView: View {
                 selectedDuration = clamped(recent)
             }
         }
-        .animation(IronMotion.snappy, value: isRunning)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isRunning)
     }
 
     /// A compact radial duration selector + presets layout that fits the
@@ -73,7 +73,7 @@ struct RestTimerView: View {
                 Picker("Presets", selection: $selectedDuration) {
                     ForEach(quickDurations, id: \.self) { duration in
                         Text(timeTitle(duration))
-                            .monospacedDigit()
+                            .font(.ironMetric(.subheadline, weight: .semibold))
                             .tag(duration)
                     }
                 }
@@ -271,7 +271,7 @@ struct RestTimerConfigurationSheet: View {
                 Picker("Presets", selection: $selection) {
                     ForEach(quickDurations, id: \.self) { duration in
                         Text(timeTitle(duration))
-                            .monospacedDigit()
+                            .font(.ironMetric(.subheadline, weight: .semibold))
                             .tag(duration)
                     }
                 }
@@ -379,13 +379,13 @@ struct RestTimerDurationDial: View {
                 Circle()
                     .trim(from: 0, to: 0.75 * progress)
                     .stroke(
-                        IronTheme.accent.gradient,
+                        IronTheme.metricTime.gradient,
                         style: StrokeStyle(lineWidth: 6, lineCap: .round)
                     )
                     .rotationEffect(.degrees(startRotation))
-                    .shadow(color: IronTheme.accent.opacity(0.22), radius: 4)
+                    .shadow(color: IronTheme.metricTime.opacity(0.22), radius: 4)
                     .animation(
-                        isDragging || reduceMotion ? nil : IronMotion.snappy,
+                        isDragging || reduceMotion ? nil : IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
                         value: progress
                     )
 
@@ -394,7 +394,7 @@ struct RestTimerDurationDial: View {
                     Capsule(style: .continuous)
                         .fill(
                             markerProgress <= Double(progress)
-                                ? IronTheme.accent.opacity(index.isMultiple(of: 5) ? 0.92 : 0.62)
+                                ? IronTheme.metricTime.opacity(index.isMultiple(of: 5) ? 0.92 : 0.62)
                                 : Color.secondary.opacity(index.isMultiple(of: 5) ? 0.46 : 0.25)
                         )
                         .frame(
@@ -406,26 +406,28 @@ struct RestTimerDurationDial: View {
                 }
 
                 Circle()
-                    .fill(IronTheme.accent)
+                    .fill(IronTheme.metricTime)
                     .frame(width: 16, height: 16)
-                    .overlay(Circle().stroke(.white.opacity(0.88), lineWidth: 1.5))
-                    .shadow(color: IronTheme.accent.opacity(0.30), radius: 3, y: 1)
+                    .overlay(Circle().stroke(IronTheme.onAccent.opacity(0.88), lineWidth: 1.5))
+                    .shadow(color: IronTheme.metricTime.opacity(0.30), radius: 3, y: 1)
                     // Scale the knob in its own local space. Applying this
                     // after the radial offset also scales the offset vector,
                     // which made a press-and-hold visibly jump outward.
-                    .scaleEffect(isDragging ? 1.10 : 1)
+                    .scaleEffect(isDragging && !reduceMotion ? 1.10 : 1)
                     .offset(y: -trackRadius)
                     .rotationEffect(.degrees(-135 + (Double(progress) * 270)))
                     .animation(
-                        isDragging || reduceMotion ? nil : IronMotion.snappy,
+                        isDragging || reduceMotion ? nil : IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
                         value: progress
                     )
-                    .animation(reduceMotion ? nil : IronMotion.snappy, value: isDragging)
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isDragging)
 
                 VStack(spacing: 3) {
                     Text(timeTitle(displayedSelection))
-                        .font(.system(size: 30, weight: .bold).monospacedDigit())
-                        .contentTransition(.numericText())
+                        .font(.ironMetric(.largeTitle))
+                        .foregroundStyle(IronTheme.metricTime)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(displayedSelection))
                     Text(subtitle)
                         .font(.caption.weight(.medium))
                         .foregroundStyle(.secondary)
@@ -515,7 +517,7 @@ struct RestTimerDurationDial: View {
             feedback.selectionChanged()
         }
         if SettingsStore.shared.workoutSounds {
-            AudioServicesPlaySystemSound(1104)
+            IronSoundPlayer.shared.play(.tick)
         }
     }
 

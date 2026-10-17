@@ -12,21 +12,19 @@ import WorkoutDataKit
 
 struct ExerciseHistoryView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FetchRequest(fetchRequest: WorkoutExercise.fetchRequest()) private var history
 
     let exercise: Exercise
-    private let usesModalSurface: Bool
     private let onOpenWorkout: () -> Void
     private let onCloseWorkout: () -> Void
 
     init(
         exercise: Exercise,
-        usesModalSurface: Bool = false,
         onOpenWorkout: @escaping () -> Void = {},
         onCloseWorkout: @escaping () -> Void = {}
     ) {
         self.exercise = exercise
-        self.usesModalSurface = usesModalSurface
         self.onOpenWorkout = onOpenWorkout
         self.onCloseWorkout = onCloseWorkout
         _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid, until: nil))
@@ -37,182 +35,151 @@ struct ExerciseHistoryView: View {
     }
 
     var body: some View {
-        ZStack {
-            shellBackground
-
-            ScrollView(showsIndicators: false) {
-                VStack(alignment: .leading, spacing: 10) {
-                    IronSectionTitle(title: "Recent sessions", detail: "\(completedHistory.count) total")
-                        .padding(.horizontal, IronTheme.horizontalPadding)
-                        .padding(.top, 12)
-
-                    if completedHistory.isEmpty {
-                        emptyState
-                    } else {
-                        LazyVStack(spacing: 12) {
-                            ForEach(completedHistory) { workoutExercise in
-                                sessionLink(workoutExercise)
-                            }
-                        }
-                        .padding(.horizontal, IronTheme.horizontalPadding)
-                    }
+        List {
+            if completedHistory.isEmpty {
+                Section {
+                    ContentUnavailableView(
+                        "No History Yet",
+                        systemImage: "clock.arrow.circlepath",
+                        description: Text("Completed sets for \(exercise.title) will appear here.")
+                    )
+                    .listRowBackground(Color.clear)
                 }
-                .padding(.bottom, 40)
+            } else {
+                ForEach(completedHistory) { workoutExercise in
+                    sessionSection(workoutExercise)
+                }
             }
         }
+        .listStyle(.insetGrouped)
     }
 
-    @ViewBuilder
-    private var shellBackground: some View {
-        if usesModalSurface {
-            IronModalBackground()
-        } else {
-            IronScreenBackground()
-        }
-    }
-
-    private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 34, weight: .semibold))
-                .foregroundColor(IronTheme.accent)
-            Text("No exercise history yet")
-                .font(.headline.weight(.semibold))
-                .foregroundColor(IronTheme.primaryText)
-            Text("Completed sets for \(exercise.title) will appear here.")
-                .font(.subheadline)
-                .foregroundColor(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 38)
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .padding(.horizontal, IronTheme.horizontalPadding)
-    }
-
-    @ViewBuilder
-    private func sessionLink(_ workoutExercise: WorkoutExercise) -> some View {
-        if let workout = workoutExercise.workout {
-            NavigationLink(
-                destination: WorkoutDetailView(workout: workout)
-                    .onAppear(perform: onOpenWorkout)
-                    .onDisappear(perform: onCloseWorkout)
-            ) {
-                sessionCard(workoutExercise)
-            }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the full workout")
-        } else {
-            sessionCard(workoutExercise)
-        }
-    }
-
-    private func sessionCard(_ workoutExercise: WorkoutExercise) -> some View {
+    private func sessionSection(_ workoutExercise: WorkoutExercise) -> some View {
         let sets = workoutSets(for: workoutExercise)
         let completedCount = sets.filter(\.isCompleted).count
         let isFullyCompleted = !sets.isEmpty && completedCount == sets.count
 
-        return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(Workout.dateFormatter.string(from: workoutExercise.workout?.start, fallback: "Unknown date"))
-                        .font(.headline.weight(.semibold))
-                        .foregroundColor(IronTheme.primaryText)
-                    Text("\(completedCount) completed of \(sets.count) sets")
-                        .font(.caption)
-                        .foregroundColor(IronTheme.secondaryText)
-                }
-                Spacer()
-                HStack(spacing: 9) {
-                    Label(
-                        isFullyCompleted ? "Complete" : "Partial",
-                        systemImage: isFullyCompleted ? "checkmark.circle.fill" : "circle.lefthalf.filled"
-                    )
-                    .font(.caption.weight(.semibold))
-                    .foregroundColor(isFullyCompleted ? IronTheme.success : IronTheme.warning)
-
-                    if workoutExercise.workout != nil {
-                        Image(systemName: "chevron.right")
-                            .font(.caption.weight(.bold))
-                            .foregroundColor(IronTheme.tertiaryText)
+        return Section {
+            if let workout = workoutExercise.workout {
+                NavigationLink {
+                    WorkoutDetailView(workout: workout)
+                        .onAppear(perform: onOpenWorkout)
+                        .onDisappear(perform: onCloseWorkout)
+                } label: {
+                    LabeledContent("Workout") {
+                        Label(
+                            isFullyCompleted ? "Complete" : "Partial",
+                            systemImage: isFullyCompleted ? "checkmark.circle.fill" : "circle.lefthalf.filled"
+                        )
+                        .labelStyle(.titleAndIcon)
+                        .foregroundStyle(isFullyCompleted ? IronTheme.accent : IronTheme.secondaryText)
                     }
                 }
             }
-            .padding(16)
 
             if let comment = workoutExercise.comment, !comment.isEmpty {
                 Text(comment)
                     .font(.subheadline)
-                    .foregroundColor(IronTheme.secondaryText)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 14)
+                    .foregroundStyle(.secondary)
             }
-
-            IronHairline()
-
-            HStack {
-                Text("SET").frame(width: 42, alignment: .leading)
-                Text("RESULT")
-                Spacer()
-                Text("RPE").frame(width: 52, alignment: .trailing)
-            }
-            .font(.caption2.weight(.bold))
-            .tracking(0.7)
-            .foregroundColor(IronTheme.tertiaryText)
-            .padding(.horizontal, 16)
-            .padding(.vertical, 10)
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
                 historySetRow(set, index: index)
-
-                if index < sets.count - 1 {
-                    IronHairline()
-                        .padding(.leading, 58)
-                }
             }
+        } header: {
+            Text(Workout.dateFormatter.string(from: workoutExercise.workout?.start, fallback: "Unknown date"))
+        } footer: {
+            (Text("\(completedCount)").font(.ironMetric(.footnote, weight: .semibold)).foregroundColor(IronTheme.metricSets)
+                + Text(" of ")
+                + Text("\(sets.count)").font(.ironMetric(.footnote, weight: .semibold)).foregroundColor(IronTheme.metricSets)
+                + Text(" sets completed"))
+                .font(.caption)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completedCount)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: sets.count)
         }
-        .background(
-            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
-                .fill(IronTheme.surface)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous))
     }
 
     private func historySetRow(_ set: WorkoutSet, index: Int) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             Text(set.tagValue?.title.first.map(String.init) ?? "\(index + 1)")
-                .font(.subheadline.weight(.bold).monospacedDigit())
-                .foregroundColor(set.tagValue?.color ?? IronTheme.primaryText)
-                .frame(width: 32, height: 32)
-                .background(
-                    RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                        .fill(IronTheme.raisedSurface)
-                )
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(IronTheme.metricSets)
+                .frame(width: 24, alignment: .leading)
 
-            Text(set.resultTitle(weightUnit: settingsStore.weightUnit))
-                .font(.body.weight(.medium).monospacedDigit())
-                .foregroundColor(set.isCompleted ? IronTheme.primaryText : IronTheme.secondaryText)
+            resultText(for: set)
+                .opacity(set.isCompleted ? 1 : 0.65)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
 
             if set.isPersonalRecord ?? false {
                 Image(systemName: "medal.fill")
                     .font(.caption)
-                    .foregroundColor(IronTheme.warning)
+                    .foregroundStyle(IronTheme.metricRecord)
             }
 
             Spacer()
 
             Text(rpeText(set.rpeValue))
-                .font(.subheadline.weight(.medium).monospacedDigit())
-                .foregroundColor(set.rpeValue == nil ? IronTheme.tertiaryText : IronTheme.secondaryText)
-                .frame(width: 52, alignment: .trailing)
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(set.rpeValue == nil ? IronTheme.secondaryText : IronTheme.metricEffort)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
         }
-        .padding(.horizontal, 16)
-        .frame(minHeight: 52)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: set.rpeValue)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: set.resultTitle(weightUnit: settingsStore.weightUnit))
+    }
+
+    private func resultText(for set: WorkoutSet) -> Text {
+        let separator = Text(" · ").foregroundColor(IronTheme.secondaryText)
+        if let distance = set.distanceValue {
+            let result = distanceText(distance)
+            if let duration = set.durationValue {
+                return result + separator + metricText(IronDurationFormat.title(duration), color: IronTheme.metricTime)
+            }
+            return result
+        }
+        if let duration = set.durationValue {
+            let time = metricText(IronDurationFormat.title(duration), color: IronTheme.metricTime)
+            return set.weightValue > 0 ? weightText(set.weightValue) + separator + time : time
+        }
+        if set.weightValue > 0 {
+            return weightText(set.weightValue)
+                + Text(" × ").foregroundColor(IronTheme.secondaryText)
+                + metricText("\(set.repetitionsValue)", color: IronTheme.metricSets)
+        }
+        if set.repetitionsValue > 0 {
+            return metricText("\(set.repetitionsValue)", color: IronTheme.metricSets) + unitText("reps")
+        }
+        return Text("—").foregroundColor(IronTheme.secondaryText)
+    }
+
+    private func weightText(_ kilograms: Double) -> Text {
+        let weight = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
+        let number = settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: weight)) ?? "\(weight)"
+        return metricText(number, color: IronTheme.metricVolume) + unitText(settingsStore.weightUnit.unit.symbol)
+    }
+
+    private func distanceText(_ meters: Double) -> Text {
+        let distance: Double
+        let unit: String
+        switch settingsStore.weightUnit {
+        case .metric:
+            distance = meters >= 1_000 ? meters / 1_000 : meters
+            unit = meters >= 1_000 ? "km" : "m"
+        case .imperial:
+            let miles = Measurement(value: meters, unit: UnitLength.meters).converted(to: .miles).value
+            distance = miles >= 0.1 ? miles : Measurement(value: meters, unit: UnitLength.meters).converted(to: .feet).value
+            unit = miles >= 0.1 ? "mi" : "ft"
+        }
+        let number = distance.formatted(.number.precision(.fractionLength(unit == "km" || unit == "mi" ? 2 : 0)))
+        return metricText(number, color: IronTheme.metricTime) + unitText(unit)
+    }
+
+    private func metricText(_ value: String, color: Color) -> Text {
+        Text(value).font(.ironMetric(.body, weight: .semibold)).foregroundColor(color)
+    }
+
+    private func unitText(_ unit: String) -> Text {
+        Text(" \(unit)").font(.caption).foregroundColor(IronTheme.secondaryText)
     }
 
     private func workoutSets(for workoutExercise: WorkoutExercise) -> [WorkoutSet] {
@@ -223,7 +190,6 @@ struct ExerciseHistoryView: View {
         guard let value else { return "—" }
         return value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
-
 }
 
 #if DEBUG

@@ -21,7 +21,12 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         WorkoutDataStorage.migrateToAppGroupIfNecessary()
         SettingsStore.migrateToAppGroupIfNecessary()
         ExerciseStore.migrateHiddenExercisesToAppGroupIfNecessary()
+        IronSoundPlayer.shared.preload()
         
+        #if DEBUG
+        seedSampleDataIfRequested()
+        #endif
+
         WatchConnectionManager.shared.activateSession()
         Shortcuts.setShortcutSuggestions()
         ExerciseMediaStore.shared.prefetchCatalogue(from: ExerciseStore.shared.exercises)
@@ -41,7 +46,17 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         return true
     }
 
-    
+    #if DEBUG
+    private func seedSampleDataIfRequested() {
+        let arguments = ProcessInfo.processInfo.arguments
+        let wantsActiveWorkout = arguments.contains("-ironSeedActiveWorkout")
+        guard arguments.contains("-ironSeedSampleData") || wantsActiveWorkout else { return }
+        // Reset first so repeated launches stay idempotent instead of stacking
+        // duplicate history.
+        IronSampleDataSeeder.seed(reset: true, includeActiveWorkout: wantsActiveWorkout)
+    }
+    #endif
+
     // MARK: Intents
     
     func application(_ application: UIApplication, handle intent: INIntent, completionHandler: @escaping (INIntentResponse) -> Void) {

@@ -152,12 +152,11 @@ struct HealthSettingsView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(IronTheme.background)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .ironDestinationScreen(title: "Apple Health")
+        .navigationTitle("Apple Health")
+        .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
         .onAppear(perform: refreshAccessState)
         .onChange(of: scenePhase) { _, phase in

@@ -9,7 +9,6 @@
 import Foundation
 import Combine
 import UIKit
-import AudioToolbox
 
 let restTimerDurationFormatter: DateComponentsFormatter = {
     let formatter = DateComponentsFormatter()
@@ -183,7 +182,7 @@ final class RestTimerStore: ObservableObject {
                 feedback.notificationOccurred(.warning)
             }
             if SettingsStore.shared.workoutSounds {
-                AudioServicesPlayAlertSound(1005)
+                IronSoundPlayer.shared.play(.restComplete)
             }
         }
         objectWillChange.send()
@@ -240,6 +239,7 @@ extension RestTimerStore {
 
     func adjust(by interval: TimeInterval) {
         guard interval.isFinite else { return }
+        IronSoundPlayer.shared.play(.tick)
 
         if let paused = userDefaults.restTimerPausedRemaining {
             let adjusted = paused + interval

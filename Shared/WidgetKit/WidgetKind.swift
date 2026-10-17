@@ -18,6 +18,39 @@ enum WidgetKind: String {
     case lastWorkout
 }
 
+/// Resolves the small, static exercise artwork shared with the Live Activity.
+/// Unlike the general app-group helper, this never falls back to a process-local
+/// container because those paths are not readable by the widget extension.
+enum WorkoutLiveActivityArtwork {
+    private static var appGroupIdentifier: String {
+        #if DEBUG && targetEnvironment(simulator)
+        return "group.com.joshpatra.IronDev.live-activity"
+        #else
+        return FileManager.appGroupIdentifier
+        #endif
+    }
+
+    static var directoryURL: URL? {
+        FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: appGroupIdentifier)?
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("Caches", isDirectory: true)
+            .appendingPathComponent("LiveActivityArtwork", isDirectory: true)
+    }
+
+    static func fileURL(for fileName: String?) -> URL? {
+        guard let fileName,
+              !fileName.isEmpty,
+              fileName.count <= 200,
+              fileName.hasSuffix(".png"),
+              fileName.unicodeScalars.allSatisfy({
+                  CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_").contains($0)
+              }),
+              let directoryURL else { return nil }
+        return directoryURL.appendingPathComponent(fileName, isDirectory: false)
+    }
+}
+
 #if canImport(ActivityKit)
 /// The value-only contract shared by Iron and its WidgetKit extension.
 /// Keep this payload compact: ActivityKit limits static and dynamic data to 4 KB.
@@ -30,6 +63,7 @@ struct WorkoutActivityAttributes: ActivityAttributes {
         let setNumber: Int
         let setCount: Int
         let result: String
+        var artworkFileName: String? = nil
     }
 
     enum Phase: String, Codable, Hashable {

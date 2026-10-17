@@ -104,13 +104,12 @@ struct BackupAndExportView: View {
             }
         }
         .listStyle(.insetGrouped)
-        .scrollContentBackground(.hidden)
-        .background(IronTheme.background)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
         .onAppear(perform: backupStore.fetchBackups)
-        .ironDestinationScreen(title: "Backup & Export")
+        .navigationTitle("Backup & Export")
+        .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
         .alert(item: $operationError) { operationError in
             Alert(

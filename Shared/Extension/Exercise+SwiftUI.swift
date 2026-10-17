@@ -11,6 +11,19 @@ import SwiftUI
 import WorkoutDataKit
 
 extension Exercise {
+    static func displayName(forMuscleGroup muscleGroup: String) -> String {
+        switch muscleGroup.lowercased() {
+        case "abdominals": return "Abs"
+        case "arms": return "Arms"
+        case "shoulders": return "Shoulders"
+        case "back": return "Back"
+        case "legs": return "Legs"
+        case "chest": return "Chest"
+        case "cardio": return "Cardio"
+        default: return muscleGroup.capitalized
+        }
+    }
+
     static func colorFor(muscleGroup: String) -> Color {
         switch muscleGroup {
         case "abdominals":
@@ -61,5 +74,40 @@ extension Exercise {
     
     var muscleGroupColor: Color {
         Exercise.colorFor(muscleGroup: muscleGroup)
+    }
+}
+
+/// Compact named muscle tags for history and recents. Letter-circle badges
+/// hid the actual groups behind L / c / O.
+struct MuscleGroupPills: View {
+    let groups: [String]
+    var limit: Int = 3
+
+    private var visible: [String] {
+        Array(
+            groups
+                .filter { !$0.isEmpty && $0.lowercased() != "other" }
+                .prefix(limit)
+        )
+    }
+
+    var body: some View {
+        if !visible.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(visible, id: \.self) { group in
+                    Text(Exercise.displayName(forMuscleGroup: group))
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color(UIColor.secondaryLabel))
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(
+                            Color(UIColor.secondarySystemFill),
+                            in: Capsule(style: .continuous)
+                        )
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(visible.map { Exercise.displayName(forMuscleGroup: $0) }.joined(separator: ", "))
+        }
     }
 }
