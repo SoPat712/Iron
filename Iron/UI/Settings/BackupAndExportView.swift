@@ -108,7 +108,7 @@ struct BackupAndExportView: View {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
         .onAppear(perform: backupStore.fetchBackups)
-        .navigationTitle("Backup & Export")
+        .navigationTitle("Import & Export")
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
         .alert(item: $operationError) { operationError in

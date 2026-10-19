@@ -99,7 +99,7 @@ struct SettingsView: View {
             }
 
             Section("Your Data") {
-                settingsLink("Backup & export", icon: "externaldrive.fill", destination: BackupAndExportView())
+                settingsLink("Import & export", icon: "arrow.up.arrow.down", destination: BackupAndExportView())
             }
 
             Section("Support") {
