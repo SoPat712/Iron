@@ -529,11 +529,11 @@ struct PlateCalculatorView: View {
         _barWeight = State(initialValue: unit.barbellWeight)
     }
 
-    private var availablePlates: [Double] {
-        unit == .metric ? [25, 20, 15, 10, 5, 2.5, 1.25, 0.5] : [45, 35, 25, 10, 5, 2.5, 1.25]
-    }
-
-    private var platesPerSide: [(weight: Double, count: Int)] {
+    /// Shared with the live logger hint; the calculator can also use a custom bar.
+    static func platesPerSide(for targetWeight: Double, unit: WeightUnit, barWeight: Double) -> [(weight: Double, count: Int)] {
+        let availablePlates: [Double] = unit == .metric
+            ? [25, 20, 15, 10, 5, 2.5, 1.25, 0.5]
+            : [45, 35, 25, 10, 5, 2.5, 1.25]
         var remaining = max((targetWeight - barWeight) / 2, 0)
         return availablePlates.compactMap { plate in
             let count = Int(floor((remaining + 0.0001) / plate))
@@ -541,6 +541,10 @@ struct PlateCalculatorView: View {
             remaining -= Double(count) * plate
             return (plate, count)
         }
+    }
+
+    private var platesPerSide: [(weight: Double, count: Int)] {
+        Self.platesPerSide(for: targetWeight, unit: unit, barWeight: barWeight)
     }
 
     private var loadedWeight: Double {

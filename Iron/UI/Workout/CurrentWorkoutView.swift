@@ -1044,12 +1044,13 @@ struct CurrentWorkoutView: View {
             )
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, set in
+                let previousSet = latestHistorySet(for: workoutExercise, at: setIndex)
                 InlineWorkoutSetRow(
                     set: set,
                     index: setIndex,
                     usesDuration: usesDuration,
                     isBarbell: isBarbell && !usesDuration,
-                    previousTitle: previousSetTitle(for: workoutExercise, at: setIndex),
+                    previousTitle: previousSet?.resultTitle(weightUnit: settingsStore.weightUnit) ?? "—",
                     onOpenPlateCalculator: { activeSheet = .plates(set) },
                     onToggleCompleted: { toggleCompleted(set, in: workoutExercise) },
                     onDelete: { deleteSet(set, from: workoutExercise) },
@@ -1062,7 +1063,9 @@ struct CurrentWorkoutView: View {
                         return saved
                     },
                     allowsSwipeToDelete: true,
-                    isCurrent: sets.first(where: { !$0.isCompleted })?.objectID == set.objectID
+                    isCurrent: sets.first(where: { !$0.isCompleted })?.objectID == set.objectID,
+                    previousWeight: previousSet?.weightValue,
+                    previousRepetitions: previousSet.map { Int($0.repetitionsValue) }
                 )
                 .environmentObject(settingsStore)
                 .transition(
@@ -1083,6 +1086,10 @@ struct CurrentWorkoutView: View {
             .animation(
                 IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion),
                 value: sets.count
+            )
+            .animation(
+                IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion),
+                value: sets.first(where: { !$0.isCompleted })?.objectID
             )
 
             if isRestPillVisible,
@@ -2200,11 +2207,6 @@ struct CurrentWorkoutView: View {
         return previousSets.indices.contains(index) ? previousSets[index] : previousSets.last
     }
 
-    private func previousSetTitle(for workoutExercise: WorkoutExercise, at index: Int) -> String {
-        guard let set = latestHistorySet(for: workoutExercise, at: index) else { return "—" }
-        return set.resultTitle(weightUnit: settingsStore.weightUnit)
-    }
-
     private func displayWeight(for set: WorkoutSet) -> Double {
         WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
     }
@@ -2868,7 +2870,15 @@ struct InlineWorkoutSetRow: View {
     let onChanged: () -> Bool
     var allowsSwipeToDelete = false
     var isCurrent = false
+    // Stored in kilograms, just like the set; history is only a suggestion.
+    var previousWeight: Double? = nil
+    var previousRepetitions: Int? = nil
 
+    private var showsFocusedEditor: Bool {
+        isCurrent && !usesDuration && !set.isCompleted
+    }
+
+    @State private var stepFeedback = 0
     @State private var isRaisedCurrent = false
     @State private var completionBounce = 0
     @State private var checkReveal: CGFloat = 0
@@ -3082,121 +3092,23 @@ struct InlineWorkoutSetRow: View {
                 swipeDeleteAction
             }
 
-            HStack(spacing: InlineWorkoutSetLayout.spacing) {
-            Menu {
-                setTypeMenuItems
-            } label: {
-                Text(setLabel)
-                    .font(.ironMetric(.callout, weight: .semibold))
-                    .foregroundStyle(badgeColor)
-                    .frame(width: 30, height: 30)
-                    .background(badgeFill, in: Circle())
-                    .overlay {
-                        Circle()
-                            .stroke(IronTheme.accent, lineWidth: 1.5)
-                            .opacity(isRaisedCurrent && !set.isCompleted && set.tagValue != .warmUp ? 1 : 0)
-                    }
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
-                    .contentShape(Rectangle())
-                    .frame(width: InlineWorkoutSetLayout.setWidth)
-            }
-            .accessibilityLabel("Set type")
-            .accessibilityValue(set.tagValue?.title ?? "Normal set")
-
-            Text(previousTitle)
-                .font(.ironMetric(.caption, weight: .semibold))
-                .foregroundColor(IronTheme.secondaryText)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-                .multilineTextAlignment(.center)
-                .frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
-
-            if usesDuration {
-                setField {
-                    durationControl
-                }
-            } else {
-                setField(isFocused: focusedField == .weight) {
-                    TextField("0", text: weightTextBinding)
-                        .keyboardType(.decimalPad)
-                        .focused($focusedField, equals: .weight)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityLabel("Weight in \(settingsStore.weightUnit.unit.symbol)")
-                }
-
-                setField(
-                    width: InlineWorkoutSetLayout.repetitionsWidth,
-                    isFocused: focusedField == .repetitions
-                ) {
-                    TextField("0", text: repetitionsTextBinding)
-                        .keyboardType(.numberPad)
-                        .focused($focusedField, equals: .repetitions)
-                        .textInputAutocapitalization(.never)
-                        .autocorrectionDisabled()
-                        .accessibilityLabel("Repetitions")
+            Group {
+                if showsFocusedEditor {
+                    focusedEditor
+                        .transition(.opacity)
+                } else {
+                    compactRow
+                        .transition(.opacity)
                 }
             }
-
-            if settingsStore.logRPE {
-                Button(action: { showingRPEPicker = true }) {
-                    Group {
-                        if let rpe = set.rpeValue {
-                            Text(String(format: "%g", rpe))
-                        } else if set.isCompleted {
-                            Text("–")
-                        } else {
-                            Image(systemName: "gauge.with.dots.needle.50percent")
-                        }
-                    }
-                    .font(.ironMetric(.caption, weight: .semibold))
-                    .foregroundStyle(set.rpeValue != nil || (!set.isCompleted && isRaisedCurrent) ? IronTheme.metricEffort : IronTheme.secondaryText)
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
-                    .background(
-                        Capsule(style: .continuous)
-                            .fill(IronTheme.metricEffortContainer)
-                            .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
-                    )
-                    .contentShape(Rectangle())
-                    .frame(width: InlineWorkoutSetLayout.rpeWidth)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(rpeAccessibilityLabel)
-                .accessibilityHint("Opens the effort selector")
-            }
-
-            Button {
-                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-                    onToggleCompleted()
-                }
-            } label: {
-                completionSymbol
-                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
-                    .contentShape(Rectangle())
-                    .frame(width: InlineWorkoutSetLayout.completionWidth)
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel(
-                set.isCompleted
-                    ? "Set \(index + 1) completed"
-                    : "Mark set \(index + 1) complete"
-            )
-            .accessibilityValue(set.isCompleted ? "Completed" : "Not completed")
-            .accessibilityRemoveTraits(.isSelected)
-            .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
-            }
-            // Every state uses the same insets and columns. Only the fills change.
-            .padding(.vertical, 5)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
-            .background {
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .fill(IronTheme.field)
-                    .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
-            }
+            // Keep sweep state and success feedback alive across presentation changes.
             .ironSetCompletion(isComplete: set.isCompleted, feedbackEnabled: completionFeedbackEnabled)
             .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: set.isCompleted)
+            .animation(
+                IronMotion.preferred(isCurrent && !usesDuration ? IronMotion.collapse : IronMotion.snappy, reduceMotion: reduceMotion),
+                value: set.isCompleted
+            )
+            .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: showsFocusedEditor)
             .padding(.vertical, 2)
             .offset(x: swipeOffset)
         }
@@ -3218,6 +3130,10 @@ struct InlineWorkoutSetRow: View {
             onChanged: handleSwipeChanged,
             onEnded: handleSwipeEnded
         )
+        .sensoryFeedback(.selection, trigger: stepFeedback)
+        .onChange(of: showsFocusedEditor) { _, _ in
+            if focusedField == nil { synchronizeEntryText() }
+        }
         .onAppear {
             synchronizeEntryText()
             isRaisedCurrent = isCurrent && !set.isCompleted
@@ -3306,6 +3222,313 @@ struct InlineWorkoutSetRow: View {
         }
     }
 
+    private var focusedEditor: some View {
+        VStack(spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Menu {
+                    setTypeMenuItems
+                } label: {
+                    HStack(spacing: 4) {
+                        Text("Set \(index + 1)")
+                        if let tag = set.tagValue {
+                            Image(systemName: setTypeIcon(for: tag))
+                                .foregroundStyle(badgeColor)
+                        }
+                        Image(systemName: "chevron.down")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
+                    }
+                    .font(.headline.weight(.bold))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .frame(minHeight: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                }
+                .accessibilityLabel("Set \(index + 1) type")
+                .accessibilityValue(set.tagValue?.title ?? "Normal set")
+
+                Spacer(minLength: 0)
+                if !previousTitle.isEmpty && previousTitle != "—" {
+                    Text("Last time \(previousTitle)")
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .multilineTextAlignment(.trailing)
+                }
+            }
+
+            HStack(spacing: 10) {
+                focusedTile(.weight)
+                focusedTile(.repetitions)
+            }
+
+            HStack(spacing: 8) {
+                if isBarbell, settingsStore.showPlateCalculator, let hint = plateHint {
+                    Button(action: openPlateCalculator) {
+                        Label(hint, systemImage: "circle.circle")
+                            .font(.caption)
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .multilineTextAlignment(.leading)
+                            .frame(minHeight: IronTheme.controlHeight)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens the plate calculator")
+                }
+                Spacer(minLength: 0)
+                if settingsStore.logRPE {
+                    Button { showingRPEPicker = true } label: {
+                        Text(set.rpeValue.map { "RPE \(String(format: "%g", $0))" } ?? "Add RPE")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(IronTheme.metricEffort)
+                            .padding(.horizontal, 12)
+                            .frame(minHeight: IronTheme.controlHeight)
+                            .background(IronTheme.metricEffortContainer, in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(rpeAccessibilityLabel)
+                    .accessibilityHint("Opens the effort selector")
+                }
+            }
+
+            Button(action: toggleCompletion) {
+                Label("Log Set", systemImage: "checkmark")
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.onAccent)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 52)
+                    .background(IronTheme.accent, in: Capsule())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Log set \(index + 1)")
+        }
+        .padding(14)
+        .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .padding(.vertical, 6)
+    }
+
+    private func focusedTile(_ field: EntryField) -> some View {
+        let isWeight = field == .weight
+        let placeholder = isWeight ? previousWeightPlaceholder : previousRepetitions.map { String($0) } ?? "0"
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(isWeight ? "Weight" : "Reps")
+                .font(.caption)
+                .foregroundStyle(IronTheme.secondaryText)
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                TextField(placeholder, text: isWeight ? weightTextBinding : repetitionsTextBinding)
+                    .font(.ironMetric(.largeTitle, weight: .heavy))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .keyboardType(isWeight ? .decimalPad : .numberPad)
+                    .focused($focusedField, equals: field)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .minimumScaleFactor(0.5)
+                    .frame(minWidth: 0, minHeight: 48)
+                    .accessibilityLabel(isWeight ? "Weight in \(settingsStore.weightUnit.unit.symbol)" : "Repetitions")
+                    .accessibilityHint("Double tap to type")
+                if isWeight {
+                    Text(settingsStore.weightUnit.unit.symbol)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            HStack(spacing: 8) {
+                stepButton(field, direction: -1)
+                stepButton(field, direction: 1)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(focusedField == field ? IronTheme.accent : IronTheme.outline, lineWidth: focusedField == field ? 2 : 0.5)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(isWeight ? "Weight" : "Reps")
+        .accessibilityValue(isWeight
+            ? WeightUnit.format(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+            : String(Int(set.repetitionsValue)))
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: step(field, direction: 1)
+            case .decrement: step(field, direction: -1)
+            @unknown default: break
+            }
+        }
+    }
+
+    private func stepButton(_ field: EntryField, direction: Int) -> some View {
+        let action = direction > 0 ? "Increase" : "Decrease"
+        let unitName = settingsStore.weightUnit == .imperial ? "pounds" : "kilograms"
+        let increment = weightFormatter.string(from: NSNumber(value: settingsStore.weightUnit.barbellIncrement)) ?? "0"
+        return Button { step(field, direction: direction) } label: {
+            Image(systemName: direction > 0 ? "plus" : "minus")
+                .font(.body.weight(.bold))
+                .foregroundStyle(IronTheme.primaryText)
+                .frame(width: 40, height: 40)
+                .background(IronTheme.field, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(field == .weight ? "\(action) weight by \(increment) \(unitName)" : "\(action) reps by 1")
+    }
+
+    private var displayWeight: Double {
+        WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+    }
+
+    private var previousWeightPlaceholder: String {
+        guard let previousWeight else { return "0" }
+        let value = WeightUnit.convert(weight: previousWeight, from: .metric, to: settingsStore.weightUnit)
+        return weightFormatter.string(from: NSNumber(value: value)) ?? "0"
+    }
+
+    private func step(_ field: EntryField, direction: Int) {
+        stepFeedback += 1
+        if field == .weight {
+            let previous = WeightUnit.convert(weight: previousWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
+            let base = set.weightValue == 0 && direction > 0 ? previous : displayWeight
+            let maximum = WeightUnit.convert(weight: WorkoutSet.MAX_WEIGHT, from: .metric, to: settingsStore.weightUnit)
+            let value = min(max(base + Double(direction) * settingsStore.weightUnit.barbellIncrement, 0), maximum)
+            weightTextBinding.wrappedValue = weightFormatter.string(from: NSNumber(value: value)) ?? "0"
+        } else {
+            let base = set.repetitionsValue == 0 && direction > 0 ? previousRepetitions ?? 0 : Int(set.repetitionsValue)
+            let value = min(max(base + direction, 0), Int(WorkoutSet.MAX_REPETITIONS))
+            repetitionsTextBinding.wrappedValue = String(value)
+        }
+    }
+
+    private var plateHint: String? {
+        let unit = settingsStore.weightUnit
+        guard displayWeight >= unit.barbellWeight else { return nil }
+        let plates = PlateCalculatorView.platesPerSide(for: displayWeight, unit: unit, barWeight: unit.barbellWeight)
+        let loadedWeight = unit.barbellWeight + 2 * plates.reduce(0) { $0 + $1.weight * Double($1.count) }
+        // A hint must describe the actual load, not a rounded-down approximation.
+        guard abs(loadedWeight - displayWeight) < 0.001 else { return nil }
+        guard !plates.isEmpty else { return "Empty bar" }
+        let weights = plates.map { plate in
+            let title = weightFormatter.string(from: NSNumber(value: plate.weight)) ?? "0"
+            return plate.count > 1 ? "\(plate.count) × \(title)" : title
+        }
+        return weights.joined(separator: " + ") + " per side"
+    }
+
+    private func toggleCompletion() {
+        let animation = showsFocusedEditor ? IronMotion.collapse : IronMotion.snappy
+        if showsFocusedEditor { focusedField = nil }
+        withAnimation(IronMotion.preferred(animation, reduceMotion: reduceMotion)) {
+            onToggleCompleted()
+        }
+    }
+
+    private var compactRow: some View {
+        HStack(spacing: InlineWorkoutSetLayout.spacing) {
+            Menu {
+                setTypeMenuItems
+            } label: {
+                Text(setLabel)
+                    .font(.ironMetric(.callout, weight: .semibold))
+                    .foregroundStyle(badgeColor)
+                    .frame(width: 30, height: 30)
+                    .background(badgeFill, in: Circle())
+                    .overlay {
+                        Circle()
+                            .stroke(IronTheme.accent, lineWidth: 1.5)
+                            .opacity(isRaisedCurrent && !set.isCompleted && set.tagValue != .warmUp ? 1 : 0)
+                    }
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.setWidth)
+            }
+            .accessibilityLabel("Set type")
+            .accessibilityValue(set.tagValue?.title ?? "Normal set")
+
+            Text(previousTitle)
+                .font(.ironMetric(.caption, weight: .semibold))
+                .foregroundColor(IronTheme.secondaryText)
+                .lineLimit(2)
+                .minimumScaleFactor(0.7)
+                .multilineTextAlignment(.center)
+                .frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
+
+            if usesDuration {
+                setField {
+                    durationControl
+                }
+            } else {
+                setField(isFocused: focusedField == .weight) {
+                    TextField("0", text: weightTextBinding)
+                        .keyboardType(.decimalPad)
+                        .focused($focusedField, equals: .weight)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Weight in \(settingsStore.weightUnit.unit.symbol)")
+                }
+
+                setField(
+                    width: InlineWorkoutSetLayout.repetitionsWidth,
+                    isFocused: focusedField == .repetitions
+                ) {
+                    TextField("0", text: repetitionsTextBinding)
+                        .keyboardType(.numberPad)
+                        .focused($focusedField, equals: .repetitions)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .accessibilityLabel("Repetitions")
+                }
+            }
+
+            if settingsStore.logRPE {
+                Button(action: { showingRPEPicker = true }) {
+                    Group {
+                        if let rpe = set.rpeValue {
+                            Text(String(format: "%g", rpe))
+                        } else if set.isCompleted {
+                            Text("–")
+                        } else {
+                            Image(systemName: "gauge.with.dots.needle.50percent")
+                        }
+                    }
+                    .font(.ironMetric(.caption, weight: .semibold))
+                    .foregroundStyle(set.rpeValue != nil || (!set.isCompleted && isRaisedCurrent) ? IronTheme.metricEffort : IronTheme.secondaryText)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .background(
+                        Capsule(style: .continuous)
+                            .fill(IronTheme.metricEffortContainer)
+                            .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
+                    )
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.rpeWidth)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(rpeAccessibilityLabel)
+                .accessibilityHint("Opens the effort selector")
+            }
+
+            Button(action: toggleCompletion) {
+                completionSymbol
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                    .frame(width: InlineWorkoutSetLayout.completionWidth)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(
+                set.isCompleted
+                    ? "Set \(index + 1) completed"
+                    : "Mark set \(index + 1) complete"
+            )
+            .accessibilityValue(set.isCompleted ? "Completed" : "Not completed")
+            .accessibilityRemoveTraits(.isSelected)
+            .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
+        }
+        // Preserve the compact row's existing insets and columns.
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity)
+        .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
+        .background {
+            RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                .fill(IronTheme.field)
+                .opacity(isRaisedCurrent && !set.isCompleted ? 1 : 0)
+        }
+    }
+
     private var rpeAccessibilityLabel: String {
         guard let rpe = set.rpeValue else { return "Set RPE" }
         return "RPE \(String(format: "%g", rpe))"
@@ -3356,6 +3579,7 @@ struct InlineWorkoutSetRow: View {
     }
 
     private var formattedWeight: String {
+        if showsFocusedEditor && set.weightValue == 0 { return "" }
         let displayValue = WeightUnit.convert(
             weight: set.weightValue,
             from: .metric,
@@ -3366,7 +3590,7 @@ struct InlineWorkoutSetRow: View {
     }
 
     private var formattedRepetitions: String {
-        String(Int(set.repetitionsValue))
+        showsFocusedEditor && set.repetitionsValue == 0 ? "" : String(Int(set.repetitionsValue))
     }
 
     private func synchronizeEntryText() {
