@@ -172,14 +172,57 @@ enum HevyCSV {
         var records: [HevyCSVRecord]
     }
 
-    private struct MeasurementDocument {
+    fileprivate struct MeasurementDocument {
         let entries: [BodyMeasurementEntry]
         let skippedRows: Int
     }
 
-    private enum ParsedImportDocument {
+    fileprivate enum ParsedImportDocument {
         case workouts(HevyCSVDocument)
         case measurements(MeasurementDocument)
+    }
+
+    /// CSV files parsed off the main thread, ready for the Core Data import.
+    /// Holds only value types, so handing it back to the main actor is safe.
+    struct PreparedImport: @unchecked Sendable {
+        fileprivate let documents: [ParsedImportDocument]
+        /// Sessions found in the files, before duplicates are skipped.
+        let workoutCount: Int
+    }
+
+    /// Exercise lookup built once per import. Matching every CSV row against
+    /// every library name (with fresh normalization each time) was quadratic and
+    /// froze the app on large Hevy histories. First match wins, as before.
+    private struct ExerciseMatcher {
+        private var exact: [String: Exercise] = [:]
+        private var tokens: [[String]: Exercise] = [:]
+
+        init(_ exercises: [Exercise]) {
+            for exercise in exercises {
+                for name in [exercise.title] + exercise.alias {
+                    let normalized = HevyCSV.normalizedName(name)
+                    if exact[normalized] == nil { exact[normalized] = exercise }
+                    let nameTokens = HevyCSV.normalizedTokens(name)
+                    if tokens[nameTokens] == nil { tokens[nameTokens] = exercise }
+                }
+            }
+        }
+
+        func match(_ title: String) -> Exercise? {
+            exact[HevyCSV.normalizedName(title)] ?? tokens[HevyCSV.normalizedTokens(title)]
+        }
+    }
+
+    /// Parses the selected files without touching Core Data or the stores, so
+    /// it can run on a background task while the UI shows progress.
+    static func prepareImport(_ dataDocuments: [Data]) throws -> PreparedImport {
+        guard !dataDocuments.isEmpty else { throw HevyCSVError.noWorkoutRows }
+        let documents = try dataDocuments.map(parseImportDocument)
+        let workoutCount = documents.reduce(0) { total, document in
+            guard case .workouts(let workoutDocument) = document else { return total }
+            return total + workoutGroups(from: workoutDocument.records).count
+        }
+        return PreparedImport(documents: documents, workoutCount: workoutCount)
     }
 
     private struct MeasurementPlan {
@@ -245,9 +288,24 @@ enum HevyCSV {
         bodyMetricsStore: BodyMetricsStore = .shared,
         save: (() throws -> Void)? = nil
     ) throws -> HevyCSVImportResult {
-        guard !dataDocuments.isEmpty else { throw HevyCSVError.noWorkoutRows }
+        try importData(
+            prepareImport(dataDocuments),
+            into: context,
+            exerciseStore: exerciseStore,
+            bodyMetricsStore: bodyMetricsStore,
+            save: save
+        )
+    }
 
-        let documents = try dataDocuments.map(parseImportDocument)
+    /// Imports already-parsed files as one recoverable operation.
+    static func importData(
+        _ prepared: PreparedImport,
+        into context: NSManagedObjectContext,
+        exerciseStore: ExerciseStore,
+        bodyMetricsStore: BodyMetricsStore = .shared,
+        save: (() throws -> Void)? = nil
+    ) throws -> HevyCSVImportResult {
+        let documents = prepared.documents
         let allGroups = documents.flatMap { document -> [WorkoutGroup] in
             guard case .workouts(let workoutDocument) = document else { return [] }
             return workoutGroups(from: workoutDocument.records)
@@ -287,15 +345,21 @@ enum HevyCSV {
                 acceptedGroups.append(group)
             }
 
+            // Resolve each distinct exercise title once, not once per set row.
+            let existingMatcher = ExerciseMatcher(exerciseStore.exercises)
             var missingDefinitions = [ExerciseStore.CustomExerciseDefinition]()
-            var plannedTitles = [String]()
+            var seenTitles = Set<String>()
+            var plannedNames = Set<String>()
+            var plannedTokens = Set<[String]>()
             for record in acceptedGroups.flatMap(\.records) {
-                guard matchExercise(named: record.exerciseTitle, in: exerciseStore.exercises) == nil,
-                      !plannedTitles.contains(where: {
-                          normalizedName($0) == normalizedName(record.exerciseTitle)
-                              || normalizedTokens($0) == normalizedTokens(record.exerciseTitle)
-                      }) else { continue }
-                plannedTitles.append(record.exerciseTitle)
+                guard seenTitles.insert(record.exerciseTitle).inserted else { continue }
+                let name = normalizedName(record.exerciseTitle)
+                let nameTokens = normalizedTokens(record.exerciseTitle)
+                guard existingMatcher.match(record.exerciseTitle) == nil,
+                      !plannedNames.contains(name),
+                      !plannedTokens.contains(nameTokens) else { continue }
+                plannedNames.insert(name)
+                plannedTokens.insert(nameTokens)
                 missingDefinitions.append(.init(
                     title: record.exerciseTitle,
                     type: inferredExerciseType(from: record.exerciseTitle)
@@ -310,11 +374,12 @@ enum HevyCSV {
             }
             let candidateExercises = exerciseStore.builtInExercises
                 + (stagedExercises?.exercises ?? exerciseStore.customExercises)
+            let candidateMatcher = ExerciseMatcher(candidateExercises)
             var resolvedExercises = [String: Exercise]()
             for record in acceptedGroups.flatMap(\.records) {
                 let key = normalizedName(record.exerciseTitle)
                 guard resolvedExercises[key] == nil else { continue }
-                guard let exercise = matchExercise(named: record.exerciseTitle, in: candidateExercises) else {
+                guard let exercise = candidateMatcher.match(record.exerciseTitle) else {
                     throw HevyCSVError.couldNotCreateExercise(record.exerciseTitle)
                 }
                 resolvedExercises[key] = exercise
@@ -845,20 +910,6 @@ enum HevyCSV {
         )
     }
 
-    private static func matchExercise(named title: String, in exercises: [Exercise]) -> Exercise? {
-        let normalized = normalizedName(title)
-        if let exact = exercises.first(where: { exercise in
-            ([exercise.title] + exercise.alias).contains { normalizedName($0) == normalized }
-        }) {
-            return exact
-        }
-
-        let tokens = normalizedTokens(title)
-        return exercises.first(where: { exercise in
-            ([exercise.title] + exercise.alias).contains { normalizedTokens($0) == tokens }
-        })
-    }
-
     private static func normalizedName(_ value: String) -> String {
         value
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
@@ -1006,5 +1057,82 @@ struct HevyCSVImportResultSheet: View {
         case .success(let result): return result.detail
         case .failure(let error): return error.localizedDescription
         }
+    }
+}
+
+/// Runs Hevy imports with visible progress. Parsing happens on a background
+/// task; the Core Data save stays on the main context it always used.
+@MainActor
+final class HevyImportController: ObservableObject {
+    enum Phase: Equatable {
+        case reading(files: Int)
+        case saving(workouts: Int)
+    }
+
+    static let shared = HevyImportController()
+
+    @Published private(set) var phase: Phase?
+
+    func run(
+        _ documents: [Data],
+        into context: NSManagedObjectContext,
+        exerciseStore: ExerciseStore
+    ) async -> HevyCSVImportOutcome {
+        phase = .reading(files: documents.count)
+        defer { phase = nil }
+        do {
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try HevyCSV.prepareImport(documents)
+            }.value
+            phase = .saving(workouts: prepared.workoutCount)
+            // Give the progress card a frame to render before the main-context save.
+            try? await Task.sleep(for: .milliseconds(60))
+            let result = try HevyCSV.importData(prepared, into: context, exerciseStore: exerciseStore)
+            return HevyCSVImportOutcome(result: .success(result))
+        } catch {
+            return HevyCSVImportOutcome(result: .failure(error))
+        }
+    }
+}
+
+/// Full-screen progress card shown while an import runs; it also blocks touches
+/// so nothing edits the store mid-import.
+struct HevyImportProgressOverlay: View {
+    let phase: HevyImportController.Phase
+
+    private var detail: String {
+        switch phase {
+        case .reading(let files):
+            return "Reading \(files) file\(files == 1 ? "" : "s")…"
+        case .saving(let workouts):
+            return "Saving \(workouts.formatted()) workout\(workouts == 1 ? "" : "s")…"
+        }
+    }
+
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.ultraThinMaterial)
+                .ignoresSafeArea()
+            VStack(spacing: 12) {
+                ProgressView()
+                    .controlSize(.large)
+                Text("Importing from Hevy")
+                    .font(.headline)
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .contentTransition(.opacity)
+                Text("Keep Iron open until this finishes.")
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+            .multilineTextAlignment(.center)
+            .padding(28)
+            .frame(maxWidth: 300)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.updatesFrequently)
     }
 }

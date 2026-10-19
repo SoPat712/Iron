@@ -291,12 +291,13 @@ struct BackupAndExportView: View {
                 return try Data(contentsOf: url)
             }
 
-            let result = try HevyCSV.importData(
-                dataDocuments,
-                into: managedObjectContext,
-                exerciseStore: exerciseStore
-            )
-            hevyImportOutcome = HevyCSVImportOutcome(result: .success(result))
+            Task {
+                hevyImportOutcome = await HevyImportController.shared.run(
+                    dataDocuments,
+                    into: managedObjectContext,
+                    exerciseStore: exerciseStore
+                )
+            }
         } catch {
             hevyImportOutcome = HevyCSVImportOutcome(result: .failure(error))
         }

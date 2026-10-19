@@ -61,6 +61,8 @@ struct CurrentWorkoutView: View {
     @State private var syncWithHealth = true
     @State private var showingVisibilityInfo = false
     @State private var isSessionHeaderCollapsed = false
+    /// Height of the collapsed glass summary pill plus its top padding and a gap.
+    private let collapsedSummaryClearance: CGFloat = 66
     @State private var isFinishingWorkout = false
     @State private var persistenceError: String?
     @State private var restTimerEditorExercise: WorkoutExercise?
@@ -210,6 +212,9 @@ struct CurrentWorkoutView: View {
                                 }
                             }
                             .coordinateSpace(name: "current-workout-scroll")
+                            // The collapsed glass summary floats over the list; inset the
+                            // content by its height so it never covers the first exercise.
+                            .contentMargins(.top, isSessionHeaderCollapsed ? collapsedSummaryClearance : 0, for: .scrollContent)
                             .onPreferenceChange(CurrentWorkoutScrollOffsetPreferenceKey.self) { offset in
                                 // Use hysteresis so a small bounce cannot make the two header
                                 // presentations flicker. Returning to the real top always
@@ -241,7 +246,7 @@ struct CurrentWorkoutView: View {
                         if let banner = personalRecordBanner {
                             personalRecordBannerView(banner)
                                 .padding(.horizontal, IronTheme.horizontalPadding)
-                                .padding(.top, isSessionHeaderCollapsed ? 62 : 8)
+                                .padding(.top, isSessionHeaderCollapsed ? collapsedSummaryClearance : 8)
                                 .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
                                 .zIndex(3)
                         }
@@ -3207,7 +3212,12 @@ struct InlineWorkoutSetRow: View {
             }
         )
         .contentShape(Rectangle())
-        .simultaneousGesture(swipeDeleteGesture)
+        .setRowSwipe(
+            enabled: allowsSwipeToDelete,
+            legacy: swipeDeleteGesture,
+            onChanged: handleSwipeChanged,
+            onEnded: handleSwipeEnded
+        )
         .onAppear {
             synchronizeEntryText()
             isRaisedCurrent = isCurrent && !set.isCompleted
@@ -3473,42 +3483,51 @@ struct InlineWorkoutSetRow: View {
         max(0, -swipeOffset)
     }
 
+    /// iOS 17 fallback only. On iOS 18+ a SwiftUI drag inside the logger's
+    /// ScrollView competes with scrolling, so `setRowSwipe` uses a UIKit pan
+    /// that begins only for horizontal movement instead.
     private var swipeDeleteGesture: some Gesture {
         DragGesture(minimumDistance: 12, coordinateSpace: .local)
             .onChanged { value in
-                guard allowsSwipeToDelete else { return }
-                let horizontal = value.translation.width
-                let vertical = value.translation.height
-                guard abs(horizontal) > abs(vertical) else { return }
-                guard horizontal < 0 || swipeOffset < 0 else { return }
-
-                if !isSwipingSet {
-                    isSwipingSet = true
-                    swipeStartOffset = swipeOffset
-                    focusedField = nil
-                }
-
-                swipeOffset = min(
-                    0,
-                    max(-effectiveRowWidth, swipeStartOffset + horizontal)
-                )
+                guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                handleSwipeChanged(value.translation.width)
             }
             .onEnded { value in
-                guard allowsSwipeToDelete else { return }
-                guard isSwipingSet else { return }
-                let projectedOffset = swipeStartOffset + value.predictedEndTranslation.width
-                isSwipingSet = false
-
-                if swipeOffset <= -fullSwipeDeleteThreshold {
-                    performSwipeDelete()
-                } else {
-                    withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-                        swipeOffset = projectedOffset < -deleteActionWidth * 0.42
-                            ? -deleteActionWidth
-                            : 0
-                    }
-                }
+                handleSwipeEnded(value.translation.width, value.predictedEndTranslation.width)
             }
+    }
+
+    private func handleSwipeChanged(_ horizontal: CGFloat) {
+        guard allowsSwipeToDelete else { return }
+        guard horizontal < 0 || swipeOffset < 0 || isSwipingSet else { return }
+
+        if !isSwipingSet {
+            isSwipingSet = true
+            swipeStartOffset = swipeOffset
+            focusedField = nil
+        }
+
+        swipeOffset = min(
+            0,
+            max(-effectiveRowWidth, swipeStartOffset + horizontal)
+        )
+    }
+
+    private func handleSwipeEnded(_ horizontal: CGFloat, _ predictedHorizontal: CGFloat) {
+        guard allowsSwipeToDelete else { return }
+        guard isSwipingSet else { return }
+        let projectedOffset = swipeStartOffset + predictedHorizontal
+        isSwipingSet = false
+
+        if swipeOffset <= -fullSwipeDeleteThreshold {
+            performSwipeDelete()
+        } else {
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                swipeOffset = projectedOffset < -deleteActionWidth * 0.42
+                    ? -deleteActionWidth
+                    : 0
+            }
+        }
     }
 
     private func performSwipeDelete() {
@@ -3606,3 +3625,64 @@ struct WorkoutView_Previews: PreviewProvider {
     }
 }
 #endif
+
+// MARK: - Set row swipe
+
+/// A pan that begins only when the drag is mostly horizontal, so vertical drags
+/// that start on a set row scroll the logger instead of being swallowed.
+@available(iOS 18.0, *)
+private struct HorizontalSwipeRecognizer: UIGestureRecognizerRepresentable {
+    let onChanged: (CGFloat) -> Void
+    /// Translation and a velocity-projected end translation, both horizontal.
+    let onEnded: (CGFloat, CGFloat) -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator {
+        Coordinator()
+    }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        let translation = recognizer.translation(in: recognizer.view).x
+        switch recognizer.state {
+        case .changed:
+            onChanged(translation)
+        case .ended, .cancelled, .failed:
+            // Roughly where a flick would carry the row, like predictedEndTranslation.
+            let velocity = recognizer.velocity(in: recognizer.view).x
+            onEnded(translation, translation + velocity * 0.18)
+        default:
+            break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+    }
+}
+
+private extension View {
+    @ViewBuilder
+    func setRowSwipe<Legacy: Gesture>(
+        enabled: Bool,
+        legacy: Legacy,
+        onChanged: @escaping (CGFloat) -> Void,
+        onEnded: @escaping (CGFloat, CGFloat) -> Void
+    ) -> some View {
+        if !enabled {
+            self
+        } else if #available(iOS 18.0, *) {
+            gesture(HorizontalSwipeRecognizer(onChanged: onChanged, onEnded: onEnded))
+        } else {
+            simultaneousGesture(legacy)
+        }
+    }
+}

@@ -18,6 +18,7 @@ struct ContentView : View {
     @EnvironmentObject private var sceneState: SceneState
     @EnvironmentObject private var settingsStore: SettingsStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
+    @ObservedObject private var importController = HevyImportController.shared
     @FetchRequest(fetchRequest: Workout.currentWorkoutFetchRequest) private var currentWorkouts
 
     #if DEBUG
@@ -44,6 +45,13 @@ struct ContentView : View {
     
     var body: some View {
         rootView
+            .overlay {
+                if let phase = importController.phase {
+                    HevyImportProgressOverlay(phase: phase)
+                        .transition(.opacity)
+                }
+            }
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: importController.phase)
             .ironScreen()
             .preferredColorScheme(settingsStore.appearance.colorScheme)
             .onChange(of: currentWorkouts.first?.objectID) { _, newWorkoutID in
@@ -78,15 +86,12 @@ struct ContentView : View {
                 } else {
                     return
                 }
-                do {
-                    let result = try HevyCSV.importData(
+                Task {
+                    hevyImportOutcome = await HevyImportController.shared.run(
                         csvDocuments,
                         into: WorkoutDataStorage.shared.persistentContainer.viewContext,
                         exerciseStore: ExerciseStore.shared
                     )
-                    hevyImportOutcome = HevyCSVImportOutcome(result: .success(result))
-                } catch {
-                    hevyImportOutcome = HevyCSVImportOutcome(result: .failure(error))
                 }
             }
             .sheet(
