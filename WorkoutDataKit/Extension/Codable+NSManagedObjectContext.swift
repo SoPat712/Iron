@@ -11,6 +11,7 @@ import Foundation
 public extension CodingUserInfoKey {
     static let managedObjectContextKey = CodingUserInfoKey(rawValue: "managedObjectContextKey")
     static let exercisesKey = CodingUserInfoKey(rawValue: "exercisesKey")
+    static let preserveWorkoutProvenance = CodingUserInfoKey(rawValue: "preserveWorkoutProvenance")!
     
     enum DecodingError: Error {
         case managedObjectContextMissing

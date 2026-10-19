@@ -15,6 +15,7 @@ import os.log
 
 @UIApplicationMain
 class AppDelegate: UIResponder, UIApplicationDelegate {
+    private var protectedDataObserver: NSObjectProtocol?
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
         // TODO: remove in future when every user should've been migrated
         ExerciseStore.migrateCustomExercisesToAppGroupIfNecessary()
@@ -28,6 +29,10 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         #endif
 
         WatchConnectionManager.shared.activateSession()
+        protectedDataObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.protectedDataDidBecomeAvailableNotification,
+            object: nil, queue: .main
+        ) { _ in HealthManager.shared.retryPendingWorkouts() }
         Shortcuts.setShortcutSuggestions()
         ExerciseMediaStore.shared.prefetchCatalogue(from: ExerciseStore.shared.exercises)
 //        Shortcuts.setRelevantShortcuts() // This doesn't work, the watch shows the suggestion but gets an error when executed (tested with iOS 13.4)

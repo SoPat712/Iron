@@ -53,6 +53,8 @@ class ExportImportWorkoutDataTests: XCTestCase {
             XCTAssertNotNil(workout.start)
             XCTAssertNotNil(workout.end)
             XCTAssertFalse(workout.isCurrentWorkout)
+            XCTAssertEqual(workout.importSource, "json") // legacy JSON has no provenance key
+            XCTAssertNil(workout.healthExportState)
         }
         
         // check that workout is set
@@ -123,6 +125,15 @@ class ExportImportWorkoutDataTests: XCTestCase {
 
         let request: NSFetchRequest<Workout> = Workout.fetchRequest()
         let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(request).first)
+        XCTAssertEqual(workout.importSource, "hevy")
+        XCTAssertTrue(workout.isImported)
+        let objectID = workout.objectID
+        let freshContext = persistenContainer.newBackgroundContext()
+        try freshContext.performAndWait {
+            let persisted = try XCTUnwrap(freshContext.existingObject(with: objectID) as? Workout)
+            XCTAssertEqual(persisted.importSource, "hevy")
+            XCTAssertTrue(persisted.isImported)
+        }
         let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
         let sets = try XCTUnwrap(workoutExercise.workoutSets?.array as? [WorkoutSet])
         XCTAssertEqual(sets.count, 2)
@@ -144,6 +155,75 @@ class ExportImportWorkoutDataTests: XCTestCase {
         XCTAssertEqual(reparsed.records.count, 2)
         XCTAssertEqual(reparsed.records[1].repetitions, 8)
         XCTAssertEqual(reparsed.records[1].rpe, 7.5)
+    }
+
+    func testRawWorkoutJSONImportMarksAllWorkoutsImportedAndClearsHealthExportState() throws {
+        let context = persistenContainer.viewContext
+        let imported = Workout.create(context: context)
+        imported.importSource = "hevy"
+        imported.healthExportState = "pending"
+        imported.start = Date(timeIntervalSince1970: 1_000)
+        imported.end = Date(timeIntervalSince1970: 2_000)
+        let native = Workout.create(context: context)
+        XCTAssertNil(native.importSource)
+        XCTAssertFalse(native.isImported)
+        native.healthExportState = "watch"
+        native.start = imported.start
+        native.end = imported.end
+
+        let data = try encoder.encode([imported, native])
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [[String: Any]])
+        XCTAssertEqual(json[0]["importSource"] as? String, "hevy")
+        XCTAssertNil(json[1]["importSource"])
+        XCTAssertEqual(json[0]["healthExportState"] as? String, "pending")
+        XCTAssertEqual(json[1]["healthExportState"] as? String, "watch")
+        context.reset()
+        let restored = try decoder.decode([Workout].self, from: data)
+        XCTAssertEqual(restored.count, 2)
+        for workout in restored {
+            XCTAssertEqual(workout.importSource, "json")
+            XCTAssertTrue(workout.isImported)
+            XCTAssertNil(workout.healthExportState)
+        }
+    }
+
+    func testSeedHistoryMarksCompletedAndOptionalActiveWorkoutsAsSamples() throws {
+        for includeActiveWorkout in [false, true] {
+            let container = setUpInMemoryNSPersistentContainer()
+            let context = container.viewContext
+            MockWorkoutData.seedHistory(
+                into: context,
+                unit: .metric,
+                includeActiveWorkout: includeActiveWorkout
+            )
+
+            let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+            let workouts = try context.fetch(request)
+            XCTAssertFalse(workouts.filter { !$0.isCurrentWorkout }.isEmpty)
+            XCTAssertEqual(workouts.filter(\.isCurrentWorkout).count, includeActiveWorkout ? 1 : 0)
+            for workout in workouts {
+                XCTAssertEqual(workout.importSource, "sample")
+                XCTAssertTrue(workout.isImported)
+            }
+
+            let native = Workout.create(context: context)
+            XCTAssertNil(native.importSource)
+            XCTAssertFalse(native.isImported)
+        }
+    }
+
+    func testStaticAndRandomPreviewWorkoutsAreSamples() throws {
+        for mock in [MockWorkoutData.metric, .imperial, .metricRandom, .imperialRandom] {
+            let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+            let workouts = try mock.context.fetch(request)
+            XCTAssertFalse(workouts.filter { !$0.isCurrentWorkout }.isEmpty)
+            XCTAssertTrue(mock.currentWorkout.isCurrentWorkout)
+            XCTAssertEqual(mock.currentWorkout.importSource, "sample")
+            for workout in workouts {
+                XCTAssertEqual(workout.importSource, "sample")
+                XCTAssertTrue(workout.isImported)
+            }
+        }
     }
 
     func testHevyCSVSkipsNonfiniteAndOverflowingNumbersWithoutCrashing() throws {

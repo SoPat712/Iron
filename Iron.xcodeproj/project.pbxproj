@@ -771,6 +771,7 @@
 		8AFE11B3232CF2E2000E9393 /* SheetBar.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SheetBar.swift; sourceTree = "<group>"; };
 		8AFF0D832302C60000F762A2 /* MockWorkoutData.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MockWorkoutData.swift; sourceTree = "<group>"; };
 		8AFF0D8923032DC700F762A2 /* DateFormatter+OptionalDate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "DateFormatter+OptionalDate.swift"; sourceTree = "<group>"; };
+		F15D4A102C77000200F10001 /* WorkoutData v6.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "WorkoutData v6.xcdatamodel"; sourceTree = "<group>"; };
 		F15D4A102C77000100F10001 /* WorkoutData v5.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "WorkoutData v5.xcdatamodel"; sourceTree = "<group>"; };
 		F15D4B112C78000100F10001 /* HevyCSV.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HevyCSV.swift; sourceTree = "<group>"; };
 		F15D4B212C78000200F10001 /* ExerciseMediaStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseMediaStore.swift; sourceTree = "<group>"; };
@@ -3094,13 +3095,14 @@
 		8A08D3D42349486800B09687 /* WorkoutData.xcdatamodeld */ = {
 			isa = XCVersionGroup;
 			children = (
+				F15D4A102C77000200F10001 /* WorkoutData v6.xcdatamodel */,
 				F15D4A102C77000100F10001 /* WorkoutData v5.xcdatamodel */,
 				8AC6AF9D242D74BA00974279 /* WorkoutData v4.xcdatamodel */,
 				8AD329B7237608A700515B3B /* WorkoutData v3.xcdatamodel */,
 				8A68F7C7236319040089263B /* WorkoutData v2.xcdatamodel */,
 				8A08D3D52349486800B09687 /* WorkoutData.xcdatamodel */,
 			);
-			currentVersion = F15D4A102C77000100F10001 /* WorkoutData v5.xcdatamodel */;
+			currentVersion = F15D4A102C77000200F10001 /* WorkoutData v6.xcdatamodel */;
 			path = WorkoutData.xcdatamodeld;
 			sourceTree = "<group>";
 			versionGroupType = wrapper.xcdatamodel;

@@ -61,9 +61,12 @@ class HealthManager {
     
     let healthStore: HKHealthStore
     private let mutationCoordinator = MutationCoordinator()
+    private let workoutWriter: WorkoutWriter?
     
-    private init() {
+    // The injected writer receives values, never managed objects or real HealthKit.
+    init(workoutWriter: WorkoutWriter? = nil) {
         self.healthStore = HKHealthStore()
+        self.workoutWriter = workoutWriter
     }
 }
 
@@ -110,6 +113,10 @@ extension HealthManager {
                 return
             }
             completion(.success(()))
+            if typesToShare?.contains(HKObjectType.workoutType()) == true,
+               self.healthStore.authorizationStatus(for: .workoutType()) == .sharingAuthorized {
+                DispatchQueue.main.async { self.retryPendingWorkouts() }
+            }
         }
     }
     
@@ -136,6 +143,10 @@ extension HealthManager {
     // completion is called on a background queue!
     func requestShareWorkoutPermission(completion: @escaping (Result<Void, Error>) -> Void) {
         let workoutType = HKObjectType.workoutType()
+        if healthStore.authorizationStatus(for: workoutType) == .sharingAuthorized {
+            completion(.success(()))
+            return
+        }
         requestPermissions(toShare: [workoutType], read: [workoutType], completion: completion)
     }
 
@@ -290,11 +301,8 @@ extension HealthManager {
     }
 
     static func isValidWorkoutInterval(start: Date, end: Date, duration: TimeInterval) -> Bool {
-        start.timeIntervalSinceReferenceDate.isFinite
-            && end.timeIntervalSinceReferenceDate.isFinite
-            && duration.isFinite
-            && end >= start
-            && duration >= 0
+        Workout.healthExportEligibility(importSource: nil, isCurrent: false,
+                                        start: start, end: end, duration: duration) == .eligible
     }
 
     static func workoutFieldsMatch(
@@ -319,12 +327,45 @@ extension HealthManager {
         case alreadyPresent
     }
 
-    enum WorkoutSyncError: LocalizedError {
+    enum WorkoutSyncError: LocalizedError, Equatable {
         case missingWorkoutData
+        case importedWorkout
 
         var errorDescription: String? {
-            "The workout is missing the information Apple Health needs."
+            switch self {
+            case .missingWorkoutData:
+                return "The workout is missing the information Apple Health needs."
+            case .importedWorkout:
+                return "Imported workouts are never sent to Apple Health."
+            }
         }
+    }
+
+    static func workoutExportError(_ eligibility: Workout.HealthExportEligibility) -> WorkoutSyncError? {
+        switch eligibility {
+        case .eligible: return nil
+        case .imported: return .importedWorkout
+        case .invalidWorkout: return .missingWorkoutData
+        }
+    }
+
+    struct WorkoutExportRequest {
+        let uuid: UUID
+        let start: Date
+        let end: Date
+        let duration: TimeInterval
+        let title: String?
+    }
+
+    typealias WorkoutWriter = (WorkoutExportRequest, @escaping (Result<WorkoutSyncOutcome, Error>) -> Void) -> Void
+
+    /// A matching external UUID already saved by Watch (or another source)
+    /// belongs to that session. The phone must neither copy nor replace it.
+    static func canReconcileWorkoutSamples<Sample>(
+        _ samples: [Sample],
+        isPhoneOwned: (Sample) -> Bool
+    ) -> Bool {
+        samples.allSatisfy(isPhoneOwned)
     }
 
     var workoutConfiguration: HKWorkoutConfiguration {
@@ -374,9 +415,99 @@ extension HealthManager {
         workoutID: NSManagedObjectID,
         context: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
+        pendingOnly: Bool = false,
         completion: @escaping (Result<WorkoutSyncOutcome, Error>) -> Void
     ) {
-        requestShareWorkoutPermission { authorization in
+        context.perform {
+            guard let workout = (try? context.existingObject(with: workoutID)) as? Workout,
+                  !workout.isDeleted else {
+                completion(.failure(WorkoutSyncError.missingWorkoutData))
+                return
+            }
+            if pendingOnly && workout.healthExportState != "pending" {
+                completion(.success(.alreadyPresent))
+                return
+            }
+            // Imports must fail before even requesting Health authorization.
+            if let error = Self.workoutExportError(workout.healthExportEligibility) {
+                completion(.failure(error))
+                return
+            }
+            guard !workoutID.isTemporaryID,
+                  let uuid = workout.uuid, let start = workout.start,
+                  let end = workout.end, let duration = workout.duration else {
+                completion(.failure(WorkoutSyncError.missingWorkoutData))
+                return
+            }
+            // A Watch finish owns its Health sample even before it reaches the phone.
+            guard workout.healthExportState != "watch" else {
+                completion(.success(.alreadyPresent))
+                return
+            }
+            do {
+                try self.persistHealthExportState("pending", for: workout, in: context)
+            } catch {
+                completion(.failure(error))
+                return
+            }
+            let request = WorkoutExportRequest(uuid: uuid, start: start, end: end,
+                                               duration: duration,
+                                               title: workout.optionalDisplayTitle(in: exerciseStore.exercises))
+            let writer = self.workoutWriter ?? self.writeWorkoutToHealth
+            writer(request) { result in
+                context.perform {
+                    do {
+                        if case .success = result, !workout.isDeleted,
+                           workout.healthExportEligibility == .eligible,
+                           workout.healthExportState != "watch" {
+                            try self.persistHealthExportState("exported", for: workout, in: context)
+                        }
+                        completion(result)
+                    } catch {
+                        // Health may have saved: pending reconciliation safely reuses its UUID.
+                        completion(.failure(error))
+                    }
+                }
+            }
+        }
+    }
+
+    /// Save just the state in a sibling context, without committing editor changes.
+    /// Merge on the caller's queue so the native List observes the durable result.
+    private func persistHealthExportState(_ state: String, for workout: Workout,
+                                          in context: NSManagedObjectContext) throws {
+        guard workout.healthExportState != state else { return }
+        guard let coordinator = context.persistentStoreCoordinator else {
+            throw WorkoutSyncError.missingWorkoutData
+        }
+        let stateContext = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        stateContext.persistentStoreCoordinator = coordinator
+        let workoutID = workout.objectID
+        var savedNotification: Notification?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .NSManagedObjectContextDidSave, object: stateContext, queue: nil
+        ) { savedNotification = $0 }
+        defer { NotificationCenter.default.removeObserver(observer) }
+        try stateContext.performAndWait {
+            guard let stored = try stateContext.existingObject(with: workoutID) as? Workout,
+                  stored.healthExportEligibility == .eligible,
+                  stored.healthExportState != "watch" else {
+                throw WorkoutSyncError.missingWorkoutData
+            }
+            stored.healthExportState = state
+            try stateContext.save()
+        }
+        if let savedNotification { context.mergeChanges(fromContextDidSave: savedNotification) }
+    }
+
+    private func writeWorkoutToHealth(_ request: WorkoutExportRequest,
+                                      completion: @escaping (Result<WorkoutSyncOutcome, Error>) -> Void) {
+        let uuid = request.uuid
+        let start = request.start
+        let end = request.end
+        let duration = request.duration
+        let workoutTitle = request.title
+        self.requestShareWorkoutPermission { authorization in
             guard case .success = authorization else {
                 if case .failure(let error) = authorization {
                     completion(.failure(error))
@@ -384,119 +515,107 @@ extension HealthManager {
                 return
             }
 
-            context.perform {
-                guard !workoutID.isTemporaryID,
-                      let workout = (try? context.existingObject(with: workoutID)) as? Workout,
-                      !workout.isDeleted,
-                      !workout.isCurrentWorkout,
-                      let uuid = workout.uuid,
-                      let start = workout.start,
-                      let end = workout.end,
-                      let duration = workout.duration,
-                      Self.isValidWorkoutInterval(start: start, end: end, duration: duration) else {
-                    completion(.failure(WorkoutSyncError.missingWorkoutData))
+            var metadata: [String : Any] = [HKMetadataKeyExternalUUID : uuid.uuidString]
+            if let workoutTitle {
+                metadata[HKMetadataKeyWorkoutBrandName] = workoutTitle
+            }
+            let uuidPredicate = HKQuery.predicateForObjects(
+                withMetadataKey: HKMetadataKeyExternalUUID,
+                allowedValues: [uuid.uuidString]
+            )
+            // Read all sources for this Iron UUID so a Watch-owned sample
+            // prevents a second phone export. Only phone samples may mutate.
+            let query = HKSampleQuery(
+                sampleType: .workoutType(),
+                predicate: uuidPredicate,
+                limit: HKObjectQueryNoLimit,
+                sortDescriptors: nil
+            ) { _, samples, error in
+                if let error {
+                    completion(.failure(error))
                     return
                 }
 
-                let workoutTitle = workout.optionalDisplayTitle(in: exerciseStore.exercises)
-                var metadata: [String : Any] = [HKMetadataKeyExternalUUID : uuid.uuidString]
-                if let workoutTitle {
-                    metadata[HKMetadataKeyWorkoutBrandName] = workoutTitle
+                let existingSamples = (samples as? [HKWorkout]) ?? []
+                guard Self.canReconcileWorkoutSamples(existingSamples, isPhoneOwned: {
+                    $0.sourceRevision.source == HKSource.default()
+                }) else {
+                    completion(.success(.alreadyPresent))
+                    return
                 }
-                let uuidPredicate = HKQuery.predicateForObjects(
-                    withMetadataKey: HKMetadataKeyExternalUUID,
-                    allowedValues: [uuid.uuidString]
+                let reconciliation = Self.reconcileExistingSamples(
+                    existingSamples,
+                    matches: {
+                        self.healthWorkout(
+                            $0,
+                            matchesStart: start,
+                            end: end,
+                            duration: duration,
+                            title: workoutTitle
+                        )
+                    },
+                    stableID: { $0.uuid }
                 )
-                let sourcePredicate = HKQuery.predicateForObjects(from: .default())
-                let predicate = NSCompoundPredicate(
-                    andPredicateWithSubpredicates: [uuidPredicate, sourcePredicate]
-                )
-                let query = HKSampleQuery(
-                    sampleType: .workoutType(),
-                    predicate: predicate,
-                    limit: HKObjectQueryNoLimit,
-                    sortDescriptors: nil
-                ) { _, samples, error in
-                    if let error {
-                        completion(.failure(error))
-                        return
-                    }
-
-                    let existingSamples = (samples as? [HKWorkout]) ?? []
-                    let reconciliation = Self.reconcileExistingSamples(
-                        existingSamples,
-                        matches: {
-                            self.healthWorkout(
-                                $0,
-                                matchesStart: start,
-                                end: end,
-                                duration: duration,
-                                title: workoutTitle
-                            )
-                        },
-                        stableID: { $0.uuid }
-                    )
-                    let reusedOutcome: WorkoutSyncOutcome = reconciliation.surplus.isEmpty
-                        ? .alreadyPresent
-                        : .updated
-                    if Self.completeUsingReusableSample(
-                        reconciliation,
-                        delete: { surplus, deleted in
-                            self.healthStore.delete(surplus) { success, error in
-                                deleted(success
-                                    ? .success(())
-                                    : .failure(error ?? AuthorizationError.denied))
-                            }
-                        },
-                        completion: { result in
-                            completion(result.map { reusedOutcome })
+                let reusedOutcome: WorkoutSyncOutcome = reconciliation.surplus.isEmpty
+                    ? .alreadyPresent
+                    : .updated
+                if Self.completeUsingReusableSample(
+                    reconciliation,
+                    delete: { surplus, deleted in
+                        self.healthStore.delete(surplus) { success, error in
+                            deleted(success
+                                ? .success(())
+                                : .failure(error ?? AuthorizationError.denied))
                         }
-                    ) {
-                        return
+                    },
+                    completion: { result in
+                        completion(result.map { reusedOutcome })
                     }
-
-                    let prior = existingSamples.first
-                    let replacementMetadata = Self.replacementMetadata(
-                        copying: prior?.metadata ?? metadata,
-                        externalUUID: uuid.uuidString,
-                        title: workoutTitle
-                    )
-                    let reconciledWorkout = HKWorkout(
-                        activityType: self.workoutConfiguration.activityType,
-                        start: start,
-                        end: end,
-                        duration: duration,
-                        totalEnergyBurned: prior?.totalEnergyBurned,
-                        totalDistance: prior?.totalDistance,
-                        device: prior?.device ?? .local(),
-                        metadata: replacementMetadata
-                    )
-                    let outcome: WorkoutSyncOutcome = existingSamples.isEmpty ? .saved : .updated
-                    Self.coordinateReplacement(
-                        oldObjects: existingSamples,
-                        replacements: [reconciledWorkout],
-                        intent: .replace,
-                        save: { replacements, saved in
-                            self.healthStore.save(replacements) { success, error in
-                                saved(success
-                                    ? .success(())
-                                    : .failure(error ?? AuthorizationError.denied))
-                            }
-                        },
-                        delete: { oldObjects, deleted in
-                            self.healthStore.delete(oldObjects) { success, error in
-                                deleted(success
-                                    ? .success(())
-                                    : .failure(error ?? AuthorizationError.denied))
-                            }
-                        },
-                        completion: { result in
-                            completion(result.map { outcome })
-                        }
-                    )
+                ) {
+                    return
                 }
-                self.healthStore.execute(query)
+
+                let prior = existingSamples.first
+                let replacementMetadata = Self.replacementMetadata(
+                    copying: prior?.metadata ?? metadata,
+                    externalUUID: uuid.uuidString,
+                    title: workoutTitle
+                )
+                let reconciledWorkout = HKWorkout(
+                    activityType: self.workoutConfiguration.activityType,
+                    start: start,
+                    end: end,
+                    duration: duration,
+                    totalEnergyBurned: prior?.totalEnergyBurned,
+                    totalDistance: prior?.totalDistance,
+                    device: prior?.device ?? .local(),
+                    metadata: replacementMetadata
+                )
+                let outcome: WorkoutSyncOutcome = existingSamples.isEmpty ? .saved : .updated
+                Self.coordinateReplacement(
+                    oldObjects: existingSamples,
+                    replacements: [reconciledWorkout],
+                    intent: .replace,
+                    save: { replacements, saved in
+                        self.healthStore.save(replacements) { success, error in
+                            saved(success
+                                ? .success(())
+                                : .failure(error ?? AuthorizationError.denied))
+                        }
+                    },
+                    delete: { oldObjects, deleted in
+                        self.healthStore.delete(oldObjects) { success, error in
+                            deleted(success
+                                ? .success(())
+                                : .failure(error ?? AuthorizationError.denied))
+                        }
+                    },
+                    completion: { result in
+                        completion(result.map { outcome })
+                    }
+                )
             }
+            self.healthStore.execute(query)
         }
     }
 
@@ -523,12 +642,14 @@ extension HealthManager {
     
     func deleteWorkout(workout: Workout) {
         guard let uuid = workout.uuid else { return }
-        deleteWorkout(uuid: uuid)
+        deleteWorkout(uuid: uuid, eligibility: workout.healthExportEligibility)
     }
 
     /// Value-only deletion entry point for callers that have already durably
     /// removed the Core Data workout.
-    func deleteWorkout(uuid: UUID) {
+    func deleteWorkout(uuid: UUID, eligibility: Workout.HealthExportEligibility) {
+        // The caller captures provenance before deleting the managed object.
+        guard eligibility == .eligible else { return }
         mutationCoordinator.enqueue { finish in
             self.performDeleteWorkout(uuid: uuid, completion: finish)
         }
@@ -855,256 +976,67 @@ extension HealthManager {
         let modified: Int
     }
     
-    func updateHealthWorkouts(managedObjectContext: NSManagedObjectContext, exerciseStore: ExerciseStore, completion: @escaping (Result<WorkoutUpdates, Error>) -> Void) {
-        mutationCoordinator.enqueue { finish in
-            self.performUpdateHealthWorkouts(
-                managedObjectContext: managedObjectContext,
-                exerciseStore: exerciseStore
-            ) { result in
-                completion(result)
-                finish()
-            }
-        }
+    func updateHealthWorkouts(managedObjectContext: NSManagedObjectContext, exerciseStore: ExerciseStore,
+                              completion: @escaping (Result<WorkoutUpdates, Error>) -> Void) {
+        enqueueExportPass(in: managedObjectContext, exerciseStore: exerciseStore,
+                          pendingOnly: false, completion: completion)
     }
 
-    private func performUpdateHealthWorkouts(
-        managedObjectContext: NSManagedObjectContext,
-        exerciseStore: ExerciseStore,
-        completion: @escaping (Result<WorkoutUpdates, Error>) -> Void
+    /// Foreground/unlock/authorization retries only durable, explicitly requested exports.
+    func retryPendingWorkouts(
+        in context: NSManagedObjectContext = WorkoutDataStorage.shared.persistentContainer.viewContext,
+        exerciseStore: ExerciseStore = .shared,
+        completion: @escaping (Result<WorkoutUpdates, Error>) -> Void = { _ in }
     ) {
-        os_log("Updating HealthKit workouts", log: .health, type: .default)
-        
-        self.requestShareWorkoutPermission { authorization in
-            guard case .success = authorization else {
-                if case .failure(let error) = authorization {
-                    completion(.failure(error))
-                }
-                return
-            }
-            DispatchQueue.global(qos: .background).async {
-                let workoutPredicate = HKQuery.predicateForWorkouts(with: .traditionalStrengthTraining)
-                let sourcePredicate = HKQuery.predicateForObjects(from: .default())
-                let predicate = NSCompoundPredicate(andPredicateWithSubpredicates: [workoutPredicate, sourcePredicate])
-                let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: false)
-                
-                let query = HKSampleQuery(
-                    sampleType: .workoutType(),
-                    predicate: predicate,
-                    limit: HKObjectQueryNoLimit,
-                    sortDescriptors: [sortDescriptor]) { query, samples, error in
-                        if let error = error {
-                            os_log("Could not query the HealthKit workout: %@", log: .health, type: .fault, error.localizedDescription)
-                            completion(.failure(error))
+        // Re-fetch when this pass reaches the coordinator. Repeated triggers
+        // skip exported rows, while an unlock arriving during a failure is retained.
+        enqueueExportPass(in: context, exerciseStore: exerciseStore,
+                          pendingOnly: true, completion: completion)
+    }
+
+    private func enqueueExportPass(in context: NSManagedObjectContext, exerciseStore: ExerciseStore,
+                                   pendingOnly: Bool,
+                                   completion: @escaping (Result<WorkoutUpdates, Error>) -> Void) {
+        mutationCoordinator.enqueue { finish in
+            context.perform {
+                do {
+                    let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+                    if pendingOnly { request.predicate = NSPredicate(format: "healthExportState == %@", "pending") }
+                    let ids = try context.fetch(request).filter {
+                        $0.healthExportEligibility == .eligible && $0.healthExportState != "watch"
+                    }.map(\.objectID)
+                    var created = 0
+                    var modified = 0
+                    var firstError: Error?
+                    func next(_ index: Int) {
+                        guard index < ids.count else {
+                            // Without a local eligible workout, ownership/provenance cannot
+                            // be established. Bulk sync must never delete orphan Health data.
+                            let result: Result<WorkoutUpdates, Error> = firstError.map { .failure($0) }
+                                ?? .success(WorkoutUpdates(created: created, deleted: 0, modified: modified))
+                            finish()
+                            DispatchQueue.main.async { completion(result) }
                             return
                         }
-                        guard let workoutSamples = samples as? [HKWorkout] else {
-                            os_log("Could not cast to HealthKit workouts", log: .health, type: .fault)
-                            completion(.failure(UpdateError.noHKWorkouts))
-                            return
-                        }
-                        
-                        let backgroundContext = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
-                        backgroundContext.parent = managedObjectContext
-                        
-                        backgroundContext.perform {
-                            do {
-                                let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-                                request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-                                let allLocalWorkouts = try backgroundContext.fetch(request)
-                                let workouts = allLocalWorkouts.filter { !$0.isCurrentWorkout }
-                                
-                                let group = DispatchGroup()
-                                var _success = true
-                                var _error: Error? = nil
-                                let resultLock = NSLock()
-                                func recordResult(success: Bool, error: Error?) {
-                                    resultLock.lock()
-                                    _success = _success && success
-                                    if let error, _error == nil {
-                                        _error = error
-                                    }
-                                    resultLock.unlock()
-                                }
-                                
-                                // An unfinished phone workout may already have a Watch
-                                // Health sample. It is not an orphan to remove during sync.
-                                let localWorkoutIDs = Set(allLocalWorkouts.compactMap(\.uuid))
-                                // Delete only Iron samples with a valid external ID whose
-                                // local workout no longer exists. Never claim unpaired data.
-                                let workoutSamplesToDelete = workoutSamples.filter { workoutSample in
-                                    guard let externalUuid = workoutSample.externalUuid else { return false }
-                                    return !localWorkoutIDs.contains(externalUuid)
-                                }
-                                os_log("Deleting HealthKit workouts: %@", log: .health, type: .info, workoutSamplesToDelete)
-                                if !workoutSamplesToDelete.isEmpty {
-                                    group.enter()
-                                    self.healthStore.delete(workoutSamplesToDelete) { success, error in
-                                        recordResult(success: success, error: error)
-                                        group.leave()
-                                    }
-                                }
-                                let deletedCount = workoutSamplesToDelete.count
-                                
-                                let samplesByID = Dictionary(grouping: workoutSamples.compactMap { sample in
-                                    sample.externalUuid.map { ($0, sample) }
-                                }, by: { $0.0 }).mapValues { $0.map(\.1) }
-                                var workoutSamplesToSave: [HKWorkout] = []
-                                var workoutReplacementPlans: [(old: [HKWorkout], new: HKWorkout)] = []
-                                var workoutCleanupPlans: [ExistingSampleReconciliation<HKWorkout>] = []
-
-                                for workout in workouts {
-                                    guard let uuid = workout.uuid,
-                                          let start = workout.start,
-                                          let end = workout.end,
-                                          let duration = workout.duration,
-                                          Self.isValidWorkoutInterval(
-                                            start: start,
-                                            end: end,
-                                            duration: duration
-                                          ) else {
-                                        // Invalid local data must not delete a valid old sample.
-                                        continue
-                                    }
-                                    let existing = samplesByID[uuid] ?? []
-                                    let title = workout.optionalDisplayTitle(in: exerciseStore.exercises)
-                                    let reconciliation = Self.reconcileExistingSamples(
-                                        existing,
-                                        matches: {
-                                            self.healthWorkout(
-                                                $0,
-                                                matchesStart: start,
-                                                end: end,
-                                                duration: duration,
-                                                title: title
-                                            )
-                                        },
-                                        stableID: { $0.uuid }
-                                    )
-                                    if reconciliation.reusable != nil {
-                                        if !reconciliation.surplus.isEmpty {
-                                            workoutCleanupPlans.append(reconciliation)
-                                        }
-                                        continue
-                                    }
-
-                                    let prior = existing.first
-                                    let metadata = Self.replacementMetadata(
-                                        copying: prior?.metadata,
-                                        externalUUID: uuid.uuidString,
-                                        title: title
-                                    )
-                                    let replacement = HKWorkout(
-                                        activityType: prior?.workoutActivityType ?? .traditionalStrengthTraining,
-                                        start: start,
-                                        end: end,
-                                        duration: duration,
-                                        totalEnergyBurned: prior?.totalEnergyBurned,
-                                        totalDistance: prior?.totalDistance,
-                                        device: prior?.device ?? .local(),
-                                        metadata: metadata
-                                    )
-                                    if existing.isEmpty {
-                                        workoutSamplesToSave.append(replacement)
-                                    } else {
-                                        // Replace every duplicate old object only after the
-                                        // canonical replacement has saved successfully.
-                                        workoutReplacementPlans.append((existing, replacement))
-                                    }
-                                }
-                                os_log("Saving HealthKit workouts %@", log: .health, type: .info, workoutSamplesToSave)
-                                if !workoutSamplesToSave.isEmpty {
-                                    group.enter()
-                                    self.healthStore.save(workoutSamplesToSave) { success, error in
-                                        recordResult(success: success, error: error)
-                                        group.leave()
-                                    }
-                                }
-                                let createdCount = workoutSamplesToSave.count
-                                os_log("Modifying HealthKit workouts %@", log: .health, type: .info, workoutReplacementPlans.map(\.new))
-                                for plan in workoutReplacementPlans {
-                                    group.enter()
-                                    Self.coordinateReplacement(
-                                        oldObjects: plan.old,
-                                        replacements: [plan.new],
-                                        intent: .replace,
-                                        save: { replacements, saved in
-                                            self.healthStore.save(replacements) { success, error in
-                                                saved(success
-                                                    ? .success(())
-                                                    : .failure(error ?? AuthorizationError.denied))
-                                            }
-                                        },
-                                        delete: { oldObjects, deleted in
-                                            self.healthStore.delete(oldObjects) { success, error in
-                                                deleted(success
-                                                    ? .success(())
-                                                    : .failure(error ?? AuthorizationError.denied))
-                                            }
-                                        },
-                                        completion: { result in
-                                            switch result {
-                                            case .success:
-                                                recordResult(success: true, error: nil)
-                                            case .failure(let error):
-                                                recordResult(success: false, error: error)
-                                            }
-                                            group.leave()
-                                        }
-                                    )
-                                }
-                                for cleanup in workoutCleanupPlans {
-                                    group.enter()
-                                    _ = Self.completeUsingReusableSample(
-                                        cleanup,
-                                        delete: { surplus, deleted in
-                                            self.healthStore.delete(surplus) { success, error in
-                                                deleted(success
-                                                    ? .success(())
-                                                    : .failure(error ?? AuthorizationError.denied))
-                                            }
-                                        },
-                                        completion: { result in
-                                            switch result {
-                                            case .success:
-                                                recordResult(success: true, error: nil)
-                                            case .failure(let error):
-                                                recordResult(success: false, error: error)
-                                            }
-                                            group.leave()
-                                        }
-                                    )
-                                }
-                                let modifiedCount = workoutReplacementPlans.count + workoutCleanupPlans.count
-                                
-                                group.notify(queue: .global(qos: .background)) {
-                                    resultLock.lock()
-                                    let succeeded = _success
-                                    let recordedError = _error
-                                    resultLock.unlock()
-                                    if succeeded {
-                                        os_log("Successfully updated HealthKit workouts", log: .health, type: .default)
-                                        completion(.success((WorkoutUpdates(created: createdCount, deleted: deletedCount, modified: modifiedCount))))
-                                    } else if let error = recordedError {
-                                        os_log("Could not update HealthKit workouts: %@", log: .health, type: .error, error.localizedDescription)
-                                        completion(.failure(error))
-                                    } else {
-                                        os_log("Could not update HealthKit workouts", log: .health, type: .error)
-                                        completion(.failure(UpdateError.noSuccess))
-                                    }
-                                }
-                            } catch {
-                                os_log("Could not update HealthKit workouts: %@", log: .health, type: .error, error.localizedDescription)
-                                completion(.failure(error))
+                        self.performSyncWorkoutIfNeeded(workoutID: ids[index], context: context,
+                                                        exerciseStore: exerciseStore,
+                                                        pendingOnly: pendingOnly) { result in
+                            switch result {
+                            case .success(.saved): created += 1
+                            case .success(.updated): modified += 1
+                            case .success(.alreadyPresent): break
+                            case .failure(let error): if firstError == nil { firstError = error }
                             }
+                            next(index + 1)
                         }
+                    }
+                    next(0)
+                } catch {
+                    finish()
+                    DispatchQueue.main.async { completion(.failure(error)) }
                 }
-                self.healthStore.execute(query)
             }
         }
-    }
-    
-    private func approximatelyEqual(date1: Date, date2: Date) -> Bool {
-        abs(date1.timeIntervalSince(date2)) < 1
     }
 }
 

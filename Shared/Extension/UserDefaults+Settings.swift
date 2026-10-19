@@ -9,6 +9,12 @@
 import Foundation
 
 extension UserDefaults {
+    /// Respect an explicit preference; new Iron completions sync by default.
+    var syncFinishedWorkoutsWithHealth: Bool {
+        get { object(forKey: "Iron.finishWorkout.syncWithHealth") as? Bool ?? true }
+        set { set(newValue, forKey: "Iron.finishWorkout.syncWithHealth") }
+    }
+
     enum SettingsKeys: String, CaseIterable {
         case weightUnit
         case ironAppearance

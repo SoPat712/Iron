@@ -109,10 +109,10 @@ extension WorkoutDataStorage {
         }
     }
 
-    /// Migrates old stores in two deliberate stages. Versions 1–3 first use the
+    /// Migrates old stores in deliberate stages. Versions 1–3 first use the
     /// bundled custom mappings to v4 (which generate UUIDs and translate legacy
-    /// exercise identifiers), then v4 moves to the additive v5 schema with an
-    /// inferred lightweight mapping.
+    /// exercise identifiers), then v4→v5→v6 use inferred lightweight mappings
+    /// for the additive schema changes.
     static func migrateStoreIfNeeded(at storeURL: URL) throws {
         guard FileManager.default.fileExists(atPath: storeURL.path) else { return }
 
@@ -130,7 +130,8 @@ extension WorkoutDataStorage {
             throw StagedMigrationError.sourceModelUnknown
         }
         guard let version4 = versions.first(where: { $0.version == 4 }),
-              let version5 = versions.first(where: { $0.version == 5 }) else {
+              let version5 = versions.first(where: { $0.version == 5 }),
+              let version6 = versions.first(where: { $0.version == 6 }) else {
             throw StagedMigrationError.modelBundleMissing
         }
 
@@ -184,9 +185,32 @@ extension WorkoutDataStorage {
                 mapping: mapping
             )
             workingURL = destinationURL
+            workingModel = version5.model
         }
 
-        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: version5.model)
+        if source.version < 6 {
+            let mapping: NSMappingModel
+            do {
+                mapping = try NSMappingModel.inferredMappingModel(
+                    forSourceModel: workingModel,
+                    destinationModel: version6.model
+                )
+            } catch {
+                throw StagedMigrationError.mappingMissing(5, 6)
+            }
+
+            let destinationURL = migrationDirectory.appendingPathComponent("WorkoutData-v6.sqlite")
+            try migrateStore(
+                from: workingURL,
+                sourceModel: workingModel,
+                to: destinationURL,
+                destinationModel: version6.model,
+                mapping: mapping
+            )
+            workingURL = destinationURL
+        }
+
+        let coordinator = NSPersistentStoreCoordinator(managedObjectModel: version6.model)
         try coordinator.replacePersistentStore(
             at: storeURL,
             destinationOptions: nil,
@@ -195,7 +219,7 @@ extension WorkoutDataStorage {
             ofType: NSSQLiteStoreType
         )
         os_log(
-            "Migrated WorkoutData store from v%d to v5",
+            "Migrated WorkoutData store from v%d to v6",
             log: .migration,
             type: .info,
             source.version
@@ -232,7 +256,8 @@ extension WorkoutDataStorage {
             (2, "WorkoutData v2.mom"),
             (3, "WorkoutData v3.mom"),
             (4, "WorkoutData v4.mom"),
-            (5, "WorkoutData v5.mom")
+            (5, "WorkoutData v5.mom"),
+            (6, "WorkoutData v6.mom")
         ]
         return try files.map { version, fileName in
             let url = modelDirectory.appendingPathComponent(fileName)

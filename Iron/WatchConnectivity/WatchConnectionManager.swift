@@ -314,7 +314,8 @@ extension WatchConnectionManager {
     func applyWatchEventModelMutation(
         _ event: WatchWorkoutEvent,
         to workout: Workout,
-        in context: NSManagedObjectContext
+        in context: NSManagedObjectContext,
+        healthManager: HealthManager = .shared
     ) throws -> DeferredWatchEventEffects {
         switch event.kind {
         case .setUpdated:
@@ -363,23 +364,11 @@ extension WatchConnectionManager {
             }
 
         case .workoutFinished:
-            guard workout.isCurrentWorkout else { return .none }
-            if let snapshot = event.snapshot {
-                apply(snapshot, to: workout)
+            guard workout.isCurrentWorkout else {
+                if workout.healthExportEligibility == .eligible { workout.healthExportState = "watch" }
+                return .none
             }
-            let start = event.startDate ?? event.snapshot?.startDate ?? workout.safeStart
-            let requestedEnd = event.endDate ?? event.snapshot?.endDate ?? Date()
-            workout.start = start
-            workout.end = max(requestedEnd, start)
-            if let title = event.title ?? event.snapshot?.title {
-                workout.title = title
-            }
-            if let effort = event.sessionEffort ?? event.snapshot?.sessionEffort {
-                workout.sessionEffortValue = effort
-            }
-            workout.deleteExercisesWhereAllSetsAreUncompleted()
-            workout.deleteUncompletedSets()
-            workout.isCurrentWorkout = false
+            applyWatchCompletion(event, to: workout, state: "watch")
             return DeferredWatchEventEffects { [weak self] in
                 self?.currentWatchWorkoutUuid = nil
                 RestTimerStore.shared.cancel()
@@ -399,12 +388,25 @@ extension WatchConnectionManager {
             }
 
         case .workoutFailed:
-            // Keep the phone's workout intact, but allow a fresh HealthKit
-            // session to be prepared the next time the apps reconnect.
-            let shouldClearWatchWorkout = workout.isCurrentWorkout
+            // The existing failure event can arrive before the finish event. Its
+            // completed snapshot must survive that lifecycle sequence ordering.
+            if event.endDate != nil || event.snapshot?.endDate != nil {
+                if workout.isCurrentWorkout {
+                    applyWatchCompletion(event, to: workout, state: "pending", includeEventTitle: false)
+                } else if workout.healthExportEligibility == .eligible,
+                          workout.healthExportState == "watch" {
+                    workout.healthExportState = "pending"
+                }
+            }
+            let shouldClearWatchWorkout = workout.isCurrentWorkout || workout.healthExportState == "pending"
             return DeferredWatchEventEffects { [weak self] in
-                if shouldClearWatchWorkout {
-                    self?.currentWatchWorkoutUuid = nil
+                if shouldClearWatchWorkout { self?.currentWatchWorkoutUuid = nil }
+                if !workout.isCurrentWorkout {
+                    RestTimerStore.shared.cancel()
+                    WorkoutLiveActivityManager.shared.end(for: workout, completed: true)
+                }
+                if workout.healthExportEligibility == .eligible, workout.healthExportState == "pending" {
+                    healthManager.saveWorkout(workout: workout, exerciseStore: .shared)
                 }
                 os_log("Watch reported a failed workout session", log: .watch, type: .error)
             }
@@ -602,6 +604,24 @@ extension WatchConnectionManager {
         return WeightUnit.convert(weight: value, from: .imperial, to: .metric)
     }
 
+    private func applyWatchCompletion(_ event: WatchWorkoutEvent, to workout: Workout,
+                                      state: String, includeEventTitle: Bool = true) {
+        if let snapshot = event.snapshot { apply(snapshot, to: workout) }
+        let start = event.startDate ?? event.snapshot?.startDate ?? workout.safeStart
+        workout.start = start
+        workout.end = max(event.endDate ?? event.snapshot?.endDate ?? Date(), start)
+        if let title = (includeEventTitle ? event.title : nil) ?? event.snapshot?.title {
+            workout.title = title
+        }
+        if let effort = event.sessionEffort ?? event.snapshot?.sessionEffort {
+            workout.sessionEffortValue = effort
+        }
+        workout.deleteExercisesWhereAllSetsAreUncompleted()
+        workout.deleteUncompletedSets()
+        workout.isCurrentWorkout = false
+        workout.healthExportState = workout.healthExportEligibility == .eligible ? state : nil
+    }
+
     private func sequenceFieldKey(for event: WatchWorkoutEvent) -> String {
         switch event.kind {
         case .setUpdated:
@@ -667,6 +687,7 @@ extension WatchConnectionManager {
         context.perform {
             do {
                 guard let workout = try context.fetch(Workout.currentWorkoutFetchRequest).first,
+                      !workout.isImported,
                       workout.uuid == currentWatchWorkoutUuid else { return }
                 self.sendWorkoutSnapshot(self.makeSnapshot(for: workout))
             } catch {
@@ -997,6 +1018,8 @@ extension WatchConnectionManager {
 
 extension WatchConnectionManager {
     func prepareAndStartWatchWorkout(workout: Workout, startWatchCompanionErrorHandler: StartWatchCompanionErrorHandler? = nil) {
+        // Historical imports must never become a Watch HealthKit session.
+        guard !workout.isImported else { return }
         prepareWatchWorkout(startWatchCompanionErrorHandler: startWatchCompanionErrorHandler) {
             self.startWatchWorkout(workout: workout)
         }
@@ -1010,8 +1033,8 @@ extension WatchConnectionManager {
         }
         
         context.perform {
-            guard workout.isCurrentWorkout else {
-                os_log("Workout is no longer current workout", log: .watch, type: .error)
+            guard workout.isCurrentWorkout, !workout.isImported else {
+                os_log("Workout is no longer an eligible current workout", log: .watch, type: .error)
                 self.ignorePreparedWatchWorkout()
                 return
             }

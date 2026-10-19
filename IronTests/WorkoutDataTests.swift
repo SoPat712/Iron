@@ -1885,3 +1885,410 @@ final class SavedWorkoutImportPersistenceTests: XCTestCase {
         XCTAssertFalse(context.hasChanges)
     }
 }
+
+/// Data-safety gates intentionally exercise no HealthKit APIs.
+final class ImportedWorkoutHealthSafetyTests: XCTestCase {
+    func testExportGateRejectsAllImportedSources() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let workout = Workout.create(context: container.viewContext)
+        workout.start = Date(timeIntervalSince1970: 1_000)
+        workout.end = Date(timeIntervalSince1970: 2_000)
+        XCTAssertFalse(workout.isImported)
+        XCTAssertEqual(workout.healthExportEligibility, .eligible)
+        XCTAssertNil(HealthManager.workoutExportError(workout.healthExportEligibility))
+        for source in ["hevy", "sample", "json", "future-importer", ""] {
+            workout.importSource = source
+            XCTAssertTrue(workout.isImported)
+            XCTAssertEqual(HealthManager.workoutExportError(workout.healthExportEligibility), .importedWorkout)
+        }
+        XCTAssertEqual(HealthManager.WorkoutSyncError.importedWorkout.errorDescription,
+                       "Imported workouts are never sent to Apple Health.")
+    }
+
+    func testSingleSyncRejectsAnImportBeforeAuthorizationAndDataValidation() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let workout = Workout.create(context: container.viewContext)
+        workout.importSource = "hevy"
+        // Even an unsaved import with no interval must hit the import guard first.
+        let rejected = expectation(description: "Import rejected before HealthKit")
+        HealthManager.shared.syncWorkoutIfNeeded(workout: workout, exerciseStore: .shared) { result in
+            if case .failure(let error) = result {
+                XCTAssertEqual(error as? HealthManager.WorkoutSyncError, .importedWorkout)
+            } else {
+                XCTFail("An imported workout must never sync")
+            }
+            rejected.fulfill()
+        }
+        wait(for: [rejected], timeout: 2)
+    }
+
+    func testWatchOrOtherSourceSamplePreventsPhoneSaveReplacementAndCleanup() {
+        let isPhoneOwned: (String) -> Bool = { $0 == "phone" }
+        XCTAssertTrue(HealthManager.canReconcileWorkoutSamples([String](), isPhoneOwned: isPhoneOwned))
+        XCTAssertTrue(HealthManager.canReconcileWorkoutSamples(["phone", "phone"], isPhoneOwned: isPhoneOwned))
+        XCTAssertFalse(HealthManager.canReconcileWorkoutSamples(["watch"], isPhoneOwned: isPhoneOwned))
+        XCTAssertFalse(HealthManager.canReconcileWorkoutSamples(["phone", "watch"], isPhoneOwned: isPhoneOwned))
+        XCTAssertFalse(HealthManager.canReconcileWorkoutSamples(["hevy"], isPhoneOwned: isPhoneOwned))
+    }
+
+    func testRepeatingImportedWorkoutsCreatesNativeSessions() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let source = Workout.create(context: context)
+        source.importSource = "hevy"
+        source.start = Date(timeIntervalSince1970: 1_000)
+        source.end = Date(timeIntervalSince1970: 2_000)
+        let exercise = WorkoutExercise.create(context: context)
+        source.addToWorkoutExercises(exercise)
+        let set = WorkoutSet.create(context: context)
+        exercise.addToWorkoutSets(set)
+        set.isCompleted = true
+        set.repetitionsValue = 8
+        try context.save()
+
+        for blank in [false, true] {
+            let copy = try XCTUnwrap(source.copyForRepeat(blank: blank))
+            XCTAssertNil(copy.importSource)
+            XCTAssertNil(copy.healthExportState)
+            XCTAssertFalse(copy.isImported)
+            XCTAssertNotEqual(copy.uuid, source.uuid)
+            XCTAssertEqual(copy.workoutExercises?.count, 1)
+            let copiedExercise = try XCTUnwrap(copy.workoutExercises?.firstObject as? WorkoutExercise)
+            let copiedSet = try XCTUnwrap(copiedExercise.workoutSets?.firstObject as? WorkoutSet)
+            XCTAssertFalse(copiedSet.isCompleted)
+            XCTAssertEqual(source.importSource, "hevy")
+        }
+    }
+
+    func testWorkoutExportPreferenceDefaultsOnAndHonorsStoredPreference() throws {
+        let suite = "IronP11ExportPreference.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        XCTAssertNil(defaults.object(forKey: "Iron.finishWorkout.syncWithHealth"))
+        XCTAssertTrue(defaults.syncFinishedWorkoutsWithHealth)
+        defaults.syncFinishedWorkoutsWithHealth = true
+        XCTAssertTrue(defaults.syncFinishedWorkoutsWithHealth)
+        defaults.syncFinishedWorkoutsWithHealth = false
+        XCTAssertFalse(defaults.syncFinishedWorkoutsWithHealth)
+    }
+}
+
+/// Exercises the real coordinator/persistence path with a value-only Health writer.
+final class DurableWorkoutHealthExportTests: XCTestCase {
+    private enum Failure: Error { case write, save }
+    private var container: NSPersistentContainer!
+    private var previousWatchID: UUID?
+
+    override func setUp() {
+        container = setUpInMemoryNSPersistentContainer()
+        previousWatchID = WatchConnectionManager.shared.currentWatchWorkoutUuid
+        WatchConnectionManager.shared.currentWatchWorkoutUuid = nil
+    }
+
+    override func tearDown() {
+        WatchConnectionManager.shared.currentWatchWorkoutUuid = previousWatchID
+        container.viewContext.reset()
+        container = nil
+    }
+
+    private func workout(source: String? = nil, state: String? = nil, current: Bool = false) -> Workout {
+        let workout = Workout.create(context: container.viewContext)
+        workout.start = Date(timeIntervalSince1970: 1_000)
+        workout.end = current ? nil : Date(timeIntervalSince1970: 2_000)
+        workout.isCurrentWorkout = current
+        workout.importSource = source
+        workout.healthExportState = state
+        return workout
+    }
+
+    private func storedState(_ workout: Workout) throws -> String? {
+        let context = container.newBackgroundContext()
+        let id = workout.objectID
+        return try context.performAndWait {
+            try (context.existingObject(with: id) as? Workout)?.healthExportState
+        }
+    }
+
+    func testEligibilityRejectsCurrentMissingZeroNegativeAndNonfiniteIntervals() {
+        let native = workout()
+        XCTAssertEqual(native.healthExportEligibility, .eligible)
+        native.isCurrentWorkout = true
+        XCTAssertEqual(native.healthExportEligibility, .invalidWorkout)
+        native.isCurrentWorkout = false
+        native.end = nil
+        XCTAssertEqual(native.healthExportEligibility, .invalidWorkout)
+        native.end = native.start
+        XCTAssertEqual(native.healthExportEligibility, .invalidWorkout)
+        native.end = Date(timeIntervalSince1970: 999)
+        XCTAssertEqual(native.healthExportEligibility, .invalidWorkout)
+        let valid = Date(timeIntervalSince1970: 1_000)
+        for duration in [Double.nan, .infinity, -.infinity, -1, 0] {
+            XCTAssertEqual(Workout.healthExportEligibility(importSource: nil, isCurrent: false,
+                start: valid, end: valid.addingTimeInterval(10), duration: duration), .invalidWorkout)
+        }
+        XCTAssertEqual(Workout.healthExportEligibility(importSource: nil, isCurrent: false,
+            start: nil, end: valid, duration: 10), .invalidWorkout)
+        XCTAssertEqual(Workout.healthExportEligibility(importSource: nil, isCurrent: false,
+            start: Date(timeIntervalSinceReferenceDate: .infinity), end: valid, duration: 10), .invalidWorkout)
+    }
+
+    func testFinishPersistsPendingWithCompletionBeforeWriterAndScopesSuccessSave() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        let wrote = expectation(description: "Writer received durable completion")
+        var finishSaved = false
+        var writerCompletion: ((Result<HealthManager.WorkoutSyncOutcome, Error>) -> Void)?
+        let manager = HealthManager(workoutWriter: { request, completion in
+            XCTAssertTrue(finishSaved)
+            XCTAssertEqual(request.uuid, workout.uuid)
+            XCTAssertEqual(try? self.storedState(workout), "pending")
+            writerCompletion = completion
+            wrote.fulfill()
+        })
+        try workout.finish(syncToHealth: true, save: {
+            XCTAssertEqual(workout.healthExportState, "pending")
+            XCTAssertFalse(workout.isCurrentWorkout)
+            XCTAssertNil(writerCompletion)
+            try self.container.viewContext.save()
+            finishSaved = true
+        }, healthManager: manager) {
+            workout.end = Date(timeIntervalSince1970: 2_000)
+        }
+        wait(for: [wrote], timeout: 2)
+        let unrelated = self.workout()
+        unrelated.title = "Unsaved editor change"
+        let saved = expectation(for: NSPredicate(format: "healthExportState == %@", "exported"), evaluatedWith: workout)
+        writerCompletion?(.success(.saved))
+        wait(for: [saved], timeout: 2)
+        XCTAssertEqual(try storedState(workout), "exported")
+        XCTAssertTrue(unrelated.isInserted)
+        XCTAssertTrue(container.viewContext.hasChanges)
+        let fresh = container.newBackgroundContext()
+        try fresh.performAndWait {
+            XCTAssertEqual(try fresh.count(for: Workout.fetchRequest()), 1)
+        }
+    }
+
+    func testFailedFinishRollsBackPendingAndNeverCallsWriter() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        XCTAssertThrowsError(try workout.finish(syncToHealth: true, save: {
+            XCTAssertEqual(workout.healthExportState, "pending")
+            throw Failure.save
+        }, healthManager: manager))
+        XCTAssertTrue(workout.isCurrentWorkout)
+        XCTAssertNil(workout.end)
+        XCTAssertNil(workout.healthExportState)
+        XCTAssertNil(try storedState(workout))
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testSyncOffLeavesNoPendingExport() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        try workout.finish(syncToHealth: false, healthManager: manager)
+        XCTAssertNil(workout.healthExportState)
+        XCTAssertNil(try storedState(workout))
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testFinishingSampleOrImportedDataNeverRequestsHealthExport() throws {
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        for source in ["hevy", "sample", "json"] {
+            let workout = workout(source: source, current: true)
+            try container.viewContext.save()
+            try workout.finish(syncToHealth: true, healthManager: manager)
+            XCTAssertNil(try storedState(workout))
+        }
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testWriteFailureLeavesPendingAndRetryEventuallyExports() throws {
+        let workout = workout()
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, completion in
+            writes += 1
+            completion(writes == 1 ? .failure(Failure.write) : .success(.alreadyPresent))
+        })
+        let failed = expectation(description: "Write failed")
+        manager.syncWorkoutIfNeeded(workout: workout, exerciseStore: .shared) { result in
+            if case .success = result { XCTFail("Expected write failure") }
+            failed.fulfill()
+        }
+        wait(for: [failed], timeout: 2)
+        XCTAssertEqual(try storedState(workout), "pending")
+        let retried = expectation(description: "Retried")
+        manager.retryPendingWorkouts(in: container.viewContext) { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            retried.fulfill()
+        }
+        wait(for: [retried], timeout: 2)
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(try storedState(workout), "exported")
+    }
+
+    func testRetrySerializesEligiblePendingAndSkipsEverythingElse() throws {
+        let first = workout(state: "pending")
+        let second = workout(state: "pending")
+        let imports = ["hevy", "sample", "json", ""].map { workout(source: $0, state: "pending") }
+        let current = workout(state: "pending", current: true)
+        let invalid = workout(state: "pending")
+        invalid.end = invalid.start
+        let legacy = workout()
+        let watch = workout(state: "watch")
+        try container.viewContext.save()
+        var requested: [UUID] = []
+        var inFlight = 0
+        let manager = HealthManager(workoutWriter: { request, completion in
+            requested.append(request.uuid)
+            inFlight += 1
+            XCTAssertEqual(inFlight, 1)
+            DispatchQueue.main.async {
+                inFlight -= 1
+                completion(.success(.saved))
+            }
+        })
+        let retried = expectation(description: "Pending pass")
+        manager.retryPendingWorkouts(in: container.viewContext) { result in
+            if case .failure(let error) = result { XCTFail("\(error)") }
+            retried.fulfill()
+        }
+        wait(for: [retried], timeout: 2)
+        XCTAssertEqual(Set(requested), Set([first.uuid!, second.uuid!]))
+        XCTAssertEqual(try storedState(first), "exported")
+        XCTAssertEqual(try storedState(second), "exported")
+        for excluded in imports + [current, invalid] { XCTAssertEqual(try storedState(excluded), "pending") }
+        XCTAssertNil(try storedState(legacy))
+        XCTAssertEqual(try storedState(watch), "watch")
+        let again = expectation(description: "Idempotent pass")
+        manager.retryPendingWorkouts(in: container.viewContext) { _ in again.fulfill() }
+        wait(for: [again], timeout: 2)
+        XCTAssertEqual(requested.count, 2)
+    }
+
+    func testRetryTriggerDuringFailedPassIsRetained() throws {
+        let workout = workout(state: "pending")
+        try container.viewContext.save()
+        let firstWrite = expectation(description: "First pass in progress")
+        var writes = 0
+        var firstCompletion: ((Result<HealthManager.WorkoutSyncOutcome, Error>) -> Void)?
+        let manager = HealthManager(workoutWriter: { _, completion in
+            writes += 1
+            if writes == 1 {
+                firstCompletion = completion
+                firstWrite.fulfill()
+            } else {
+                completion(.success(.saved))
+            }
+        })
+        manager.retryPendingWorkouts(in: container.viewContext)
+        wait(for: [firstWrite], timeout: 2)
+        // An unlock/authorization notification during a failing write must
+        // schedule another serialized pass rather than being dropped.
+        manager.retryPendingWorkouts(in: container.viewContext)
+        firstCompletion?(.failure(Failure.write))
+        let saved = expectation(for: NSPredicate(format: "healthExportState == %@", "exported"), evaluatedWith: workout)
+        wait(for: [saved], timeout: 2)
+        XCTAssertEqual(writes, 2)
+        XCTAssertEqual(try storedState(workout), "exported")
+    }
+
+    func testManualAndBulkSyncUseTheSameAllowlistAndSkipWatch() throws {
+        let native = workout()
+        let imports = ["hevy", "sample", "json"].map { workout(source: $0) }
+        let invalid = workout(current: true)
+        let watch = workout(state: "watch")
+        try container.viewContext.save()
+        var requested: [UUID] = []
+        let manager = HealthManager(workoutWriter: { request, completion in
+            requested.append(request.uuid)
+            completion(.success(.saved))
+        })
+        for excluded in imports + [invalid, watch] {
+            let checked = expectation(description: "Manual guard")
+            manager.syncWorkoutIfNeeded(workout: excluded, exerciseStore: .shared) { _ in checked.fulfill() }
+            wait(for: [checked], timeout: 2)
+        }
+        XCTAssertTrue(requested.isEmpty)
+        let bulk = expectation(description: "Bulk allowlist")
+        manager.updateHealthWorkouts(managedObjectContext: container.viewContext, exerciseStore: .shared) { result in
+            if case .success(let counts) = result { XCTAssertEqual(counts.deleted, 0) }
+            else { XCTFail("Bulk failed") }
+            bulk.fulfill()
+        }
+        wait(for: [bulk], timeout: 2)
+        XCTAssertEqual(requested, [native.uuid!])
+    }
+
+    func testWatchFinishSavesWatchStateAndNeverSchedulesPhoneWriter() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        let event = WatchWorkoutEvent(workoutID: workout.uuid!, sequence: 1, kind: .workoutFinished,
+            startDate: workout.start, endDate: Date(timeIntervalSince1970: 2_000))
+        try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+            save: {
+                XCTAssertEqual(workout.healthExportState, "watch")
+                XCTAssertEqual(writes, 0)
+                try self.container.viewContext.save()
+            }, mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                    in: self.container.viewContext, healthManager: manager)
+            }, didPersist: {})
+        XCTAssertEqual(try storedState(workout), "watch")
+        let retry = expectation(description: "No Watch retry")
+        manager.retryPendingWorkouts(in: container.viewContext) { _ in retry.fulfill() }
+        wait(for: [retry], timeout: 2)
+        XCTAssertEqual(writes, 0)
+    }
+
+    func testWatchHealthFailureCanArriveBeforeFinishAndExportsAfterSave() throws {
+        let workout = workout(current: true)
+        try container.viewContext.save()
+        let exported = expectation(description: "Watch failure fallback")
+        let manager = HealthManager(workoutWriter: { _, completion in
+            XCTAssertFalse(workout.isCurrentWorkout)
+            XCTAssertEqual(try? self.storedState(workout), "pending")
+            completion(.success(.saved))
+            exported.fulfill()
+        })
+        let event = WatchWorkoutEvent(workoutID: workout.uuid!, sequence: 2, kind: .workoutFailed,
+            startDate: workout.start, endDate: Date(timeIntervalSince1970: 2_000), title: "Health save failed")
+        try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+            save: { try self.container.viewContext.save() }, mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                    in: self.container.viewContext, healthManager: manager)
+            }, didPersist: {})
+        wait(for: [exported], timeout: 2)
+        XCTAssertNotEqual(workout.title, "Health save failed")
+        let done = expectation(for: NSPredicate(format: "healthExportState == %@", "exported"), evaluatedWith: workout)
+        wait(for: [done], timeout: 2)
+    }
+
+    func testFailedWatchFallbackSaveRollsBackAndNeverSchedulesPhoneWriter() throws {
+        let workout = workout(state: "watch")
+        try container.viewContext.save()
+        var writes = 0
+        let manager = HealthManager(workoutWriter: { _, _ in writes += 1 })
+        let event = WatchWorkoutEvent(workoutID: workout.uuid!, sequence: 2, kind: .workoutFailed,
+            startDate: workout.start, endDate: workout.end)
+        XCTAssertThrowsError(try WatchConnectionManager.commitWatchEventMutation(in: container.viewContext,
+            save: {
+                XCTAssertEqual(workout.healthExportState, "pending")
+                throw Failure.save
+            }, mutation: {
+                try WatchConnectionManager.shared.applyWatchEventModelMutation(event, to: workout,
+                    in: self.container.viewContext, healthManager: manager)
+            }, didPersist: {}))
+        XCTAssertEqual(try storedState(workout), "watch")
+        XCTAssertEqual(workout.healthExportState, "watch")
+        XCTAssertEqual(writes, 0)
+    }
+}

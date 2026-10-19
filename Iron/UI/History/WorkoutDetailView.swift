@@ -185,7 +185,9 @@ struct WorkoutDetailView: View {
                 workoutToDelete = nil
             }
         } message: {
-            Text("This removes the workout, every logged set, and Iron's matching Apple Health workout.")
+            Text(workout.healthExportEligibility != .eligible
+                ? "This removes the workout and every logged set from Iron."
+                : "This removes the workout, every logged set, and Iron's matching Apple Health workout.")
         }
         .sheet(isPresented: $showingRepeatBlocked) {
             IronStatusSheet(
@@ -286,24 +288,53 @@ struct WorkoutDetailView: View {
 
             LabeledContent("Saved Workout", value: workout.workoutRoutine?.displayTitle ?? "One-Off Workout")
 
-            Button {
-                syncWorkoutToHealth()
-            } label: {
-                LabeledContent("Apple Health") {
-                    if healthSyncState == .syncing {
-                        ProgressView()
-                    } else {
-                        Text(healthSyncState.subtitle)
-                    }
-                }
-            }
-            .disabled(healthSyncState == .syncing || healthSyncState == .synced)
+            appleHealthRow
 
             if workoutMediaURL != nil {
                 Button("View Workout Media", systemImage: "photo") {
                     showingMediaPreview = true
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var appleHealthRow: some View {
+        if let source = workout.importSource {
+            let origin = source == "hevy" ? "Imported from Hevy" : (source == "sample" ? "Sample data" : "Imported workout")
+            Text(source == "sample" ? "Sample data · Not sent" : "\(origin) · Not sent to Apple Health")
+                .foregroundStyle(.secondary)
+        } else if workout.healthExportState == "exported" || workout.healthExportState == "watch" {
+            Label("Saved to Apple Health", systemImage: "checkmark.circle")
+        } else if workout.healthExportEligibility == .eligible {
+            if workout.healthExportState == "pending" {
+                HStack {
+                    Text("Waiting to save to Apple Health")
+                    Spacer()
+                    if healthSyncState == .syncing {
+                        ProgressView()
+                    } else {
+                        Button("Retry", action: syncWorkoutToHealth)
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                    }
+                }
+            } else {
+                Button(action: syncWorkoutToHealth) {
+                    HStack {
+                        Text("Save to Apple Health")
+                        if healthSyncState == .syncing { Spacer(); ProgressView() }
+                    }
+                }
+                .disabled(healthSyncState == .syncing)
+            }
+            if healthSyncState == .failed {
+                Text("Could not save. Try again when Apple Health is available.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Text("Not sent to Apple Health").foregroundStyle(.secondary)
         }
     }
 
@@ -414,6 +445,7 @@ struct WorkoutDetailView: View {
     }
 
     private func syncWorkoutToHealth() {
+        guard workout.healthExportEligibility == .eligible else { return }
         healthSyncState = .syncing
         HealthManager.shared.syncWorkoutIfNeeded(
             workout: workout,
@@ -590,23 +622,6 @@ private enum WorkoutHealthSyncState: Equatable {
     case syncing
     case synced
     case failed
-
-    var subtitle: String {
-        switch self {
-        case .idle: return "Check and sync this workout"
-        case .syncing: return "Checking Apple Health…"
-        case .synced: return "Synced with Apple Health"
-        case .failed: return "Could not sync · try again"
-        }
-    }
-
-    var actionTitle: String? {
-        switch self {
-        case .idle: return "Sync"
-        case .failed: return "Retry"
-        case .syncing, .synced: return nil
-        }
-    }
 }
 
 private struct CompletedWorkoutDetailsEditor: View {

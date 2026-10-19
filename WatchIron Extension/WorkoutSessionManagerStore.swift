@@ -599,12 +599,16 @@ extension WorkoutSessionManagerStore {
 
     func recordHealthKitFailure(uuid: UUID, message: String) {
         WorkoutSessionManager.perform {
-            guard let snapshot = self.workoutSnapshot, snapshot.workoutID == uuid else { return }
-            self.commitEvent(workoutID: uuid, kind: .workoutFailed,
-                             startDate: snapshot.startDate,
-                             endDate: snapshot.endDate,
-                             title: message)
+            self.recordHealthKitFailureOnAccessQueue(uuid: uuid, message: message)
         }
+    }
+
+    @discardableResult
+    private func recordHealthKitFailureOnAccessQueue(uuid: UUID, message: String) -> Bool {
+        guard let snapshot = workoutSnapshot, snapshot.workoutID == uuid else { return false }
+        return commitEvent(workoutID: uuid, kind: .workoutFailed,
+                           startDate: snapshot.startDate, endDate: snapshot.endDate,
+                           title: message, eventSnapshot: snapshot)
     }
 
     func ensureWorkoutProjection(uuid: UUID, start: Date) {
@@ -895,6 +899,8 @@ extension WorkoutSessionManagerStore {
             
             guard let workoutSessionManager = self.workoutSessionManager else {
                 os_log("No HealthKit session; persisted workout finish locally", type: .info)
+                // Queue the existing failure event before removing its snapshot.
+                guard self.recordHealthKitFailureOnAccessQueue(uuid: uuid, message: "No HealthKit session was available to save this workout.") else { return }
                 self.archiveSnapshot(workoutID: uuid)
                 return
             }
@@ -938,6 +944,7 @@ extension WorkoutSessionManagerStore {
                         os_log("Discarding workout session manager", type: .info)
                         workoutSessionManager.discard()
                         self.workoutSessionManager = nil
+                        guard self.recordHealthKitFailureOnAccessQueue(uuid: uuid, message: error.localizedDescription) else { return }
                         // The finish event was durably queued before HealthKit
                         // finalization. Archive the editor even if HealthKit
                         // fails so the user cannot submit the finish twice.

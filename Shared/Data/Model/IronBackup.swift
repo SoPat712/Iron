@@ -187,6 +187,7 @@ enum IronBackup {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         decoder.userInfo[managedObjectContextKey] = context
+        decoder.userInfo[.preserveWorkoutProvenance] = true
         let workoutDataBackup = try decoder.decode(IronBackup.self, from: data) // this already inserts the workout into the context
         try validate(workoutDataBackup)
         let customExercisesToRestore = try managedObjectContext.performAndWait {

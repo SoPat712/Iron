@@ -43,6 +43,36 @@ public class Workout: NSManagedObject, Codable {
         return workout
     }
     
+    // v6 generates `@NSManaged public var importSource: String?` alongside
+    // the other managed properties. Any source marks a historical import.
+    public var isImported: Bool { importSource != nil }
+
+    // v6 also generates healthExportState: nil (legacy/not requested),
+    // "pending", "exported", or "watch" (Watch owns the Health recording).
+
+    public enum HealthExportEligibility: Equatable {
+        case eligible
+        case imported
+        case invalidWorkout
+    }
+
+    /// The only allowlist for phone Health mutations, including legacy sessions.
+    public var healthExportEligibility: HealthExportEligibility {
+        Self.healthExportEligibility(importSource: importSource, isCurrent: isCurrentWorkout,
+                                     start: start, end: end, duration: duration)
+    }
+
+    public static func healthExportEligibility(
+        importSource: String?, isCurrent: Bool, start: Date?, end: Date?, duration: TimeInterval?
+    ) -> HealthExportEligibility {
+        guard importSource == nil else { return .imported }
+        guard !isCurrent, let start, let end, let duration,
+              start.timeIntervalSinceReferenceDate.isFinite,
+              end.timeIntervalSinceReferenceDate.isFinite,
+              duration.isFinite, duration > 0, end > start else { return .invalidWorkout }
+        return .eligible
+    }
+
     // MARK: Derived properties
     
     public var isCompleted: Bool? {
@@ -208,6 +238,8 @@ public class Workout: NSManagedObject, Codable {
         case exercises
         case routineUuid
         case sessionEffort
+        case importSource
+        case healthExportState
     }
     
     required convenience public init(from decoder: Decoder) throws {
@@ -223,6 +255,13 @@ public class Workout: NSManagedObject, Codable {
         uuid = try container.decodeIfPresent(UUID.self, forKey: .uuid) ?? UUID() // make sure we always have an UUID
         title = try container.decodeIfPresent(String.self, forKey: .title)
         comment = try container.decodeIfPresent(String.self, forKey: .comment)
+        let storedSource = try container.decodeIfPresent(String.self, forKey: .importSource)
+        let storedState = try container.decodeIfPresent(String.self, forKey: .healthExportState)
+        // Only a backup restores provenance. A history JSON import cannot claim
+        // to have been completed/exported by this installation of Iron.
+        let preservingProvenance = decoder.userInfo[.preserveWorkoutProvenance] as? Bool == true
+        importSource = preservingProvenance ? storedSource : "json"
+        healthExportState = preservingProvenance ? storedState : nil
         start = try container.decode(Date.self, forKey: .start)
         end = try container.decode(Date.self, forKey: .end)
         sessionEffortValue = try container.decodeIfPresent(Double.self, forKey: .sessionEffort)
@@ -246,6 +285,8 @@ public class Workout: NSManagedObject, Codable {
         try container.encode(uuid ?? UUID(), forKey: .uuid)
         try container.encodeIfPresent(title, forKey: .title)
         try container.encodeIfPresent(comment, forKey: .comment)
+        try container.encodeIfPresent(importSource, forKey: .importSource)
+        try container.encodeIfPresent(healthExportState, forKey: .healthExportState)
         try container.encode(safeStart, forKey: .start)
         try container.encode(safeEnd, forKey: .end)
         try container.encodeIfPresent(workoutExercises?.array.compactMap { $0 as? WorkoutExercise }, forKey: .exercises)

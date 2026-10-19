@@ -342,6 +342,7 @@ enum HevyCSV {
                         for group in acceptedGroups {
                             guard let first = group.records.first else { continue }
                             let workout = Workout.create(context: context)
+                            workout.importSource = "hevy"
                             workout.title = nonempty(first.title) ?? "Workout"
                             workout.comment = nonempty(unescapeNewlines(first.description))
                             workout.start = first.startTime

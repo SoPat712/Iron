@@ -130,7 +130,7 @@ extension Workout {
     }
     
     func finish() throws {
-        try finish(syncToHealth: true)
+        try finish(syncToHealth: UserDefaults.standard.syncFinishedWorkoutsWithHealth)
     }
 
     /// Finishes the local workout while allowing the completion editor to opt
@@ -138,6 +138,7 @@ extension Workout {
     /// Apple Watch must still be ended on the watch; watchOS owns that active
     /// HealthKit session.
     func finish(syncToHealth: Bool, save: (() throws -> Void)? = nil,
+                healthManager: HealthManager = .shared,
                 updatingValues: () -> Void = {}) throws {
         guard let context = managedObjectContext else {
             os_log("Attempt to finish workout without context", log: .workoutData, type: .error)
@@ -145,6 +146,7 @@ extension Workout {
             return
         }
         
+        let watchWorkoutUuid = WatchConnectionManager.shared.currentWatchWorkoutUuid
         try context.persistMutation(save: { try save?() ?? context.save() }) {
             updatingValues()
             deleteExercisesWhereAllSetsAreUncompleted()
@@ -152,22 +154,30 @@ extension Workout {
             start = safeStart
             end = safeEnd
             isCurrentWorkout = false
+            // Persist the export intent with completion, before any external effect.
+            healthExportState = healthExportEligibility == .eligible
+                ? (watchWorkoutUuid != nil ? "watch" : (syncToHealth ? "pending" : nil))
+                : nil
         }
 
         RestTimerStore.shared.cancel()
         WorkoutLiveActivityManager.shared.end(for: self, completed: true)
         
+        // Imports must not reach either phone export or Watch finalization.
+        guard healthExportEligibility == .eligible else { return }
+
         // save workout in Health or tell Apple Watch to finish the workout
-        if let watchWorkoutUuid = WatchConnectionManager.shared.currentWatchWorkoutUuid {
-            if syncToHealth, watchWorkoutUuid != uuid {
-                os_log("currentWatchWorkoutUuid=%@ but workout uuid=%@, saving HealthKit workout on phone too to be safe", log: .watch, type: .error, watchWorkoutUuid.uuidString, uuid?.uuidString ?? "nil")
-                HealthManager.shared.saveWorkout(workout: self, exerciseStore: ExerciseStore.shared)
+        if let watchWorkoutUuid {
+            // watchOS owns the live HealthKit session. Never add a phone copy,
+            // including when a delayed Watch message leaves a mismatched ID.
+            if watchWorkoutUuid != uuid {
+                os_log("currentWatchWorkoutUuid=%@ but workout uuid=%@; leaving Health export to Watch", log: .watch, type: .error, watchWorkoutUuid.uuidString, uuid?.uuidString ?? "nil")
             }
             if let start = start, let end = end, let uuid = uuid {
                 WatchConnectionManager.shared.finishWatchWorkout(start: start, end: end, title: optionalDisplayTitle(in: ExerciseStore.shared.exercises), uuid: uuid)
             }
-        } else if syncToHealth {
-            HealthManager.shared.saveWorkout(workout: self, exerciseStore: ExerciseStore.shared)
+        } else if healthExportState == "pending" {
+            healthManager.saveWorkout(workout: self, exerciseStore: ExerciseStore.shared)
         }
     }
     
@@ -179,11 +189,12 @@ extension Workout {
         }
         
         let workoutID = uuid
+        let healthEligibility = healthExportEligibility
         try context.persistMutation(save: { try save?() ?? context.save() }) {
             context.delete(self)
         }
         if let workoutID {
-            HealthManager.shared.deleteWorkout(uuid: workoutID)
+            HealthManager.shared.deleteWorkout(uuid: workoutID, eligibility: healthEligibility)
             Shortcuts.deleteStartWorkoutInteractionDonation(uuid: workoutID)
         }
     }
@@ -195,7 +206,7 @@ extension Workout {
             return nil
         }
         
-        // create the workout
+        // A repeat is a new native session; never copy importSource.
         let newWorkout = Workout.create(context: context)
         
         if let workoutExercises = workoutExercises?.compactMap({ $0 as? WorkoutExercise }) {
@@ -1013,7 +1024,7 @@ extension Workout {
     }
     
     func finishOrCrash() {
-        finishOrCrash(syncToHealth: true)
+        finishOrCrash(syncToHealth: UserDefaults.standard.syncFinishedWorkoutsWithHealth)
     }
 
     func finishOrCrash(syncToHealth: Bool) {

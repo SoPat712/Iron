@@ -61,6 +61,7 @@ class WorkoutDataMigrationTests: XCTestCase {
             let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
             let workouts = try! self.persistentContainer.viewContext.fetch(workoutRequest)
             XCTAssertEqual(workouts.count, 246) // sanity check
+            XCTAssertTrue(workouts.allSatisfy { $0.importSource == nil && $0.healthExportState == nil })
             
             expectation.fulfill()
         }
@@ -78,12 +79,75 @@ class WorkoutDataMigrationTests: XCTestCase {
             let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
             let workouts = try! self.persistentContainer.viewContext.fetch(workoutRequest)
             XCTAssertEqual(workouts.count, 246) // sanity check
+            XCTAssertTrue(workouts.allSatisfy { $0.importSource == nil && $0.healthExportState == nil })
             
             expectation.fulfill()
         }
         
         wait(for: [expectation], timeout: 2)
     }
+
+    func testMigrateFromV5PreservesWorkoutsAsNative() throws {
+        try checkAdditiveMigration(from: 5)
+    }
+
+    func testMigrateFromV4ThroughV5ToV6() throws {
+        try checkAdditiveMigration(from: 4)
+    }
+
+    private func checkAdditiveMigration(from version: Int) throws {
+        let bundle = Bundle(for: WorkoutDataStorage.self)
+        let directory = try XCTUnwrap(bundle.url(forResource: "WorkoutData", withExtension: "momd"))
+        let sourceModel = try XCTUnwrap(NSManagedObjectModel(
+            contentsOf: directory.appendingPathComponent("WorkoutData v\(version).mom")
+        ))
+        XCTAssertNil(sourceModel.entitiesByName["Workout"]?.attributesByName["importSource"])
+        XCTAssertNil(sourceModel.entitiesByName["Workout"]?.attributesByName["healthExportState"])
+        // Use generic objects for the old schema, not current model subclasses.
+        sourceModel.entities.forEach { $0.managedObjectClassName = "NSManagedObject" }
+        let sourceCoordinator = NSPersistentStoreCoordinator(managedObjectModel: sourceModel)
+        let sourceStore = try sourceCoordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL
+        )
+        let sourceContext = NSManagedObjectContext(concurrencyType: .mainQueueConcurrencyType)
+        sourceContext.persistentStoreCoordinator = sourceCoordinator
+        let workout = NSEntityDescription.insertNewObject(forEntityName: "Workout", into: sourceContext)
+        let id = UUID()
+        workout.setValue(id, forKey: "uuid")
+        workout.setValue("Existing workout", forKey: "title")
+        workout.setValue(Date(timeIntervalSince1970: 1_000), forKey: "start")
+        workout.setValue(Date(timeIntervalSince1970: 2_000), forKey: "end")
+        try sourceContext.save()
+        sourceContext.reset()
+        try sourceCoordinator.remove(sourceStore)
+
+        try WorkoutDataStorage.migrateStoreIfNeeded(at: storeURL)
+        let metadata = try NSPersistentStoreCoordinator.metadataForPersistentStore(
+            ofType: NSSQLiteStoreType, at: storeURL
+        )
+        XCTAssertTrue(WorkoutDataStorage.model.isConfiguration(withName: nil, compatibleWithStoreMetadata: metadata))
+        let attribute = try XCTUnwrap(WorkoutDataStorage.model.entitiesByName["Workout"]?.attributesByName["importSource"])
+        XCTAssertEqual(attribute.attributeType, .stringAttributeType)
+        XCTAssertTrue(attribute.isOptional)
+        let stateAttribute = try XCTUnwrap(WorkoutDataStorage.model.entitiesByName["Workout"]?.attributesByName["healthExportState"])
+        XCTAssertEqual(stateAttribute.attributeType, .stringAttributeType)
+        XCTAssertTrue(stateAttribute.isOptional)
+        try persistentContainer.persistentStoreCoordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType, configurationName: nil, at: storeURL
+        )
+        let migrated = try persistentContainer.viewContext.fetch(Workout.fetchRequest())
+        XCTAssertEqual(migrated.count, 1)
+        let existing = try XCTUnwrap(migrated.first)
+        XCTAssertEqual(existing.uuid, id)
+        XCTAssertEqual(existing.title, "Existing workout")
+        XCTAssertEqual(existing.duration, 1_000)
+        XCTAssertNil(existing.importSource)
+        XCTAssertNil(existing.healthExportState)
+        XCTAssertFalse(existing.isImported)
+        // A second pass must recognize the current store without rewriting it.
+        XCTAssertNoThrow(try WorkoutDataStorage.migrateStoreIfNeeded(at: storeURL))
+    }
+
 }
 
 extension WorkoutDataMigrationTests {

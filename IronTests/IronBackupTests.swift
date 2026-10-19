@@ -52,6 +52,7 @@ class IronBackupTests: XCTestCase {
         let workoutRequest: NSFetchRequest<Workout> = Workout.fetchRequest()
         let workouts = try! context.fetch(workoutRequest)
         XCTAssertEqual(workouts.count, 209) // sanity check
+        XCTAssertTrue(workouts.allSatisfy { $0.importSource == nil && $0.healthExportState == nil && !$0.isImported })
         
         XCTAssertEqual(exerciseStore.customExercises.count, 4) // sanity check
     }
@@ -96,6 +97,39 @@ class IronBackupTests: XCTestCase {
             exerciseStore: exerciseStore,
             userDefaults: userDefaults
         ))
+    }
+
+    func testBackupRoundTripPreservesWorkoutProvenanceAndHealthState() throws {
+        let context = persistenContainer.viewContext
+        let values: [(String?, String?)] = [("hevy", nil), ("sample", nil), ("json", nil),
+                                           (nil, nil), (nil, "pending"), (nil, "exported"), (nil, "watch")]
+        var expected: [UUID: (String?, String?)] = [:]
+        for (source, state) in values {
+            let workout = Workout.create(context: context)
+            workout.importSource = source
+            workout.healthExportState = state
+            workout.start = Date(timeIntervalSince1970: 1_000)
+            workout.end = Date(timeIntervalSince1970: 2_000)
+            expected[try XCTUnwrap(workout.uuid)] = (source, state)
+        }
+        try context.save()
+        let data = try IronBackup.createBackupData(
+            managedObjectContext: context, exerciseStore: exerciseStore, userDefaults: userDefaults
+        )
+        try IronBackup.restoreBackupData(
+            data: data, managedObjectContext: context,
+            exerciseStore: exerciseStore, userDefaults: userDefaults
+        )
+        let freshContext = persistenContainer.newBackgroundContext()
+        try freshContext.performAndWait {
+            let restored = try freshContext.fetch(Workout.fetchRequest())
+            XCTAssertEqual(restored.count, values.count)
+            for workout in restored {
+                let value = try XCTUnwrap(expected[try XCTUnwrap(workout.uuid)])
+                XCTAssertEqual(workout.importSource, value.0)
+                XCTAssertEqual(workout.healthExportState, value.1)
+            }
+        }
     }
 
     func testExportAndRestoreBodyMeasurements() throws {

@@ -2244,7 +2244,7 @@ struct CurrentWorkoutView: View {
         finishDuration = max(workout.safeDuration, 0)
         sessionEffort = workout.sessionEffortValue ?? 0
         finishRecap = FinishWorkoutRecap(workout: workout, exercises: exerciseStore.exercises, weightUnit: settingsStore.weightUnit)
-        syncWithHealth = UserDefaults.standard.object(forKey: "Iron.finishWorkout.syncWithHealth") as? Bool ?? true
+        syncWithHealth = UserDefaults.standard.syncFinishedWorkoutsWithHealth
         updateLinkedRoutine = false
         finishMediaError = nil
         isFinishingWorkout = false
@@ -2371,7 +2371,7 @@ struct CurrentWorkoutView: View {
             persistenceError = "Your workout is still active. Iron could not save it: \(error.localizedDescription)"
             return
         }
-        UserDefaults.standard.set(syncWithHealth, forKey: "Iron.finishWorkout.syncWithHealth")
+        UserDefaults.standard.syncFinishedWorkoutsWithHealth = syncWithHealth
         showingFinishEditor = false
 
         let feedback = UINotificationFeedbackGenerator()
