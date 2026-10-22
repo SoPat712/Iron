@@ -334,11 +334,14 @@ private struct WorkoutPlanEditorHost: View {
 
 struct StartWorkoutView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @Environment(\.managedObjectContext) private var managedObjectContext
     @EnvironmentObject private var exerciseStore: ExerciseStore
+    @EnvironmentObject private var sceneState: SceneState
 
     @FetchRequest(fetchRequest: StartWorkoutView.fetchRequest) private var workoutPlans
     @FetchRequest(fetchRequest: Workout.currentWorkoutFetchRequest) private var currentWorkouts
+    @FetchRequest(fetchRequest: StartWorkoutView.historyFetchRequest) private var workoutHistory
 
     var onOpenCurrentWorkout: () -> Void = {}
 
@@ -348,11 +351,25 @@ struct StartWorkoutView: View {
     @State private var isShowingWorkoutImporter = false
     @State private var importResult: SavedWorkoutImportResult?
     @State private var persistenceError: String?
+    @State private var showingRepeatBlocked = false
+    @State private var selectedRecentWorkout: Workout?
+    @State private var deletedWorkoutCount = 0
 
     static var fetchRequest: NSFetchRequest<WorkoutPlan> {
         let request: NSFetchRequest<WorkoutPlan> = WorkoutPlan.fetchRequest()
         request.sortDescriptors = [NSSortDescriptor(keyPath: \WorkoutPlan.title, ascending: true)]
         return request
+    }
+
+    private static var historyFetchRequest: NSFetchRequest<Workout> {
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        request.predicate = NSPredicate(format: "isCurrentWorkout != %@", NSNumber(value: true))
+        request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
+        return request
+    }
+
+    private var recentWorkouts: [Workout] {
+        Array(workoutHistory.lazy.filter { $0.hasCompletedSets ?? false }.prefix(5))
     }
 
     /// `WorkoutPlan` is retained as a persistence container for backwards
@@ -368,20 +385,27 @@ struct StartWorkoutView: View {
     var body: some View {
         NavigationStack {
             List {
-                if currentWorkouts.isEmpty {
-                    Section {
-                        quickStartCard
-                    }
-                    .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+                Section {
+                    quickStartCard
+                        .ironStaggeredEntrance(index: 0)
                 }
+                .listRowInsets(EdgeInsets(top: 16, leading: 16, bottom: 16, trailing: 16))
+
+                recentWorkoutsSection
 
                 Section {
                     if plans.isEmpty {
-                        Button(action: newPlan) {
-                            Label("Create Your First Workout", systemImage: "plus")
+                        ContentUnavailableView {
+                            Label("No saved workouts", systemImage: "dumbbell.fill")
+                        } description: {
+                            Text("Save a workout for push/pull/legs, upper/lower, or any split you train.")
+                        } actions: {
+                            Button("New Workout", systemImage: "plus", action: newPlan)
+                                .buttonStyle(.bordered)
+                                .frame(minHeight: IronTheme.controlHeight)
                         }
                     } else {
-                        ForEach(plans, id: \.id) { plan in
+                        ForEach(Array(plans.enumerated()), id: \.element.objectID) { index, plan in
                             SavedWorkoutRow(
                                 workout: plan,
                                 onEdit: {
@@ -397,15 +421,12 @@ struct StartWorkoutView: View {
                                 onWorkoutStarted: onOpenCurrentWorkout,
                                 onFailure: { persistenceError = $0.localizedDescription }
                             )
+                            .ironStaggeredEntrance(index: index + recentWorkouts.count + 1)
                             .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96)))
                         }
                     }
                 } header: {
                     Text("Saved Workouts")
-                } footer: {
-                    if plans.isEmpty {
-                        Text("Save a workout for push/pull/legs, upper/lower, or any split you train.")
-                    }
                 }
 
                 if !plans.isEmpty {
@@ -421,6 +442,9 @@ struct StartWorkoutView: View {
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("Workout")
             .navigationBarTitleDisplayMode(.large)
+            .navigationDestination(item: $selectedRecentWorkout) { workout in
+                WorkoutDetailView(workout: workout)
+            }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
@@ -444,12 +468,13 @@ struct StartWorkoutView: View {
                 .presentationDragIndicator(.visible)
             }
         }
-        .alert(
+        .confirmationDialog(
             planToDelete.map { "Delete \($0.displayTitle)?" } ?? "Delete workout?",
             isPresented: Binding(
                 get: { planToDelete != nil },
                 set: { if !$0 { planToDelete = nil } }
-            )
+            ),
+            titleVisibility: .visible
         ) {
             Button("Delete Workout", role: .destructive) {
                 guard let plan = planToDelete else { return }
@@ -463,6 +488,12 @@ struct StartWorkoutView: View {
             Text("This removes the exercises, targets, and notes saved in this workout. Your completed workout history is not affected.")
         }
         .ironActivitySheet(activityItems: $activityItems)
+        .sheet(isPresented: $showingRepeatBlocked) {
+            WorkoutRepeatBlockedSheet()
+        }
+        .sensoryFeedback(.error, trigger: showingRepeatBlocked) { _, blocked in blocked }
+        .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil }
+        .sensoryFeedback(.impact(weight: .medium), trigger: deletedWorkoutCount)
         .fileImporter(
             isPresented: $isShowingWorkoutImporter,
             allowedContentTypes: [.json],
@@ -489,29 +520,94 @@ struct StartWorkoutView: View {
     /// The empty-workout path deserves more than a list row: it is the entry
     /// point for anyone not training a saved routine today.
     private var quickStartCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Text("Quick Start")
-                    .font(.title2.weight(.bold))
-                Spacer()
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        return VStack(alignment: .leading, spacing: 14) {
+            layout {
                 Image(systemName: "dumbbell.fill")
-                    .font(.title3)
-                    .foregroundStyle(.tint)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.accent)
+                    .frame(width: 44, height: 44)
+                    .background(IronTheme.accentSoft, in: Circle())
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(currentWorkouts.first?.displayTitle(in: exerciseStore.exercises) ?? "Empty Workout")
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
+                    if let workout = currentWorkouts.first {
+                        TimelineView(.periodic(from: .now, by: 1)) { timeline in
+                            WorkoutPreviewMetricLine(workout: workout, now: timeline.date)
+                        }
+                    } else {
+                        Text("Add exercises as you go")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text("Start an empty log and add exercises as you train.")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button(action: startEmptyWorkout) {
-                Label("Start Empty Workout", systemImage: "play.fill")
+            Button {
+                if currentWorkouts.isEmpty { startEmptyWorkout() }
+                else { onOpenCurrentWorkout() }
+            } label: {
+                Label(currentWorkouts.isEmpty ? "Start Workout" : "Resume Workout", systemImage: "play.fill")
+                    .font(.headline)
                     .frame(maxWidth: .infinity)
             }
-            .buttonStyle(.borderedProminent)
             .controlSize(.large)
+            .buttonBorderShape(.capsule)
+            .ironProminentGlassButtonStyle()
+            .frame(minHeight: 50)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var recentWorkoutsSection: some View {
+        if !recentWorkouts.isEmpty {
+            Section {
+                ForEach(Array(recentWorkouts.enumerated()), id: \.element.objectID) { index, workout in
+                    RecentWorkoutRow(
+                        workout: workout,
+                        onRepeat: { repeatWorkout(workout, blank: $0) },
+                        onViewDetails: { selectedRecentWorkout = workout }
+                    )
+                    .ironStaggeredEntrance(index: index + 1)
+                }
+            } header: {
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        Text("Recent Workouts")
+                        Spacer()
+                        seeAllButton
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Recent Workouts")
+                        seeAllButton
+                    }
+                }
+                .textCase(nil)
+            }
+        }
+    }
+
+    private var seeAllButton: some View {
+        Button("See All") { sceneState.selectedTab = .history }
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(IronTheme.accent)
+            .frame(minHeight: IronTheme.controlHeight)
+            .accessibilityLabel("See all workout history")
+    }
+
+    private func repeatWorkout(_ workout: Workout, blank: Bool) {
+        do {
+            let didStart = try WorkoutRepeater.start(from: workout, blank: blank, sceneState: sceneState)
+            showingRepeatBlocked = !didStart
+        } catch {
+            persistenceError = "The workout was not started. \(error.localizedDescription)"
+        }
     }
 
     private func startEmptyWorkout() {
@@ -544,6 +640,7 @@ struct StartWorkoutView: View {
             try managedObjectContext.persistMutation(save: { try managedObjectContext.save() }) {
                 managedObjectContext.delete(plan)
             }
+            deletedWorkoutCount += 1
         } catch {
             persistenceError = "The saved workout was not deleted. \(error.localizedDescription)"
         }
@@ -1178,6 +1275,7 @@ private struct WorkoutPlanDetailView: View {
 
 private struct SavedWorkoutRow: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var exerciseStore: ExerciseStore
 
     @ObservedObject var workout: WorkoutRoutine
@@ -1194,14 +1292,25 @@ private struct SavedWorkoutRow: View {
         workout.workoutRoutineExercises?.array as? [WorkoutRoutineExercise] ?? []
     }
 
-    private var workoutSummary: String {
-        guard !workoutExercises.isEmpty else { return "No exercises" }
+    private var lastPerformed: String {
+        let lastDate = (workout.workouts?.compactMap { $0 as? Workout } ?? [])
+            .filter { !$0.isCurrentWorkout && ($0.hasCompletedSets ?? false) }
+            .compactMap(\.start).max()
+        guard let lastDate else { return "Never done" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        return "Last done \(formatter.localizedString(for: lastDate, relativeTo: Date()))"
+    }
 
-        let names = workoutExercises
-            .compactMap { $0.exercise(in: exerciseStore.exercises)?.title }
-        let preview = names.prefix(2).joined(separator: " · ")
-        let count = "\(workoutExercises.count) exercise\(workoutExercises.count == 1 ? "" : "s")"
-        return preview.isEmpty ? count : "\(count) · \(preview)"
+    private var muscleGroups: [String] {
+        var groups: [String] = []
+        for exercise in workoutExercises {
+            guard let group = exercise.exercise(in: exerciseStore.exercises)?.muscleGroup,
+                  !group.isEmpty, group.lowercased() != "other" else { continue }
+            let title = Exercise.displayName(forMuscleGroup: group)
+            if !groups.contains(title) { groups.append(title) }
+        }
+        return Array(groups.prefix(3))
     }
 
     private var canStart: Bool {
@@ -1209,9 +1318,10 @@ private struct SavedWorkoutRow: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
-            startButton
-
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
+        layout {
             NavigationLink {
                 WorkoutPlanDetailView(
                     plan: workout,
@@ -1223,13 +1333,15 @@ private struct SavedWorkoutRow: View {
                 )
             } label: {
                 HStack(spacing: 8) {
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 4) {
                         Text(workout.displayTitle)
-                            .lineLimit(1)
-                        Text(workout.comment?.isEmpty == false ? workout.comment! : workoutSummary)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
+                            .font(.headline)
+                            .foregroundStyle(IronTheme.primaryText)
+                        (Text("\(workoutExercises.count)").font(.ironMetric(.subheadline, weight: .semibold))
+                         + Text(" exercise\(workoutExercises.count == 1 ? "" : "s") · \(lastPerformed)"))
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                        muscleTags
                     }
 
                     Spacer(minLength: 0)
@@ -1237,23 +1349,25 @@ private struct SavedWorkoutRow: View {
                     if isActiveWorkout {
                         Text("Active")
                             .font(.caption.weight(.semibold))
-                            .foregroundStyle(.tint)
+                            .foregroundStyle(IronTheme.accent)
                     }
                 }
+                .accessibilityElement(children: .combine)
             }
+            startButton
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
             Button("Delete", systemImage: "trash", role: .destructive, action: onDelete)
             Button("Edit", systemImage: "pencil", action: onEdit)
-                .tint(.gray)
+                .tint(IronTheme.secondaryText)
         }
         .swipeActions(edge: .leading) {
             if workoutExercises.isEmpty {
                 Button("Add Exercises", systemImage: "plus", action: onEdit)
-                    .tint(.accentColor)
+                    .tint(IronTheme.accent)
             } else {
                 Button(isActiveWorkout ? "Resume" : "Start", systemImage: "play.fill", action: start)
-                    .tint(.accentColor)
+                    .tint(IronTheme.accent)
                     .disabled(!isActiveWorkout && !canStartWorkout)
             }
         }
@@ -1274,17 +1388,41 @@ private struct SavedWorkoutRow: View {
     /// control rather than living only in the swipe and context menus.
     private var startButton: some View {
         Button(action: start) {
-            Image(systemName: isActiveWorkout ? "figure.strengthtraining.traditional" : "play.fill")
-                .font(.footnote.weight(.bold))
-                .foregroundStyle(canStart ? AnyShapeStyle(IronTheme.onAccent) : AnyShapeStyle(.tertiary))
-                .frame(width: 34, height: 34)
-                .background {
-                    Circle().fill(canStart ? AnyShapeStyle(.tint) : AnyShapeStyle(Color(.tertiarySystemFill)))
-                }
+            Text(isActiveWorkout ? "Resume" : "Start")
+                .font(.subheadline.weight(.semibold))
+                .fixedSize()
         }
-        .buttonStyle(.borderless)
+        .buttonStyle(.borderedProminent)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .frame(minHeight: 30)
+        .padding(.vertical, 8)
+        .contentShape(Rectangle())
         .disabled(!canStart)
         .accessibilityLabel(isActiveWorkout ? "Resume \(workout.displayTitle)" : "Start \(workout.displayTitle)")
+    }
+
+    private var muscleTags: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 4))
+        return ViewThatFits(in: .horizontal) {
+            layout {
+                ForEach(muscleGroups, id: \.self) { muscleTag($0) }
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                ForEach(muscleGroups, id: \.self) { muscleTag($0) }
+            }
+        }
+    }
+
+    private func muscleTag(_ title: String) -> some View {
+        Text(title)
+            .font(.caption)
+            .foregroundStyle(IronTheme.secondaryText)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(IronTheme.field, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
     }
 
     private func start() {
@@ -1298,6 +1436,155 @@ private struct SavedWorkoutRow: View {
         } catch {
             onFailure(error)
         }
+    }
+}
+
+private struct RecentWorkoutRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var exerciseStore: ExerciseStore
+    @ObservedObject var workout: Workout
+    let onRepeat: (Bool) -> Void
+    let onViewDetails: () -> Void
+
+    private var title: String { workout.displayTitle(in: exerciseStore.exercises) }
+
+    private var metadata: String {
+        let date = WorkoutPreviewFormatting.date(workout.start)
+        let muscles = workout.muscleGroups(in: exerciseStore.exercises)
+            .filter { !$0.isEmpty && $0.lowercased() != "other" }
+            .prefix(3).map { Exercise.displayName(forMuscleGroup: $0) }
+            .joined(separator: ", ")
+        return muscles.isEmpty ? date : "\(date) · \(muscles)"
+    }
+
+    var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
+        layout {
+            NavigationLink {
+                WorkoutDetailView(workout: workout)
+            } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
+                    Text(metadata)
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
+                    WorkoutPreviewMetricLine(workout: workout)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .accessibilityElement(children: .combine)
+            }
+
+            Button { onRepeat(false) } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(IronTheme.accent)
+            }
+            .buttonStyle(.bordered)
+            .buttonBorderShape(.circle)
+            .controlSize(.small)
+            .frame(width: 36, height: 36)
+            .padding(4)
+            .contentShape(Rectangle())
+            .accessibilityLabel("Repeat \(title)")
+        }
+        .contextMenu {
+            Button("Repeat", systemImage: "arrow.clockwise") { onRepeat(false) }
+            Button("Repeat with Blank Sets", systemImage: "doc") { onRepeat(true) }
+            Button("View Details", systemImage: "info.circle", action: onViewDetails)
+        }
+    }
+}
+
+private struct WorkoutPreviewMetricLine: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @ObservedObject var workout: Workout
+    var now: Date = .now
+
+    private var duration: String {
+        let seconds = Int(max(workout.isCurrentWorkout
+            ? now.timeIntervalSince(workout.start ?? now)
+            : workout.duration ?? 0, 0))
+        if seconds >= 3_600 {
+            return String(format: "%dh %02dm", seconds / 3_600, (seconds % 3_600) / 60)
+        }
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
+
+    var body: some View {
+        let value = WeightUnit.convert(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
+        let volume = WorkoutPreviewFormatting.volume(value)
+        (Text(duration).foregroundColor(IronTheme.metricTime)
+         + Text(" · ").foregroundColor(IronTheme.secondaryText)
+         + Text("\(workout.numberOfCompletedSets ?? 0)").foregroundColor(IronTheme.metricSets)
+         + Text(" sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
+         + Text(" · ").foregroundColor(IronTheme.secondaryText)
+         + Text(volume).foregroundColor(IronTheme.metricVolume)
+         + Text(" \(settingsStore.weightUnit.unit.symbol)").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .fixedSize(horizontal: false, vertical: true)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: duration)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: volume)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.numberOfCompletedSets)
+            .accessibilityElement(children: .combine)
+    }
+}
+
+enum WorkoutPreviewFormatting {
+    static func date(_ date: Date?) -> String {
+        guard let date else { return "Unknown date" }
+        let calendar = Calendar.current
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate(
+            calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+                ? "EEE, MMM d" : "MMM d, yyyy"
+        )
+        return formatter.string(from: date)
+    }
+
+    static func volume(_ value: Double) -> String {
+        if value >= 10_000 {
+            return (value / 1_000).formatted(.number.precision(.fractionLength(1))) + "k"
+        }
+        return value.formatted(.number.precision(.fractionLength(0)).grouping(.automatic))
+    }
+}
+
+/// Both history entry points and the Workout tab use the model's transactional
+/// start path, including Watch and Live Activity updates after a successful save.
+enum WorkoutRepeater {
+    @discardableResult
+    static func start(from workout: Workout, blank: Bool, sceneState: SceneState) throws -> Bool {
+        do {
+            _ = try Workout.startRepeating(workout, blank: blank)
+        } catch Workout.StartError.workoutAlreadyActive {
+            return false
+        }
+        sceneState.selectedTab = .workout
+        sceneState.isCurrentWorkoutExpanded = true
+        return true
+    }
+}
+
+struct WorkoutRepeatBlockedSheet: View {
+    var body: some View {
+        IronStatusSheet(
+            headerTitle: "Workout in progress",
+            title: "Finish your current workout first",
+            message: "Your active workout is safely stored on this iPhone. Finish or discard it before repeating another session.",
+            systemImage: "figure.strengthtraining.traditional",
+            tint: IronTheme.warning,
+            actionTitle: "Got It"
+        )
+        .presentationDetents([.height(390), .medium])
+        .presentationDragIndicator(.visible)
     }
 }
 

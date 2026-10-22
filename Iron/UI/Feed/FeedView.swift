@@ -52,8 +52,11 @@ struct FeedView : View {
     }
 
     private var workoutsThisWeek: [Workout] {
-        guard let start = Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.start else { return [] }
-        return completedWorkouts.filter { ($0.start ?? .distantPast) >= start }
+        guard let week = Calendar.current.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
+        return completedWorkouts.filter {
+            guard let date = $0.start else { return false }
+            return date >= week.start && date < week.end
+        }
     }
 
     private var completedSetsThisWeek: Int {
@@ -109,34 +112,10 @@ struct FeedView : View {
         }
     }
 
-    /// Colour lives in the data — tinted metric glyphs and the day chart — so the
-    /// surface itself can stay a plain grouped section.
     private var weekSection: some View {
         Section {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack(alignment: .top, spacing: 12) {
-                    weekMetric(
-                        value: "\(workoutsThisWeek.count)",
-                        label: "Workouts",
-                        systemImage: "figure.strengthtraining.traditional",
-                        tint: IronTheme.accent,
-                        container: IronTheme.accentSoft
-                    )
-                    weekMetric(
-                        value: "\(completedSetsThisWeek)",
-                        label: "Sets",
-                        systemImage: "checklist",
-                        tint: IronTheme.metricSets,
-                        container: IronTheme.metricSetsContainer
-                    )
-                    weekMetric(
-                        value: compactWeight(volumeThisWeek),
-                        label: volumeLabel,
-                        systemImage: "scalemass.fill",
-                        tint: IronTheme.metricVolume,
-                        container: IronTheme.metricVolumeContainer
-                    )
-                }
+            VStack(alignment: .leading, spacing: 16) {
+                weekMetrics
 
                 WeeklyVolumeChart(
                     days: weekVolumeByDay,
@@ -154,57 +133,94 @@ struct FeedView : View {
                 } label: {
                     Label(
                         currentWorkouts.isEmpty ? "Start Workout" : "Resume Workout",
-                        systemImage: currentWorkouts.isEmpty ? "plus" : "play.fill"
+                        systemImage: "play.fill"
                     )
+                    .font(.headline)
                     .frame(maxWidth: .infinity)
                 }
-                .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .buttonBorderShape(.capsule)
+                .ironProminentGlassButtonStyle()
+                .frame(minHeight: 50)
             }
-            .padding(.vertical, 8)
+            .padding(16)
+            .ironLiquidGlassSurface(cornerRadius: IronTheme.heroCornerRadius)
+            .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         } header: {
             Text(greeting)
+                .font(.headline)
+                .foregroundStyle(IronTheme.secondaryText)
+                .textCase(nil)
+                .padding(.bottom, 8)
         } footer: {
-            Text(weekComparisonText)
+            if let comparison = weekComparisonText {
+                comparison
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private var weekMetrics: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 16))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
+        return layout {
+            weekMetric(
+                value: "\(workoutsThisWeek.count)", label: "Workouts",
+                systemImage: "figure.strengthtraining.traditional",
+                tint: IronTheme.accent, container: IronTheme.accentSoft, index: 0
+            )
+            weekMetric(
+                value: "\(completedSetsThisWeek)", label: "Sets",
+                systemImage: "checklist",
+                tint: IronTheme.metricSets, container: IronTheme.metricSetsContainer, index: 1
+            )
+            weekMetric(
+                value: compactWeight(volumeThisWeek), label: "Volume",
+                unit: settingsStore.weightUnit.unit.symbol, systemImage: "scalemass.fill",
+                tint: IronTheme.metricVolume, container: IronTheme.metricVolumeContainer, index: 2
+            )
         }
     }
 
     private func weekMetric(
         value: String,
         label: String,
+        unit: String? = nil,
         systemImage: String,
         tint: Color,
-        container: Color
+        container: Color,
+        index: Int
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Image(systemName: systemImage)
-                .font(.footnote.weight(.semibold))
+                .font(.body.weight(.semibold))
                 .foregroundStyle(tint)
                 .frame(width: 32, height: 32)
                 .background(Circle().fill(container))
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(value)
-                    .font(.ironMetric(.title2))
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .contentTransition(.numericText())
+            VStack(alignment: .leading, spacing: 2) {
+                // Text can wrap the unit onto another line at large type sizes.
+                (Text(value).font(.ironMetric(.title2)).foregroundColor(tint)
+                 + Text(unit.map { " " + $0 } ?? "")
+                    .font(.footnote.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
                 Text(label)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .ironStaggeredEntrance(index: label == "Workouts" ? 0 : label == "Sets" ? 1 : 2)
+        .ironStaggeredEntrance(index: index)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(value) \(label)")
-    }
-
-    private var volumeLabel: String {
-        settingsStore.weightUnit == .metric ? "Volume (kg)" : "Volume (lb)"
+        .accessibilityLabel("\(value)\(unit.map { " " + $0 } ?? "") \(label)")
     }
 
     /// Volume per weekday for the current week, including untrained days so the
@@ -231,19 +247,18 @@ struct FeedView : View {
             .reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
     }
 
-    private var weekComparisonText: String {
-        guard volumeThisWeek > 0 else {
-            return trainingStreak == 0
-                ? "Log a workout to start your week."
-                : "Nothing logged yet this week."
-        }
-        guard volumeLastWeek > 0 else {
-            return "First week with volume to compare against."
-        }
+    private var weekComparisonText: Text? {
+        guard volumeLastWeek > 0 else { return nil }
         let change = (volumeThisWeek - volumeLastWeek) / volumeLastWeek * 100
-        guard abs(change) >= 1 else { return "Volume is level with last week." }
+        guard abs(change) > 3 else {
+            return Text("Volume is about the same as last week")
+        }
         let direction = change > 0 ? "up" : "down"
-        return "Volume is \(direction) \(String(format: "%.0f", abs(change)))% from last week."
+        return Text("Volume is \(direction) ")
+            + Text("\(Int(abs(change).rounded()))%")
+                .font(.ironMetric(.footnote, weight: .semibold))
+                .foregroundColor(change > 0 ? IronTheme.metricVolume : IronTheme.secondaryText)
+            + Text(" on last week")
     }
 
     /// Share of completed sets by muscle group over the last month, so the user
@@ -275,7 +290,7 @@ struct FeedView : View {
             if muscleFocus.isEmpty {
                 Text("Complete a few workouts to see which muscle groups you train most.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(IronTheme.secondaryText)
             } else {
                 ForEach(muscleFocus.prefix(5)) { slice in
                     MuscleFocusRow(slice: slice)
@@ -285,7 +300,10 @@ struct FeedView : View {
             Text("Muscle Focus")
         } footer: {
             if let top = muscleFocus.first {
-                Text("\(top.muscleGroup.capitalized) leads your last 4 weeks at \(Int((top.share * 100).rounded()))% of completed sets.")
+                Text("\(top.muscleGroup.capitalized) leads your last 4 weeks at ")
+                + Text("\(Int((top.share * 100).rounded()))%")
+                    .font(.ironMetric(.footnote, weight: .semibold))
+                + Text(" of completed sets.")
             } else {
                 Text("Based on completed sets over the last 4 weeks.")
             }
@@ -294,11 +312,8 @@ struct FeedView : View {
 
     private var calendarSection: some View {
         Section {
-            VStack(spacing: 12) {
-                ActivityCalendarHeaderView()
-                ActivityCalendarView()
-            }
-            .padding(.vertical, 6)
+            HomeTrainingCalendar(workouts: completedWorkouts)
+                .padding(.vertical, 6)
 
             NavigationLink("Open Training Calendar") {
                 WorkoutCalendarView()
@@ -316,26 +331,28 @@ struct FeedView : View {
                 }
             }
         } footer: {
-            Text(trainingStreak == 0
-                 ? "Train this week to start a streak."
-                 : "^[\(trainingStreak) week](inflect: true) streak.")
+            if trainingStreak == 0 {
+                Text("Train this week to start a streak.")
+            } else {
+                Text("\(trainingStreak)").font(.ironMetric(.footnote, weight: .semibold))
+                + Text(" week streak.")
+            }
         }
     }
 
     @ViewBuilder
     private var streakChip: some View {
         let streak = trainingStreak
-        if streak > 0 {
+        if streak >= 2 {
             Label {
-                Text("\(streak)").font(.ironMetric(.caption))
-                + Text("-week streak")
+                Text("\(streak)-week streak")
             } icon: {
                 Image(systemName: "flame.fill")
             }
-            .font(.caption.weight(.semibold))
+            .font(.ironMetric(.caption))
             .foregroundStyle(IronTheme.accent)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
+            .padding(.horizontal, 8)
+            .frame(minHeight: 24)
             .background(IronTheme.accentSoft, in: Capsule())
             .textCase(nil)
             .accessibilityLabel("\(streak) week training streak")
@@ -344,7 +361,7 @@ struct FeedView : View {
 
     private func compactWeight(_ kilograms: Double) -> String {
         let value = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
-        return value.formatted(.number.precision(.fractionLength(value >= 100 ? 0 : 1)).grouping(.automatic))
+        return WorkoutPreviewFormatting.volume(value)
     }
 
     /// Body lives on Home, not in Settings: measurements are training data, not
@@ -398,7 +415,7 @@ struct FeedView : View {
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 Text(String(format: "%.1f", display))
                     .font(.ironMetric(.body))
-                    .foregroundStyle(IronTheme.primaryText)
+                    .foregroundStyle(IronTheme.metricBody)
                 Text(kind.unitLabel(weightUnit: settingsStore.weightUnit))
                     .font(.caption)
                     .foregroundStyle(IronTheme.secondaryText)
@@ -436,8 +453,7 @@ struct FeedView : View {
         } header: {
             HStack {
                 Label("Pinned Charts", systemImage: "pin.fill")
-                    // Symbol effects already honor Reduce Motion.
-                    .symbolEffect(.bounce, options: .nonRepeating, value: pinnedChartsStore.pinnedCharts.count)
+                    .symbolEffect(.bounce, options: .nonRepeating, value: reduceMotion ? 0 : pinnedChartsStore.pinnedCharts.count)
                 Spacer()
                 Menu("Chart Options", systemImage: "ellipsis.circle") {
                     Button("Pin Chart", systemImage: "pin") { showingChartSelector = true }
@@ -456,7 +472,7 @@ struct FeedView : View {
             if recentWorkouts.isEmpty {
                 Text("Completed workouts build a private training timeline here.")
                     .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(IronTheme.secondaryText)
             } else {
                 ForEach(recentWorkouts.prefix(3)) { workout in
                     NavigationLink {
@@ -464,12 +480,15 @@ struct FeedView : View {
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(workout.displayTitle(in: exerciseStore.exercises))
-                            Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
+                                .font(.headline)
+                            Text(WorkoutPreviewFormatting.date(workout.start))
                                 .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .foregroundStyle(IronTheme.secondaryText)
                         }
                     }
-                    .badge("\(workout.numberOfCompletedSets ?? 0) sets")
+                    .badge(Text("\(workout.numberOfCompletedSets ?? 0) sets")
+                        .font(.ironMetric(.caption))
+                        .foregroundColor(IronTheme.metricSets))
                 }
 
                 Button("See All History") {
@@ -490,9 +509,7 @@ struct FeedView : View {
                 pinnedChartsSection
             }
             .listStyle(.insetGrouped)
-            .safeAreaInset(edge: .bottom) {
-                Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
-            }
+            .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $showingMeasurements) {
@@ -519,7 +536,104 @@ struct FeedView : View {
             } message: {
                 Text(persistenceError ?? "Please try again.")
             }
+            .sensoryFeedback(.error, trigger: persistenceError) { _, error in error != nil }
         }
+    }
+}
+
+/// Home owns its presentation of the rolling 28-day calendar. The standalone
+/// calendar keeps its existing implementation and navigation.
+private struct HomeTrainingCalendar: View {
+    @Environment(\.calendar) private var calendar
+    @ScaledMetric(relativeTo: .subheadline) private var dayDiameter: CGFloat = 34
+    let workouts: [Workout]
+
+    private var cellSize: CGFloat { max(IronTheme.controlHeight, dayDiameter + 10) }
+
+    private var days: [Date?] {
+        let today = calendar.startOfDay(for: Date())
+        guard let firstDay = calendar.date(byAdding: .day, value: -27, to: today),
+              let firstWeek = calendar.dateInterval(of: .weekOfYear, for: firstDay),
+              let lastWeek = calendar.dateInterval(of: .weekOfYear, for: today) else { return [] }
+        let count = calendar.dateComponents([.day], from: firstWeek.start, to: lastWeek.end).day ?? 0
+        return (0..<count).map { offset in
+            guard let day = calendar.date(byAdding: .day, value: offset, to: firstWeek.start),
+                  day >= firstDay, day <= today else { return nil }
+            return day
+        }
+    }
+
+    private func workouts(on day: Date) -> [Workout] {
+        workouts.filter { workout in
+            workout.start.map { calendar.isDate($0, inSameDayAs: day) } ?? false
+        }
+    }
+
+    var body: some View {
+        let days = days
+        ScrollView(.horizontal) {
+            Grid(horizontalSpacing: 0, verticalSpacing: 4) {
+                GridRow {
+                    ForEach(0..<7, id: \.self) { index in
+                        Text(calendar.veryShortStandaloneWeekdaySymbols[(calendar.firstWeekday - 1 + index) % 7])
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .frame(width: cellSize)
+                            .accessibilityHidden(true)
+                    }
+                }
+                ForEach(0..<(days.count / 7), id: \.self) { week in
+                    GridRow {
+                        ForEach(0..<7, id: \.self) { weekday in
+                            if let day = days[week * 7 + weekday] {
+                                dayCell(day)
+                            } else {
+                                Color.clear.frame(width: cellSize, height: cellSize)
+                                    .accessibilityHidden(true)
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(.vertical, 2)
+        }
+        .scrollIndicators(.hidden)
+        .preference(key: WorkoutsLast28DaysKey.self, value: days.compactMap { $0 }.reduce(0) { $0 + workouts(on: $1).count })
+    }
+
+    @ViewBuilder
+    private func dayCell(_ day: Date) -> some View {
+        let sessions = workouts(on: day)
+        let date = day.formatted(date: .complete, time: .omitted)
+        if let workout = sessions.first {
+            NavigationLink {
+                WorkoutDetailView(workout: workout)
+            } label: {
+                dayCircle(day, trained: true)
+                    .frame(width: cellSize, height: cellSize)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(date), \(sessions.count) workout\(sessions.count == 1 ? "" : "s")")
+        } else {
+            dayCircle(day, trained: false)
+                .frame(width: cellSize, height: cellSize)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(date), rest day")
+        }
+    }
+
+    private func dayCircle(_ day: Date, trained: Bool) -> some View {
+        Text("\(calendar.component(.day, from: day))")
+            .font(.ironMetric(.subheadline))
+            .foregroundStyle(trained ? IronTheme.onAccent : IronTheme.secondaryText)
+            .frame(width: dayDiameter, height: dayDiameter)
+            .background(trained ? IronTheme.accent : IronTheme.tertiaryFill, in: Circle())
+            .overlay {
+                if !trained && calendar.isDateInToday(day) {
+                    Circle().strokeBorder(IronTheme.accent, lineWidth: 1.5)
+                }
+            }
     }
 }
 
@@ -539,13 +653,15 @@ struct DayVolume: Identifiable {
 private struct WeeklyVolumeChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var hasAppeared = false
+    @State private var selectedDayID: Date?
 
     let days: [DayVolume]
     let unit: String
     let valueLabel: (Double) -> String
 
     private var maxVolume: Double {
-        max(days.map(\.volume).max() ?? 0, 1)
+        let maximum = days.map(\.volume).max() ?? 0
+        return maximum > 0 ? maximum : 1
     }
 
     var body: some View {
@@ -555,7 +671,7 @@ private struct WeeklyVolumeChart: View {
                     x: .value("Day", day.date, unit: .day),
                     yStart: .value("Baseline", 0),
                     yEnd: .value("Track", maxVolume),
-                    width: .fixed(18)
+                    width: .fixed(22)
                 )
                 .clipShape(Capsule())
                 .foregroundStyle(IronTheme.tertiaryFill)
@@ -565,7 +681,7 @@ private struct WeeklyVolumeChart: View {
                     x: .value("Day", day.date, unit: .day),
                     yStart: .value("Baseline", 0),
                     yEnd: .value("Volume", hasAppeared || reduceMotion ? day.volume : 0),
-                    width: .fixed(18)
+                    width: .fixed(22)
                 )
                 .clipShape(Capsule())
                 .foregroundStyle(IronTheme.accent)
@@ -586,21 +702,47 @@ private struct WeeklyVolumeChart: View {
                     }
                 }
             }
-            .frame(height: 96)
+            .chartPlotStyle { plot in plot.frame(height: 80) }
+            .frame(height: 104)
             .opacity(!reduceMotion || hasAppeared ? 1 : 0)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: days.map(\.volume))
             .onAppear { hasAppeared = true }
+            .accessibilityElement(children: .ignore)
             .accessibilityLabel("Volume by day this week")
+            .accessibilityValue(accessibilitySummary)
+            .accessibilityAdjustableAction(adjustDay)
+            .sensoryFeedback(.selection, trigger: selectedDayID)
 
             if let best = days.max(by: { $0.volume < $1.volume }), best.volume > 0 {
                 (Text("Best day \(best.date.formatted(.dateTime.weekday(.wide))) at ")
                  + Text(valueLabel(best.volume))
-                    .font(.ironMetric(.caption))
+                    .font(.ironMetric(.footnote))
                     .foregroundColor(IronTheme.metricVolume)
-                 + Text(" \(unit)."))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                 + Text(" \(unit)").font(.caption).foregroundColor(IronTheme.secondaryText))
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: best.volume)
             }
+        }
+    }
+
+    private var accessibilitySummary: String {
+        let selectedDays = selectedDayID.map { id in days.filter { $0.id == id } } ?? days
+        return selectedDays.map {
+            "\($0.date.formatted(.dateTime.weekday(.wide))), \(valueLabel($0.volume)) \(unit)"
+        }.joined(separator: "; ")
+    }
+
+    private func adjustDay(_ direction: AccessibilityAdjustmentDirection) {
+        guard !days.isEmpty else { return }
+        let current = selectedDayID.flatMap { id in days.firstIndex { $0.id == id } }
+        switch direction {
+        case .increment: selectedDayID = days[min((current ?? -1) + 1, days.count - 1)].id
+        case .decrement: selectedDayID = days[max((current ?? days.count) - 1, 0)].id
+        @unknown default: break
         }
     }
 }
@@ -613,32 +755,25 @@ struct MuscleFocusSlice: Identifiable {
 }
 
 private struct MuscleFocusRow: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let slice: MuscleFocusSlice
 
-    private var color: Color {
-        Exercise.colorFor(muscleGroup: slice.muscleGroup)
-    }
-
     var body: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+            : AnyLayout(HStackLayout(spacing: 8))
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
+            layout {
                 Text(slice.muscleGroup.capitalized)
-                Spacer()
-                Text("\(slice.sets) sets")
-                    .font(.subheadline.monospacedDigit())
-                    .foregroundStyle(.secondary)
+                if !dynamicTypeSize.isAccessibilitySize { Spacer() }
+                (Text("\(slice.sets)").font(.ironMetric(.subheadline, weight: .semibold))
+                    .foregroundColor(IronTheme.metricSets)
+                 + Text(" sets").font(.caption).foregroundColor(IronTheme.secondaryText))
             }
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color(.quaternarySystemFill))
-                    Capsule()
-                        .fill(color.gradient)
-                        .frame(width: max(proxy.size.width * slice.share, 6))
-                }
-            }
-            .frame(height: 6)
+            ProgressView(value: slice.share)
+                .tint(IronTheme.metricSets)
+                .accessibilityHidden(true)
         }
         .padding(.vertical, 2)
         .accessibilityElement(children: .combine)
@@ -1723,7 +1858,8 @@ struct PinnedExerciseChartRow: View {
 
     private var metricColor: Color {
         switch measurementType {
-        case .oneRM, .totalWeight: return IronTheme.metricVolume
+        case .oneRM: return IronTheme.accent
+        case .totalWeight: return IronTheme.metricVolume
         case .totalSets, .totalRepetitions: return IronTheme.metricSets
         }
     }

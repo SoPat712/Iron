@@ -190,17 +190,9 @@ struct WorkoutDetailView: View {
                 : "This removes the workout, every logged set, and Iron's matching Apple Health workout.")
         }
         .sheet(isPresented: $showingRepeatBlocked) {
-            IronStatusSheet(
-                headerTitle: "Workout in progress",
-                title: "Finish your current workout first",
-                message: "Your active workout is safely stored on this iPhone. Finish or discard it before repeating another session.",
-                systemImage: "figure.strengthtraining.traditional",
-                tint: IronTheme.warning,
-                actionTitle: "Got It"
-            )
-            .presentationDetents([.height(390), .medium])
-            .presentationDragIndicator(.visible)
+            WorkoutRepeatBlockedSheet()
         }
+        .sensoryFeedback(.error, trigger: showingRepeatBlocked) { _, blocked in blocked }
         .sheet(isPresented: $showingShareUnavailable) {
             IronStatusSheet(
                 headerTitle: "Share workout",
@@ -595,21 +587,7 @@ struct WorkoutDetailView: View {
 
     private func repeatWorkout(blank: Bool) {
         do {
-            let didStart: Bool
-            if blank {
-                didStart = try Self.repeatWorkoutBlank(
-                    workout: workout,
-                    settingsStore: settingsStore,
-                    sceneState: sceneState
-                )
-            } else {
-                didStart = try Self.repeatWorkout(
-                    workout: workout,
-                    settingsStore: settingsStore,
-                    sceneState: sceneState
-                )
-            }
-
+            let didStart = try WorkoutRepeater.start(from: workout, blank: blank, sceneState: sceneState)
             if !didStart { showingRepeatBlocked = true }
         } catch {
             persistenceError = "The workout was not started. \(error.localizedDescription)"
@@ -743,28 +721,15 @@ private struct CompletedWorkoutDetailsEditor: View {
 
 // MARK: Actions
 extension WorkoutDetailView {
+    // Keep HistoryView's existing entry points without duplicating the start path.
     @discardableResult
     static func repeatWorkout(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) throws -> Bool {
-        do {
-            _ = try Workout.startRepeating(workout, blank: false)
-        } catch Workout.StartError.workoutAlreadyActive {
-            return false
-        }
-        sceneState.selectedTab = .workout
-        sceneState.isCurrentWorkoutExpanded = true
-        return true
+        try WorkoutRepeater.start(from: workout, blank: false, sceneState: sceneState)
     }
 
     @discardableResult
     static func repeatWorkoutBlank(workout: Workout, settingsStore: SettingsStore, sceneState: SceneState) throws -> Bool {
-        do {
-            _ = try Workout.startRepeating(workout, blank: true)
-        } catch Workout.StartError.workoutAlreadyActive {
-            return false
-        }
-        sceneState.selectedTab = .workout
-        sceneState.isCurrentWorkoutExpanded = true
-        return true
+        try WorkoutRepeater.start(from: workout, blank: true, sceneState: sceneState)
     }
 }
 
