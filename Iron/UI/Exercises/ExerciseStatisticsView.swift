@@ -101,6 +101,9 @@ struct ExerciseStatisticsView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
+        }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedTimeFrame)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completedSets)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completedWorkoutExercises.count)
@@ -133,7 +136,9 @@ struct ExerciseStatisticsView: View {
                         progress.metricText(value, for: metric, style: style, unitStyle: unitStyle)
                     },
                     color: metric.color,
-                    dateLabel: { ExerciseProgressData.detailDateFormatter.string(from: $0) }
+                    dateLabel: { ExerciseProgressData.detailDateFormatter.string(from: $0) },
+                    usesBars: metric == .totalWeight,
+                    usesDayLabels: selectedTimeFrame == .month
                 )
                 .frame(height: 170)
                 .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 16))
@@ -181,20 +186,29 @@ struct ExerciseStatisticsView: View {
 
 }
 
-/// A single native List card, with at most four metric/history segments.
+/// Inline progress owns presentation choices; session math is shared with Show All.
 struct ExerciseInlineProgressView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @FetchRequest private var history: FetchedResults<WorkoutExercise>
+    @AppStorage("exerciseDetail.metric") private var storedSelection = Selection.oneRM.rawValue
+    @AppStorage("exerciseDetail.range") private var storedRange = "3M"
+    @State private var selectedPoint: ExerciseProgressPoint?
 
     let exercise: Exercise
-    @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
-    @State private var selection: Selection = .metric(.oneRM)
-    @State private var alternateMetric: ExerciseProgressMetric?
 
-    private enum Selection: Hashable {
-        case metric(ExerciseProgressMetric)
-        case history
+    private enum Selection: String, CaseIterable {
+        case oneRM = "1RM", weight = "Weight", volume = "Volume", history = "History"
+
+        var metric: ExerciseProgressMetric? {
+            switch self {
+            case .oneRM: return .oneRM
+            case .weight: return .topWeight
+            case .volume: return .totalWeight
+            case .history: return nil
+            }
+        }
     }
 
     init(exercise: Exercise) {
@@ -202,109 +216,63 @@ struct ExerciseInlineProgressView: View {
         _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
     }
 
+    private var selection: Selection { Selection(rawValue: storedSelection) ?? .oneRM }
+    private var selectedTimeFrame: WorkoutExerciseChartData.TimeFrame {
+        WorkoutExerciseChartData.TimeFrame.progressCases.first { $0.compactTitle == storedRange } ?? .threeMonths
+    }
     private var progress: ExerciseProgressData {
         ExerciseProgressData(exercise: exercise, workoutExercises: Array(history), settingsStore: settingsStore)
     }
-
-    private var metrics: [ExerciseProgressMetric] { progress.progressMetrics }
-
-    private var visibleMetrics: [ExerciseProgressMetric] {
-        guard metrics.count > 3 else { return metrics }
-        let third = alternateMetric.flatMap { metrics.dropFirst(2).contains($0) ? $0 : nil } ?? metrics[2]
-        return Array(metrics.prefix(2)) + [third]
-    }
-
-    private var activeSelection: Selection {
-        if case .metric(let metric) = selection, !metrics.contains(metric), let first = metrics.first {
-            return .metric(first)
-        }
-        return selection
-    }
-
     private var completedHistory: [WorkoutExercise] {
         history.filter { ($0.numberOfCompletedSets ?? 0) > 0 }
     }
 
-    private var rangedHistory: [WorkoutExercise] {
-        let start = selectedTimeFrame.from
-        return completedHistory.filter { session in
-            start.map { (session.workout?.start ?? .distantPast) >= $0 } ?? true
-        }
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            Picker("Progress view", selection: Binding(get: { activeSelection }, set: { selection = $0 })) {
-                ForEach(visibleMetrics, id: \.self) { metric in
-                    Text(metric.compactTitle).tag(Selection.metric(metric))
-                }
-                Text("History").tag(Selection.history)
-            }
-            .pickerStyle(.segmented)
-
-            Picker("Time range", selection: $selectedTimeFrame) {
-                ForEach(WorkoutExerciseChartData.TimeFrame.progressCases, id: \.self) { range in
-                    Text(range.compactTitle).tag(range)
-                }
-            }
-            .pickerStyle(.segmented)
-
-            if metrics.count > 3 {
-                Menu {
-                    ForEach(metrics.dropFirst(2), id: \.self) { metric in
-                        Button {
-                            alternateMetric = metric
-                            selection = .metric(metric)
-                        } label: {
-                            Label(metric.title, systemImage: metric.icon)
-                        }
-                    }
-                } label: {
-                    Label("More metrics", systemImage: "slider.horizontal.3")
-                        .font(.caption.weight(.medium))
-                }
-                .buttonStyle(.borderless)
-                .accessibilityHint("Changes the third progress segment")
-            }
-
+        VStack(alignment: .leading, spacing: 12) {
             if completedHistory.isEmpty {
-                placeholder("No sessions yet — your progress will chart here")
-            } else if rangedHistory.isEmpty {
-                placeholder("No sessions in this range")
-                Button("Show all history") { selectedTimeFrame = .all }
-                    .font(.subheadline.weight(.medium))
-            } else {
-                switch activeSelection {
-                case .history:
-                    recentHistory
-                        .transition(.opacity)
-                case .metric(let metric):
-                    metricContent(metric)
-                        .transition(.opacity)
+                VStack(spacing: 12) {
+                    Image(systemName: "chart.xyaxis.line")
+                        .font(.system(size: 28))
+                        .foregroundStyle(IronTheme.secondaryText)
+                    Text("No sessions yet").font(.headline).foregroundStyle(IronTheme.primaryText)
+                    Text("Log this exercise in a workout and your progress will chart here.")
+                        .font(.subheadline)
+                        .foregroundStyle(IronTheme.secondaryText)
                 }
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(24)
+            } else {
+                Picker("Progress view", selection: Binding(
+                    get: { selection }, set: { storedSelection = $0.rawValue }
+                )) {
+                    ForEach(Selection.allCases, id: \.self) { segment in
+                        Text(segment.rawValue).tag(segment)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(minHeight: IronTheme.controlHeight)
+
+                Group {
+                    if let metric = selection.metric {
+                        metricContent(metric)
+                    } else {
+                        recentHistory
+                    }
+                }
+                .id(selection)
+                .transition(.opacity)
             }
         }
-        .padding(.vertical, 4)
+        .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedTimeFrame)
-        .onChange(of: metrics, initial: true) { _, metrics in
-            if case .metric(let metric) = selection, !metrics.contains(metric), let first = metrics.first {
-                selection = .metric(first)
-            }
-        }
-    }
-
-    private func placeholder(_ message: String) -> some View {
-        VStack(spacing: 12) {
-            Image(systemName: "chart.xyaxis.line")
-                .font(.title2)
-                .foregroundStyle(IronTheme.accent)
-            Text(message)
-                .font(.subheadline)
-                .foregroundStyle(IronTheme.secondaryText)
-                .multilineTextAlignment(.center)
-        }
-        .frame(maxWidth: .infinity, minHeight: 160)
+        .sensoryFeedback(.selection, trigger: selection)
+        .sensoryFeedback(.selection, trigger: selectedTimeFrame)
+        .onChange(of: selection) { _, _ in selectedPoint = nil }
+        .onChange(of: selectedTimeFrame) { _, _ in selectedPoint = nil }
     }
 
     @ViewBuilder
@@ -312,89 +280,175 @@ struct ExerciseInlineProgressView: View {
         let data = progress
         let start = selectedTimeFrame.from
         let points = data.progressPoints(for: metric).filter { point in start.map { point.date >= $0 } ?? true }
-        if let latest = points.last {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Latest · \(metric.title)")
-                    .font(.caption)
-                    .foregroundStyle(IronTheme.secondaryText)
-                data.metricText(latest.value, for: metric, style: .largeTitle, unitStyle: .title3)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .accessibilityLabel("Latest \(metric.title): \(data.formatted(latest.value, for: metric))")
-                if let first = points.first, points.count > 1 {
-                    let delta = latest.value - first.value
-                    Text("\(delta > 0 ? "+" : "")\(data.formatted(delta, for: metric)) since range start")
-                        .font(.caption)
+        VStack(alignment: .leading, spacing: 12) {
+            if let latest = points.last {
+                let displayed = selectedPoint.flatMap { selected in points.first { $0.id == selected.id } } ?? latest
+                headline(displayed: displayed, first: points.first ?? latest, latest: latest, metric: metric)
+                ExerciseProgressChart(
+                    points: points,
+                    domainStart: selectedTimeFrame.domainStart(earliestDate: points.first?.date),
+                    domainEnd: Date(),
+                    valueLabel: { data.formatted($0, for: metric) },
+                    valueText: { data.metricText($0, for: metric, style: $1, unitStyle: $2) },
+                    color: metric.color,
+                    dateLabel: { ExerciseSessionDate.string(from: $0) },
+                    usesBars: metric == .totalWeight,
+                    usesDayLabels: selectedTimeFrame == .month,
+                    showsCallout: false,
+                    onSelection: { selectedPoint = $0 }
+                )
+                .frame(height: 154) // 140 pt plot + 14 pt x-axis band.
+            } else {
+                VStack(spacing: 8) {
+                    Text("No data in this range")
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
+                    Text(metric.emptyMessage)
+                        .font(.subheadline)
                         .foregroundStyle(IronTheme.secondaryText)
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                } else {
-                    Text("First session in this range")
-                        .font(.caption)
-                        .foregroundStyle(IronTheme.secondaryText)
+                        .multilineTextAlignment(.center)
+                    Button("Show All History") { storedRange = "All" }
+                        .font(.subheadline.weight(.semibold))
+                        .frame(minHeight: IronTheme.controlHeight)
                 }
+                .frame(maxWidth: .infinity, minHeight: 154)
             }
-            ExerciseProgressChart(
-                points: points,
-                domainStart: selectedTimeFrame.domainStart(earliestDate: points.first?.date),
-                domainEnd: Date(),
-                valueLabel: { data.formatted($0, for: metric) },
-                valueText: { data.metricText($0, for: metric, style: $1, unitStyle: $2) },
-                color: metric.color,
-                dateLabel: { ExerciseProgressData.detailDateFormatter.string(from: $0) }
-            )
-            .frame(height: 200)
-            HStack(alignment: .top, spacing: 8) {
-                Text(metric.caption)
-                    .foregroundStyle(IronTheme.secondaryText)
+            rangePills
+        }
+    }
+
+    private func headline(
+        displayed: ExerciseProgressPoint, first: ExerciseProgressPoint,
+        latest: ExerciseProgressPoint, metric: ExerciseProgressMetric
+    ) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .bottom, spacing: 12) {
+                headlineValue(displayed, metric: metric)
+                    .fixedSize(horizontal: true, vertical: false)
                 Spacer(minLength: 0)
-                if points.contains(where: \.isRecord) {
-                    Label("PR", systemImage: "circle.fill")
-                        .foregroundStyle(IronTheme.metricRecord)
-                        .accessibilityLabel("Personal record for this metric")
+                if selectedPoint == nil {
+                    delta(value: latest.value - first.value, metric: metric)
+                        .fixedSize(horizontal: true, vertical: false)
                 }
             }
-            .font(.caption2)
-        } else {
-            placeholder(metric.emptyMessage)
+            VStack(alignment: .leading, spacing: 8) {
+                headlineValue(displayed, metric: metric)
+                if selectedPoint == nil {
+                    delta(value: latest.value - first.value, metric: metric)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: displayed.value)
+    }
+
+    private func headlineValue(_ point: ExerciseProgressPoint, metric: ExerciseProgressMetric) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(selectedPoint == nil ? metric.inlineTitle : ExerciseSessionDate.string(from: point.date, relative: false))
+                .font(.footnote)
+                .foregroundStyle(IronTheme.secondaryText)
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(progress.valueParts(point.value, for: metric).number)
+                    .font(.ironMetric(.largeTitle))
+                    .foregroundStyle(metric.color)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                Text(settingsStore.weightUnit.unit.symbol)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize()
+            }
+            .accessibilityElement(children: .combine)
+        }
+    }
+
+    private func delta(value: Double, metric: ExerciseProgressMetric) -> some View {
+        VStack(alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Image(systemName: value < 0 ? "arrow.down" : value > 0 ? "arrow.up" : "arrow.right")
+                    .font(.system(size: 11, weight: .bold))
+                Text(progress.valueParts(abs(value), for: metric).number)
+                    .font(.ironMetric(.subheadline, weight: .bold))
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                Text(settingsStore.weightUnit.unit.symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+            .foregroundStyle(value > 0 ? IronTheme.metricVolume : IronTheme.secondaryText)
+            Text(rangeCaption).font(.caption).foregroundStyle(IronTheme.secondaryText)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(value > 0 ? "Up" : value < 0 ? "Down" : "Unchanged") \(progress.formatted(abs(value), for: metric)), \(rangeCaption)")
+    }
+
+    private var rangeCaption: String {
+        switch selectedTimeFrame {
+        case .week: return "in 1 week"
+        case .month: return "in 1 month"
+        case .threeMonths: return "in 3 months"
+        case .sixMonths: return "in 6 months"
+        case .year: return "in a year"
+        case .all: return "all time"
+        }
+    }
+
+    private var rangePills: some View {
+        HStack(spacing: 4) {
+            ForEach(WorkoutExerciseChartData.TimeFrame.progressCases, id: \.self) { range in
+                let selected = selectedTimeFrame == range
+                Button { storedRange = range.compactTitle } label: {
+                    Text(range.compactTitle)
+                        .font(.ironMetric(.footnote, weight: selected ? .bold : .semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .foregroundStyle(selected ? IronTheme.accent : IronTheme.secondaryText)
+                        .frame(maxWidth: .infinity)
+                        .frame(minHeight: 30)
+                        .background(selected ? IronTheme.accentSoft : Color.clear, in: Capsule())
+                        .frame(minHeight: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(range.title)
+                .accessibilityAddTraits(selected ? .isSelected : [])
+            }
         }
     }
 
     private var recentHistory: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            ForEach(Array(rangedHistory.prefix(5))) { session in
-                VStack(alignment: .leading, spacing: 10) {
-                    if let workout = session.workout {
-                        NavigationLink {
-                            WorkoutDetailView(workout: workout)
-                        } label: {
-                            HStack {
-                                Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
-                                Spacer()
-                                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
-                            }
-                            .font(.subheadline.weight(.semibold))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if let comment = session.comment, !comment.isEmpty {
-                        Text(comment).font(.caption).foregroundStyle(IronTheme.secondaryText)
-                    }
-                    let sets = session.workoutSets?.array as? [WorkoutSet] ?? []
-                    ForEach(Array(sets.enumerated()).filter { $0.element.isCompleted }, id: \.element.id) { index, set in
-                        ExerciseHistorySetRow(set: set, index: index)
-                    }
+        let points = progress.progressPoints(for: .oneRM)
+        let sessions = Array(completedHistory.prefix(5))
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("Recent sessions")
+                Spacer(minLength: 8)
+                Text("Best e1RM")
+            }
+            .font(.footnote)
+            .foregroundStyle(IronTheme.secondaryText)
+            ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
+                let point = points.first { $0.id == ExerciseProgressData.identifier(for: session) }
+                ExerciseHistorySessionRow(session: session, bestOneRM: point?.value, isRecord: point?.isRecord ?? false)
+                if index < sessions.count - 1 {
+                    Rectangle().fill(IronTheme.outline).frame(height: 0.5).accessibilityHidden(true)
                 }
-                Divider()
             }
             NavigationLink {
                 ExerciseHistoryView(exercise: exercise)
                     .navigationTitle("History")
                     .navigationBarTitleDisplayMode(.inline)
             } label: {
-                Label("Show all", systemImage: "clock.arrow.circlepath")
-                    .font(.subheadline.weight(.medium))
+                HStack(spacing: 6) {
+                    Text("Show all \(completedHistory.count) sessions")
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                    Image(systemName: "chevron.right").font(.caption.weight(.semibold))
+                }
+                .foregroundStyle(IronTheme.accent)
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                .background(IronTheme.tertiaryFill, in: Capsule())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(IronTheme.accent)
         }
     }
 }
@@ -449,7 +503,7 @@ struct ExerciseProgressData {
             return metrics
         }
 
-        return [.oneRM, .totalWeight, .totalRepetitions, .totalSets]
+        return [.oneRM, .topWeight, .totalWeight, .totalRepetitions, .totalSets]
     }
 
     func progressPoints(
@@ -460,8 +514,7 @@ struct ExerciseProgressData {
                   let value = value(for: metric, in: workoutExercise),
                   value > 0,
                   value.isFinite else { return nil }
-            let identifier = workoutExercise.uuid?.uuidString
-                ?? workoutExercise.objectID.uriRepresentation().absoluteString
+            let identifier = Self.identifier(for: workoutExercise)
             return ExerciseProgressPoint(
                 id: identifier,
                 date: date,
@@ -542,7 +595,7 @@ struct ExerciseProgressData {
         Text(" \(unit)").font(.caption2).foregroundColor(IronTheme.secondaryText)
     }
 
-    private func valueParts(
+    func valueParts(
         _ value: Double,
         for metric: ExerciseProgressMetric
     ) -> (number: String, unit: String?) {
@@ -552,7 +605,7 @@ struct ExerciseProgressData {
         case .totalDistance, .bestDistance:
             let parts = formatDistance(value).split(separator: " ", maxSplits: 1).map(String.init)
             return (parts[0], parts.count > 1 ? parts[1] : nil)
-        case .oneRM, .totalWeight:
+        case .oneRM, .topWeight, .totalWeight:
             let number = settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
             return (number, settingsStore.weightUnit.unit.symbol)
         case .totalSets, .totalRepetitions, .bestRepetitions:
@@ -566,11 +619,15 @@ struct ExerciseProgressData {
         switch metric {
         case .oneRM:
             return sets
-                .compactMap { $0.estimatedOneRepMax(maxReps: settingsStore.maxRepetitionsOneRepMax) }
+                .compactMap { Self.epleyEstimate(for: $0, maxReps: settingsStore.maxRepetitionsOneRepMax) }
                 .max()
                 .map {
                     WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
                 }
+        case .topWeight:
+            return sets.map(\.weightValue).max().map {
+                WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
+            }
         case .totalWeight:
             return workoutExercise.totalCompletedWeight.map {
                 WeightUnit.convert(weight: $0, from: .metric, to: settingsStore.weightUnit)
@@ -590,6 +647,18 @@ struct ExerciseProgressData {
         case .bestDistance:
             return sets.compactMap(\.distanceValue).max()
         }
+    }
+
+    static func identifier(for session: WorkoutExercise) -> String {
+        session.uuid?.uuidString ?? session.objectID.uriRepresentation().absoluteString
+    }
+
+    /// B6 specifies Epley; the model's estimatedOneRepMax uses Brzycki.
+    /// Keep the display calculation local rather than changing stored PR behavior.
+    static func epleyEstimate(for set: WorkoutSet, maxReps: Int) -> Double? {
+        guard set.isCompleted, set.weightValue > 0,
+              set.repetitionsValue > 0, Int(set.repetitionsValue) <= maxReps else { return nil }
+        return set.weightValue * (1 + Double(set.repetitionsValue) / 30)
     }
 
     private func completedSets(for workoutExercise: WorkoutExercise) -> [WorkoutSet] {
@@ -655,6 +724,10 @@ struct ExerciseProgressChart: View {
     let valueText: (Double, Font.TextStyle, Font.TextStyle) -> Text
     let color: Color
     let dateLabel: (Date) -> String
+    var usesBars = false
+    var usesDayLabels = false
+    var showsCallout = true
+    var onSelection: (ExerciseProgressPoint?) -> Void = { _ in }
 
     @State private var selectedDate: Date?
     @State private var hasAppeared = false
@@ -675,10 +748,23 @@ struct ExerciseProgressChart: View {
         }
     }
 
+    private var latestRecordID: String? { points.last(where: \.isRecord)?.id }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            calloutHeader
-
+            if showsCallout {
+                if let point = selectedPoint {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(dateLabel(point.date)).font(.caption).foregroundStyle(IronTheme.secondaryText)
+                        valueText(point.value, .subheadline, .caption)
+                            .contentTransition(reduceMotion ? .opacity : .numericText())
+                    }
+                } else {
+                    Text("Drag horizontally to inspect a session.")
+                        .font(.caption2)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
             Group {
                 if reduceMotion {
                     progressChart.id(chartIdentity).transition(.opacity)
@@ -687,10 +773,12 @@ struct ExerciseProgressChart: View {
                 }
             }
             .opacity(reduceMotion && !hasAppeared ? 0 : 1)
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: chartIdentity)
         }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: chartIdentity)
         .onChange(of: chartIdentity) { _, _ in selectedDate = nil }
+        .onChange(of: selectedPoint?.id) { _, _ in onSelection(selectedPoint) }
+        .sensoryFeedback(.selection, trigger: selectedPoint?.id) { _, id in id != nil }
         .task {
             withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 hasAppeared = true
@@ -700,88 +788,158 @@ struct ExerciseProgressChart: View {
 
     private var progressChart: some View {
         Chart {
-                ForEach(points) { point in
-                    let value = hasAppeared || reduceMotion ? point.value : 0
+            ForEach(points) { point in
+                let opacity = selectedPoint == nil || selectedPoint?.id == point.id ? 1.0 : 0.45
+                let value = usesBars && !hasAppeared && !reduceMotion ? 0 : point.value
+                if usesBars {
+                    BarMark(x: .value("Date", point.date), y: .value("Value", value), width: .ratio(0.65))
+                        .cornerRadius(4)
+                        .foregroundStyle(color.opacity(opacity))
+                } else {
                     AreaMark(x: .value("Date", point.date), y: .value("Value", value))
                         .interpolationMethod(.monotone)
-                        .foregroundStyle(
-                            .linearGradient(
-                                colors: [color.opacity(0.28), color.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            )
-                        )
-
+                        .foregroundStyle(color.opacity(selectedPoint == nil ? 0.15 : 0.15 * 0.45))
                     LineMark(x: .value("Date", point.date), y: .value("Value", value))
                         .interpolationMethod(.monotone)
                         .lineStyle(StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
-                        .foregroundStyle(color)
-
-                    PointMark(x: .value("Date", point.date), y: .value("Value", value))
-                        .symbolSize(point.isRecord ? 52 : (points.count > 40 ? 0 : 28))
-                        .foregroundStyle(point.isRecord ? IronTheme.metricRecord : color)
-                        .accessibilityLabel(point.isRecord ? "Personal record" : "Session")
-                        .accessibilityValue(valueLabel(point.value))
+                        .foregroundStyle(color.opacity(selectedPoint == nil ? 1 : 0.45))
                 }
-
-                if let selectedPoint {
-                    RuleMark(x: .value("Date", selectedPoint.date))
-                        .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                        .foregroundStyle(Color.secondary)
+                if point.id == latestRecordID {
+                    PointMark(x: .value("Date", point.date), y: .value("Value", value))
+                        .symbol {
+                            Circle().fill(IronTheme.metricRecord.opacity(0.18))
+                                .frame(width: 17, height: 17)
+                                .overlay {
+                                    Circle().fill(IronTheme.metricRecord)
+                                        .overlay(Circle().strokeBorder(IronTheme.surface, lineWidth: 1.5))
+                                        .frame(width: 9, height: 9)
+                                }
+                                .opacity(opacity)
+                        }
+                } else if !usesBars {
+                    PointMark(x: .value("Date", point.date), y: .value("Value", value))
+                        .symbol { Circle().fill(color.opacity(opacity)).frame(width: 6, height: 6) }
                 }
             }
-            .chartXScale(domain: domainStart...max(domainEnd, domainStart.addingTimeInterval(60)))
-            .chartYScale(domain: yDomain)
-            .chartYAxis {
-                AxisMarks(position: .leading) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let raw = value.as(Double.self) {
-                            valueText(raw, .caption, .caption2)
-                                .accessibilityLabel(valueLabel(raw))
-                        }
+            if let selectedPoint {
+                RuleMark(x: .value("Date", selectedPoint.date))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .foregroundStyle(IronTheme.secondaryText)
+            }
+        }
+        .chartXScale(domain: domainStart...max(domainEnd, domainStart.addingTimeInterval(60)))
+        .chartYScale(domain: yDomain)
+        .chartYAxis {
+            AxisMarks(position: .trailing, values: [0, yDomain.upperBound / 2, yDomain.upperBound]) { value in
+                AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [3, 3]))
+                    .foregroundStyle(IronTheme.outline.opacity(0.5))
+                AxisValueLabel {
+                    if let raw = value.as(Double.self) {
+                        Text(raw, format: .number.notation(.compactName).precision(.fractionLength(0...1)))
+                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
                 }
             }
-            .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { value in
-                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                        .font(.caption2)
+        }
+        .chartXAxis {
+            AxisMarks(values: .automatic(desiredCount: 4)) { value in
+                AxisValueLabel(verticalSpacing: 0) {
+                    if let date = value.as(Date.self) {
+                        Text(date, format: usesDayLabels ? .dateTime.day() : .dateTime.month(.abbreviated))
+                            .font(usesDayLabels ? .ironMetric(.caption2, weight: .semibold) : .caption2)
+                            .foregroundStyle(IronTheme.secondaryText)
+                            .frame(minHeight: 14)
+                    }
                 }
             }
-            .chartXSelection(value: $selectedDate)
-            .accessibilityLabel("Progress chart with \(points.count) sessions")
+        }
+        .chartPlotStyle { plot in
+            plot.mask(alignment: .leading) {
+                Rectangle().scaleEffect(x: usesBars || reduceMotion || hasAppeared ? 1 : 0, anchor: .leading)
+            }
+        }
+        .chartXSelection(value: $selectedDate)
+        // Replace Charts' unrestricted drag. The overlay drives chartXSelection
+        // through ChartProxy and refuses vertical pans before they can begin.
+        .chartGesture { _ in SpatialTapGesture() }
+        .chartOverlay { proxy in
+            GeometryReader { geometry in
+                if let plotFrame = proxy.plotFrame {
+                    let frame = geometry[plotFrame]
+                    ExerciseChartScrubber(
+                        onChanged: { x in proxy.selectXValue(at: min(max(x, 0), frame.width)) },
+                        onEnded: { selectedDate = nil }
+                    )
+                    .frame(width: frame.width, height: frame.height)
+                    .position(x: frame.midX, y: frame.midY)
+                    .accessibilityHidden(true)
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Progress chart with \(points.count) sessions")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint("Adjust to inspect the previous or next session")
+        .accessibilityAdjustableAction { direction in
+            guard !points.isEmpty else { return }
+            let index = selectedPoint.flatMap { point in points.firstIndex { $0.id == point.id } } ?? points.count - 1
+            switch direction {
+            case .increment: selectedDate = points[min(index + 1, points.count - 1)].date
+            case .decrement: selectedDate = points[max(index - 1, 0)].date
+            @unknown default: break
+            }
+        }
     }
 
-    @ViewBuilder
-    private var calloutHeader: some View {
-        if let selectedPoint {
-            VStack(alignment: .leading, spacing: 1) {
-                Text(dateLabel(selectedPoint.date))
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                valueText(selectedPoint.value, .subheadline, .caption)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                if !selectedPoint.details.isEmpty {
-                    selectedPoint.details.dropFirst().reduce(selectedPoint.details[0]) {
-                        $0 + Text(" · ").font(.caption2).foregroundColor(IronTheme.secondaryText) + $1
-                    }
-                        .lineLimit(1)
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                }
+    private var accessibilityValue: String {
+        guard let point = selectedPoint ?? points.last else { return "No sessions" }
+        return "\(dateLabel(point.date)), \(valueLabel(point.value))\(point.isRecord ? ", personal record" : "")"
+    }
+}
+
+/// UIKit's shouldBegin rejects vertical intent before recognition, including on
+/// iOS 17. A vertical pan therefore stays with the enclosing List's scroll view.
+private struct ExerciseChartScrubber: UIViewRepresentable {
+    let onChanged: (CGFloat) -> Void
+    let onEnded: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panChanged(_:)))
+        pan.delegate = context.coordinator
+        view.addGestureRecognizer(pan)
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: ExerciseChartScrubber
+        init(parent: ExerciseChartScrubber) { self.parent = parent }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+
+        @objc func panChanged(_ pan: UIPanGestureRecognizer) {
+            switch pan.state {
+            case .began, .changed: parent.onChanged(pan.location(in: pan.view).x)
+            case .ended, .cancelled, .failed: parent.onEnded()
+            default: break
             }
-            .transition(.opacity)
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedPoint.id)
-        } else {
-            Text("Touch and hold the chart to inspect a session.")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
         }
     }
 }
 
 enum ExerciseProgressMetric: Hashable {
     case oneRM
+    case topWeight
     case totalWeight
     case totalSets
     case totalRepetitions
@@ -793,7 +951,8 @@ enum ExerciseProgressMetric: Hashable {
 
     var color: Color {
         switch self {
-        case .oneRM, .totalWeight: return IronTheme.metricVolume
+        case .oneRM, .topWeight: return IronTheme.accent
+        case .totalWeight: return IronTheme.metricVolume
         case .totalSets, .totalRepetitions, .bestRepetitions: return IronTheme.metricSets
         case .totalDuration, .bestDuration, .totalDistance, .bestDistance: return IronTheme.metricTime
         }
@@ -802,6 +961,7 @@ enum ExerciseProgressMetric: Hashable {
     var title: String {
         switch self {
         case .oneRM: return "Estimated 1RM"
+        case .topWeight: return "Top weight"
         case .totalWeight: return "Volume"
         case .totalSets: return "Total Sets"
         case .totalRepetitions: return "Total Repetitions"
@@ -813,9 +973,12 @@ enum ExerciseProgressMetric: Hashable {
         }
     }
 
+    var inlineTitle: String { self == .totalWeight ? "Volume per session" : title }
+
     var compactTitle: String {
         switch self {
         case .oneRM: return "1RM"
+        case .topWeight: return "Weight"
         case .totalWeight: return "Volume"
         case .totalSets: return "Sets"
         case .totalRepetitions: return "Reps"
@@ -830,6 +993,7 @@ enum ExerciseProgressMetric: Hashable {
     var icon: String {
         switch self {
         case .oneRM: return "bolt.fill"
+        case .topWeight: return "dumbbell.fill"
         case .totalWeight: return "scalemass.fill"
         case .totalSets: return "square.stack.3d.up.fill"
         case .totalRepetitions: return "repeat"
@@ -843,7 +1007,8 @@ enum ExerciseProgressMetric: Hashable {
 
     var caption: String {
         switch self {
-        case .oneRM: return "Best strength estimate per session"
+        case .oneRM: return "Best Epley strength estimate per session"
+        case .topWeight: return "Heaviest completed set per session"
         case .totalWeight: return "Completed volume per session"
         case .totalSets: return "Completed sets per session"
         case .totalRepetitions: return "Completed reps per session"
@@ -858,6 +1023,7 @@ enum ExerciseProgressMetric: Hashable {
     var emptyMessage: String {
         switch self {
         case .oneRM: return "Complete a weighted set with reps to calculate your strength trend."
+        case .topWeight: return "Complete a weighted set to track your top weight."
         case .totalWeight: return "Complete a weighted set to start tracking session volume."
         case .totalSets: return "Complete a set of this exercise to start the chart."
         case .totalRepetitions: return "Complete a set with reps to start the chart."

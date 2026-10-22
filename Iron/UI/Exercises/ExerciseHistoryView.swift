@@ -51,6 +51,20 @@ struct ExerciseHistoryView: View {
             }
         }
         .listStyle(.insetGrouped)
+        .safeAreaInset(edge: .bottom) {
+            Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                NavigationLink {
+                    ExerciseStatisticsView(exercise: exercise)
+                        .navigationTitle("Progress")
+                        .navigationBarTitleDisplayMode(.inline)
+                } label: {
+                    Label("Progress", systemImage: "chart.xyaxis.line")
+                }
+            }
+        }
     }
 
     private func sessionSection(_ workoutExercise: WorkoutExercise) -> some View {
@@ -101,7 +115,7 @@ struct ExerciseHistoryView: View {
 
 }
 
-/// The same completed-set presentation is used in full and inline history.
+/// Full history keeps the detailed set and RPE rows.
 struct ExerciseHistorySetRow: View {
     @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -194,6 +208,173 @@ struct ExerciseHistorySetRow: View {
         guard let value else { return "—" }
         return value.rounded() == value ? String(Int(value)) : String(format: "%.1f", value)
     }
+}
+
+/// Compact, navigable session rows for the detail card's History segment.
+struct ExerciseHistorySessionRow: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @EnvironmentObject private var exerciseStore: ExerciseStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ObservedObject var session: WorkoutExercise
+    let bestOneRM: Double?
+    let isRecord: Bool
+
+    private var sets: [WorkoutSet] {
+        (session.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
+    }
+
+    private var recordSetID: NSManagedObjectID? {
+        guard isRecord else { return nil }
+        return sets.compactMap { set -> (WorkoutSet, Double)? in
+            ExerciseProgressData.epleyEstimate(for: set, maxReps: settingsStore.maxRepetitionsOneRepMax)
+                .map { (set, $0) }
+        }.max { $0.1 < $1.1 }?.0.id
+    }
+
+    var body: some View {
+        if let workout = session.workout {
+            NavigationLink {
+                WorkoutDetailView(workout: workout)
+            } label: {
+                VStack(alignment: .leading, spacing: 8) {
+                    let layout = dynamicTypeSize.isAccessibilitySize
+                        ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                        : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+                    layout {
+                        (Text(ExerciseSessionDate.string(from: workout.start))
+                            .font(.callout.weight(.semibold))
+                            .foregroundColor(IronTheme.primaryText)
+                         + Text(" · " + workout.displayTitle(in: exerciseStore.exercises))
+                            .font(.footnote)
+                            .foregroundColor(IronTheme.secondaryText))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                        HStack(alignment: .firstTextBaseline, spacing: 2) {
+                            Text(bestOneRM.map(weightNumber) ?? "—")
+                                .font(.ironMetric(.callout, weight: .bold))
+                                .foregroundStyle(isRecord ? IronTheme.metricRecord : IronTheme.accent)
+                            if bestOneRM != nil {
+                                Text(settingsStore.weightUnit.unit.symbol)
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(IronTheme.secondaryText)
+                            }
+                        }
+                        .fixedSize(horizontal: true, vertical: false)
+                    }
+                    ExerciseChipFlowLayout(spacing: 6) {
+                        ForEach(sets) { set in
+                            setChip(set, isRecord: set.id == recordSetID)
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight, alignment: .leading)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary(workout))
+            .accessibilityHint("Opens workout details")
+        }
+    }
+
+    private func setChip(_ set: WorkoutSet, isRecord: Bool) -> some View {
+        let warmUp = set.tagValue == .warmUp
+        let color = isRecord ? IronTheme.metricRecord : warmUp ? IronTheme.metricSets : IronTheme.primaryText
+        let fill = isRecord ? IronTheme.metricRecordContainer : warmUp ? IronTheme.metricSetsContainer : IronTheme.tertiaryFill
+        return HStack(spacing: 6) {
+            if isRecord {
+                Image(systemName: "trophy.fill").font(.system(size: 11, weight: .bold))
+            }
+            Text(chipTitle(set)).font(.ironMetric(.caption, weight: .bold))
+        }
+        .foregroundStyle(color)
+        .padding(.horizontal, 8)
+        .frame(minHeight: 24)
+        .background(fill, in: Capsule())
+    }
+
+    private func chipTitle(_ set: WorkoutSet) -> String {
+        if set.durationValue == nil, set.distanceValue == nil, set.weightValue > 0 {
+            let weight = WeightUnit.convert(weight: set.weightValue, from: .metric, to: settingsStore.weightUnit)
+            return "\(weightNumber(weight))×\(set.repetitionsValue)"
+        }
+        return set.resultTitle(weightUnit: settingsStore.weightUnit)
+    }
+
+    private func weightNumber(_ value: Double) -> String {
+        settingsStore.weightUnit.displayNumberFormatter.string(from: NSNumber(value: value)) ?? "\(value)"
+    }
+
+    private func accessibilitySummary(_ workout: Workout) -> String {
+        let best = bestOneRM.map { "Best estimated one rep max \(weightNumber($0)) \(settingsStore.weightUnit.unit.symbol)\(isRecord ? ", personal record" : "")." } ?? ""
+        let results = sets.enumerated().map { index, set in
+            "Set \(index + 1)\(set.tagValue == .warmUp ? ", warm up" : "")\(set.id == recordSetID ? ", personal record" : ""), \(set.resultTitle(weightUnit: settingsStore.weightUnit))"
+        }.joined(separator: ". ")
+        return "\(ExerciseSessionDate.string(from: workout.start)), \(workout.displayTitle(in: exerciseStore.exercises)). \(best) \(results)"
+    }
+}
+
+/// A small flow layout shared by set chips and target equipment chips.
+struct ExerciseChipFlowLayout: Layout {
+    var spacing: CGFloat = 6
+
+    private func arrangement(width: CGFloat, subviews: Subviews) -> (size: CGSize, frames: [CGRect]) {
+        var frames: [CGRect] = []
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowHeight: CGFloat = 0
+        var usedWidth: CGFloat = 0
+        for subview in subviews {
+            let size = subview.sizeThatFits(ProposedViewSize(width: width.isFinite ? width : nil, height: nil))
+            if x > 0 && x + size.width > width {
+                x = 0
+                y += rowHeight + spacing
+                rowHeight = 0
+            }
+            frames.append(CGRect(origin: CGPoint(x: x, y: y), size: size))
+            usedWidth = max(usedWidth, x + size.width)
+            x += size.width + spacing
+            rowHeight = max(rowHeight, size.height)
+        }
+        return (CGSize(width: usedWidth, height: y + rowHeight), frames)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        arrangement(width: proposal.width ?? .infinity, subviews: subviews).size
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let frames = arrangement(width: bounds.width, subviews: subviews).frames
+        for (index, frame) in frames.enumerated() {
+            subviews[index].place(
+                at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY),
+                anchor: .topLeading,
+                proposal: ProposedViewSize(width: frame.width, height: frame.height)
+            )
+        }
+    }
+}
+
+enum ExerciseSessionDate {
+    static func string(from date: Date?, relative: Bool = true) -> String {
+        guard let date else { return "Unknown date" }
+        let calendar = Calendar.current
+        if relative && calendar.isDateInToday(date) { return "Today" }
+        if relative && calendar.isDateInYesterday(date) { return "Yesterday" }
+        let sameYear = calendar.component(.year, from: date) == calendar.component(.year, from: Date())
+        return (sameYear ? currentYear : previousYear).string(from: date)
+    }
+
+    private static let currentYear: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("EEE MMM d")
+        return formatter
+    }()
+    private static let previousYear: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMM d yyyy")
+        return formatter
+    }()
 }
 
 #if DEBUG

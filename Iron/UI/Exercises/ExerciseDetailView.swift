@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import CoreData
 import ImageIO
 import MuscleMap
 import WorkoutDataKit
@@ -255,9 +256,11 @@ struct ExerciseDetailView : View {
     @EnvironmentObject var settingsStore: SettingsStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     @Environment(\.managedObjectContext) var managedObjectContext
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     var exercise: Exercise
     
     @State private var showingEditExercise = false
+    @State private var showingMedia = false
     @State private var loadedRemoteMediaURL: URL?
 
     private var currentExercise: Exercise {
@@ -396,18 +399,27 @@ struct ExerciseDetailView : View {
     var body: some View {
         List {
             Section {
-                mediaHero
-                    .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 8, trailing: 0))
+                exerciseHeader
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
-            }
 
-            Section("Progress") {
                 ExerciseInlineProgressView(exercise: currentExercise)
                     .id(currentExercise.uuid)
-            }
+                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowBackground(Color.clear)
+                    .listRowSeparator(.hidden)
 
-            muscleMapSection
+                ExerciseTargetMuscleMap(
+                    primary: primaryMapMuscles,
+                    secondary: secondaryMapMuscles,
+                    equipment: currentExercise.equipment.map { $0.capitalized }
+                )
+                .id(currentExercise.uuid)
+                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+            }
 
             if let description = currentExercise.description, !description.isEmpty {
                 Section("About") {
@@ -469,6 +481,23 @@ struct ExerciseDetailView : View {
                 .presentationDetents([.large])
                 .presentationDragIndicator(.visible)
         }
+        .sheet(isPresented: $showingMedia) {
+            NavigationStack {
+                mediaHero
+                    .padding(IronTheme.horizontalPadding)
+                    .navigationTitle(currentExercise.title)
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .confirmationAction) {
+                            Button("Close", systemImage: "xmark") { showingMedia = false }
+                                .labelStyle(.iconOnly)
+                                .accessibilityLabel("Close exercise media")
+                        }
+                    }
+            }
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
         .navigationTitle(currentExercise.title)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -508,23 +537,45 @@ struct ExerciseDetailView : View {
         .accessibilityLabel("Step \(number). \(step)")
     }
 
-    private var muscleMapSection: some View {
-        Section("Target") {
-            if !primaryMapMuscles.isEmpty || !secondaryMapMuscles.isEmpty {
-                ExerciseTargetMuscleMap(primary: primaryMapMuscles, secondary: secondaryMapMuscles)
-                    .id(currentExercise.uuid)
-            } else {
-                Text("No target muscles specified")
+    private var exerciseHeader: some View {
+        HStack(alignment: .center, spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(currentExercise.title)
+                    .font(.title.bold())
+                    .foregroundStyle(IronTheme.primaryText)
+                    .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(headerSubtitle)
                     .font(.subheadline)
                     .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            if !currentExercise.equipment.isEmpty {
-                LabeledContent(
-                    "Equipment",
-                    value: currentExercise.equipment.map { $0.capitalized }.joined(separator: ", ")
-                )
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            Button { showingMedia = true } label: {
+                ExerciseDiagramThumbnail(exercise: currentExercise, size: 60)
+                    .overlay(alignment: .bottomTrailing) {
+                        if currentExercise.animationURL != nil || (currentRemoteMediaURL == nil && currentExercise.pdfPaths.count > 1) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(IronTheme.onAccent)
+                                .frame(width: 22, height: 22)
+                                .background(IronTheme.accent, in: Circle())
+                                .overlay(Circle().stroke(IronTheme.background, lineWidth: 2))
+                        }
+                    }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("View demonstration of \(currentExercise.title)")
         }
+        .padding(4)
+    }
+
+    private var headerSubtitle: String {
+        [currentExercise.equipment.map { $0.capitalized }.joined(separator: ", "),
+         currentExercise.primaryMuscle.map { $0.capitalized }.joined(separator: ", ")]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
     }
 
     private var displayAliases: [String] {
@@ -563,57 +614,109 @@ struct ExerciseDetailView : View {
 
 }
 
-/// Tap selection uses MuscleMap's own path hit-testing and anchored tooltip.
-/// Do not enable its minimum-distance-one drag: that steals List scrolling.
+/// B6 fallback: the package's hit tester is internal and its drag begins at 1 pt.
+/// Tap + long press preserve List scrolling. The package delivers long press on
+/// release; do not enable onMuscleDragged until it supports a hold-gated drag.
 private struct ExerciseTargetMuscleMap: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let primary: [Muscle]
     let secondary: [Muscle]
+    let equipment: [String]
 
     @State private var selectedMuscle: Muscle?
     @State private var selectedSide: BodySide?
     @State private var selectionID = UUID()
+    @State private var tooltipSize = CGSize(width: 180, height: 37)
+
+    private var hasMuscles: Bool { !primary.isEmpty || !secondary.isEmpty }
 
     private var accessibilitySummary: String {
         let primaryNames = primary.map(\.displayName).joined(separator: ", ")
         let secondaryNames = secondary.map(\.displayName).joined(separator: ", ")
-        return "Target muscles. Primary: \(primaryNames.isEmpty ? "None" : primaryNames). Secondary: \(secondaryNames.isEmpty ? "None" : secondaryNames)."
+        let targets = hasMuscles
+            ? "Target muscles. Primary: \(primaryNames.isEmpty ? "None" : primaryNames). Secondary: \(secondaryNames.isEmpty ? "None" : secondaryNames)."
+            : "No target muscles listed."
+        return targets + (equipment.isEmpty ? "" : " Equipment: \(equipment.joined(separator: ", ")).")
     }
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 8) {
-                muscleBody(side: .front)
-                muscleBody(side: .back)
+        VStack(alignment: .leading, spacing: 12) {
+            let headerLayout = dynamicTypeSize.isAccessibilitySize
+                ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4))
+                : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
+            headerLayout {
+                Text("Target")
+                    .font(.title3.bold())
+                    .foregroundStyle(IronTheme.primaryText)
+                if hasMuscles {
+                    Text("Touch and hold a muscle")
+                        .font(.footnote)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .frame(maxWidth: .infinity, alignment: dynamicTypeSize.isAccessibilitySize ? .leading : .trailing)
+                }
             }
-            .frame(height: 230)
-            .padding(.top, 12)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(accessibilitySummary)
-            .accessibilityAddTraits(.isImage)
 
-            HStack(spacing: 20) {
-                legend("Primary", opacity: 1)
-                legend("Secondary", opacity: 0.42)
+            if hasMuscles {
+                HStack(alignment: .top, spacing: 44) {
+                    bodyColumn(side: .front, title: "Front")
+                    bodyColumn(side: .back, title: "Back")
+                }
+                .frame(maxWidth: .infinity)
+            } else {
+                Text("No target muscles listed")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
             }
-            .accessibilityHidden(true)
 
-            Text("Tap a highlighted muscle to inspect")
-                .font(.caption2)
-                .foregroundStyle(IronTheme.secondaryText)
-                .accessibilityHidden(true)
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: 12) {
+                    if hasMuscles { legends }
+                    Spacer(minLength: 0)
+                    equipmentChips
+                }
+                VStack(alignment: .leading, spacing: 8) {
+                    if hasMuscles { legends }
+                    equipmentChips
+                }
+            }
         }
-        .frame(maxWidth: .infinity)
-        .padding(.bottom, 4)
+        .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
+        .overlayPreferenceValue(ExerciseMuscleAnchorKey.self) { anchor in
+            GeometryReader { geometry in
+                if let anchor, let muscle = selectedMuscle, let role = role(for: muscle) {
+                    let point = geometry[anchor].origin
+                    let halfWidth = tooltipSize.width / 2
+                    let halfHeight = tooltipSize.height / 2
+                    let x = max(halfWidth + 8, min(point.x, geometry.size.width - halfWidth - 8))
+                    let y = max(halfHeight + 8, min(point.y, geometry.size.height - halfHeight - 8))
+                    tooltip(muscle: muscle, role: role, pointerOffset: point.x - x)
+                        .frame(maxWidth: geometry.size.width - 16)
+                        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
+                        .background {
+                            GeometryReader { tooltipGeometry in
+                                Color.clear.preference(key: ExerciseMuscleTooltipSizeKey.self, value: tooltipGeometry.size)
+                            }
+                        }
+                        .position(x: x, y: y)
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+                }
+            }
+            .allowsHitTesting(false)
+        }
+        .onPreferenceChange(ExerciseMuscleTooltipSizeKey.self) { size in
+            if size.width > 0, size.height > 0 { tooltipSize = size }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(accessibilitySummary)
+        .accessibilityAddTraits(.isImage)
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedMuscle)
         .sensoryFeedback(.selection, trigger: selectedMuscle) { _, muscle in muscle != nil }
         .task(id: selectionID) {
             guard selectedMuscle != nil else { return }
-            do {
-                try await Task.sleep(for: .seconds(2))
-            } catch {
-                return
-            }
+            do { try await Task.sleep(for: .seconds(2)) } catch { return }
             selectedMuscle = nil
             selectedSide = nil
         }
@@ -623,78 +726,128 @@ private struct ExerciseTargetMuscleMap: View {
         }
     }
 
+    private var legends: some View {
+        let layout = dynamicTypeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+            : AnyLayout(HStackLayout(spacing: 12))
+        return layout {
+            legend("Primary", opacity: 1)
+            legend("Secondary", opacity: 0.42)
+        }
+        .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
+    }
+
     private func legend(_ title: String, opacity: Double) -> some View {
-        HStack(spacing: 5) {
-            Circle().fill(IronTheme.accent.opacity(opacity)).frame(width: 7, height: 7)
+        HStack(spacing: 6) {
+            Circle().fill(IronTheme.accent.opacity(opacity)).frame(width: 8, height: 8)
             Text(title).font(.caption)
         }
         .foregroundStyle(IronTheme.secondaryText)
     }
 
+    private var equipmentChips: some View {
+        ExerciseChipFlowLayout(spacing: 6) {
+            ForEach(equipment, id: \.self) { name in
+                Text(name)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(IronTheme.primaryText)
+                    .padding(.horizontal, 8)
+                    .frame(minHeight: 24)
+                    .background(IronTheme.tertiaryFill, in: Capsule())
+            }
+        }
+    }
+
+    private func bodyColumn(side: BodySide, title: String) -> some View {
+        VStack(spacing: 4) {
+            muscleBody(side: side).frame(width: 96, height: 169)
+            Text(title).font(.caption2).foregroundStyle(IronTheme.secondaryText)
+        }
+    }
+
     private func muscleBody(side: BodySide) -> some View {
-        // Match the live-workout map's semantic system colors and highlight weights.
         let style = BodyViewStyle(
             defaultFillColor: Color(.tertiaryLabel).opacity(0.35),
             strokeColor: Color(.separator),
             strokeWidth: 0.5,
-            selectionColor: IronTheme.accent.opacity(0.72),
+            selectionColor: IronTheme.accent,
             selectionStrokeColor: IronTheme.accent,
             selectionStrokeWidth: 1,
             headColor: Color(.tertiaryLabel).opacity(0.45),
             hairColor: Color(.quaternaryLabel)
         )
-        // Render subgroups so upper chest, rear deltoids, etc. remain touchable.
-        // Inherit parent highlights on those paths, with explicit targets winning.
-        let primaryHighlights = Array(Set(primary + primary.flatMap(\.subGroups)))
-        let secondaryHighlights = Array(Set(secondary + secondary.flatMap(\.subGroups)))
         return BodyView(gender: .male, side: side, style: style)
-            .showSubGroups()
-            .highlight(secondaryHighlights, color: IronTheme.accent, opacity: 0.42)
-            .highlight(primaryHighlights, color: IronTheme.accent)
             .highlight(secondary, color: IronTheme.accent, opacity: 0.42)
             .highlight(primary, color: IronTheme.accent)
             .selected(selectedSide == side ? selectedMuscle : nil)
-            .onMuscleSelected { muscle, _ in
-                guard role(for: muscle) != nil else {
-                    selectedMuscle = nil
-                    selectedSide = nil
-                    return
-                }
-                selectedSide = side
-                selectedMuscle = muscle
-                selectionID = UUID()
+            .onMuscleSelected { muscle, _ in select(muscle, side: side) }
+            .onMuscleLongPressed(duration: 0.25) { muscle, _ in select(muscle, side: side) }
+            .tooltip { _, _ in
+                // Lift the package's muscle anchor into the whole card, so a
+                // tooltip can be clamped to the card instead of the 96 pt body.
+                Color.clear.frame(width: 1, height: 1)
+                    .anchorPreference(key: ExerciseMuscleAnchorKey.self, value: .bounds) { $0 }
             }
-            .tooltip { muscle, _ in
-                if let role = role(for: muscle) {
-                    Text("\(targetName(for: muscle)) · \(role)")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(IronTheme.primaryText)
-                        .multilineTextAlignment(.center)
-                        .frame(maxWidth: 140)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 7)
-                        .background(.regularMaterial, in: Capsule())
-                        .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
-                        .accessibilityHidden(true)
-                }
+    }
+
+    private func tooltip(muscle: Muscle, role: String, pointerOffset: CGFloat) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Circle().fill(IronTheme.accent.opacity(role == "Primary" ? 1 : 0.42))
+                    .frame(width: 8, height: 8)
+                Text(muscle.displayName).font(.caption.bold()).foregroundStyle(IronTheme.primaryText)
+                Text(role).font(.caption).foregroundStyle(IronTheme.secondaryText)
             }
+            .padding(.horizontal, 12)
+            .frame(minHeight: 30)
+            .background(.regularMaterial, in: Capsule())
+            .overlay(Capsule().strokeBorder(IronTheme.outline, lineWidth: 0.5))
+            ExerciseTooltipPointer()
+                .fill(.regularMaterial)
+                .frame(width: 14, height: 7)
+                .offset(x: max(-tooltipSize.width / 2 + 14, min(pointerOffset, tooltipSize.width / 2 - 14)))
+        }
+        .shadow(color: IronTheme.mediaBackdrop.opacity(0.28), radius: 18, x: 0, y: 6)
+    }
+
+    private func select(_ muscle: Muscle, side: BodySide) {
+        guard role(for: muscle) != nil else {
+            selectedMuscle = nil
+            selectedSide = nil
+            return
+        }
+        selectedSide = side
+        selectedMuscle = muscle
+        selectionID = UUID()
     }
 
     private func role(for muscle: Muscle) -> String? {
         if primary.contains(muscle) { return "Primary" }
         if secondary.contains(muscle) { return "Secondary" }
-        if let parent = muscle.parentGroup {
-            if primary.contains(parent) { return "Primary" }
-            if secondary.contains(parent) { return "Secondary" }
-        }
         return nil
     }
+}
 
-    private func targetName(for muscle: Muscle) -> String {
-        if !primary.contains(muscle), !secondary.contains(muscle), let parent = muscle.parentGroup {
-            return parent.displayName
+private struct ExerciseMuscleAnchorKey: PreferenceKey {
+    static var defaultValue: Anchor<CGRect>? { nil }
+    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+        value = nextValue() ?? value
+    }
+}
+
+private struct ExerciseMuscleTooltipSizeKey: PreferenceKey {
+    static var defaultValue: CGSize { .zero }
+    static func reduce(value: inout CGSize, nextValue: () -> CGSize) { value = nextValue() }
+}
+
+private struct ExerciseTooltipPointer: Shape {
+    func path(in rect: CGRect) -> Path {
+        Path { path in
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.midX, y: rect.maxY))
+            path.closeSubpath()
         }
-        return muscle.displayName
     }
 }
 
