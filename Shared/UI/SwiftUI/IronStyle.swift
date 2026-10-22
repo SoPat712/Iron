@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import WorkoutDataKit
 
 // MARK: - Cupertino visual system
 
@@ -109,6 +110,22 @@ enum IronTheme {
     static let metricRecordContainer = IronPalette.color(\.metricRecordContainer)
     static let metricBody = IronPalette.color(\.metricBody)
     static let metricBodyContainer = IronPalette.color(\.metricBodyContainer)
+    static let setWarmUpTint = Color(UIColor.systemOrange)
+    static let setDropTint = Color(UIColor.systemIndigo)
+    static let setFailureTint = Color(UIColor.systemRed)
+    static let setWarmUpContainer = setWarmUpTint.opacity(0.18)
+    static let setDropContainer = setDropTint.opacity(0.18)
+    static let setFailureContainer = setFailureTint.opacity(0.16)
+
+    static func setFill(for tag: WorkoutSetTag?) -> (tint: Color, settled: Double, peak: Double) {
+        switch tag {
+        case .warmUp: return (setWarmUpTint, 0.14, 0.22)
+        case .dropSet: return (setDropTint, 0.14, 0.22)
+        case .failure: return (setFailureTint, 0.12, 0.20)
+        case nil: return (accent, 0.12, 0.24)
+        }
+    }
+
     static let success = IronPalette.color(\.success)
     static let successContainer = IronPalette.color(\.successContainer)
     static let successControl = IronPalette.color(\.successControl)

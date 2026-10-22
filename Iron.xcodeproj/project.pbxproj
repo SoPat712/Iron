@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		F51000000000000000000001 /* RestLengthRuler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51000000000000000000000 /* RestLengthRuler.swift */; };
 		F70000000000000000000002 /* IronSoundPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000001 /* IronSoundPlayer.swift */; };
 		F70000000000000000000003 /* IronSoundPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000001 /* IronSoundPlayer.swift */; };
 		F70000000000000000000004 /* IronSoundPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000001 /* IronSoundPlayer.swift */; };
@@ -526,6 +527,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		F51000000000000000000000 /* RestLengthRuler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Iron/UI/Components/RestLengthRuler.swift; sourceTree = SOURCE_ROOT; };
 		F70000000000000000000001 /* IronSoundPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IronSoundPlayer.swift; sourceTree = "<group>"; };
 		F70000000000000000000011 /* set_complete.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = set_complete.caf; sourceTree = "<group>"; };
 		F70000000000000000000012 /* set_record.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = set_record.caf; sourceTree = "<group>"; };
@@ -1509,6 +1511,7 @@
 			children = (
 				F70000000000000000000001 /* IronSoundPlayer.swift */,
 				F50000000000000000000000 /* IronStyle.swift */,
+				F51000000000000000000000 /* RestLengthRuler.swift */,
 				8A507E03239C090200883339 /* Extension */,
 				8A507E05239C096200883339 /* Data */,
 				8A507E08239C099C00883339 /* UI */,
@@ -2157,6 +2160,7 @@
 				8AA02615230AF74C00324853 /* ActivityWorkoutsPerWeekView.swift in Sources */,
 				8A744EF025154E6B007361EC /* SwiftUISupport.swift in Sources */,
 				F50000000000000000000001 /* IronStyle.swift in Sources */,
+				F51000000000000000000001 /* RestLengthRuler.swift in Sources */,
 				C0D3A1012FE2000000000001 /* IronSessionStrip.swift in Sources */,
 				8A56A47F22D7C93B0076E99A /* SettingsView.swift in Sources */,
 				8AA6252E23AE68CC00217DA9 /* Workout+Logic.swift in Sources */,

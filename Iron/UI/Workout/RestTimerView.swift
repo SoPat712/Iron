@@ -2,235 +2,126 @@
 //  RestTimerView.swift
 //  Iron
 //
-//  A compact, Cupertino rest timer. The sheet is intentionally designed for
-//  the medium detent: the dial, common adjustments, and stop action are all
-//  available without pulling a modal over the entire workout.
+//  Rest length uses the same ruler in the logger and utility sheets.
 //
 
 import SwiftUI
-import UIKit
 
 enum RestTimerSheetLayout {
-    static let height: CGFloat = 540
-    static let dialSize: CGFloat = 214
-    // Reserve the selector's two action rows in every state. Starting or
-    // pausing must not recenter the dial when its controls change underneath.
-    static let contentHeight: CGFloat = 400
+    static let height: CGFloat = 320
 }
 
 struct RestTimerView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var restTimerStore: RestTimerStore
-
     @State private var selectedDuration: TimeInterval = 90
+    @State private var clampFeedback = 0
 
-    private let minimumDuration: TimeInterval = 30
-    private let maximumDuration: TimeInterval = 600
-    private let durationStep: TimeInterval = 15
-    private let quickDurations: [TimeInterval] = [60, 90, 120, 180]
-
-    private var isRunning: Bool {
-        restTimerStore.restTimerRemainingTime != nil
-    }
+    private var isRunning: Bool { restTimerStore.restTimerRemainingTime != nil }
 
     var body: some View {
-        Group {
-            if isRunning {
-                runningTimer
-            } else {
-                timerPicker
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .frame(height: RestTimerSheetLayout.contentHeight, alignment: .top)
-        .onAppear {
-            if let recent = restTimerStore.recentRestTimes.first {
-                selectedDuration = clamped(recent)
-            }
-        }
-        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isRunning)
-    }
-
-    /// A compact radial duration selector + presets layout that fits the
-    /// medium sheet without requiring the user to expand it. This is a
-    /// duration dial, not a clock: the user spins the ring to choose a value.
-    private var timerPicker: some View {
-        VStack(spacing: 10) {
-            RestTimerDurationDial(
-                selection: $selectedDuration,
-                minimumDuration: minimumDuration,
-                maximumDuration: maximumDuration,
-                secondsStep: durationStep,
-                subtitle: "Spin to set rest"
-            )
-            .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text("Presets")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-
-                Picker("Presets", selection: $selectedDuration) {
-                    ForEach(quickDurations, id: \.self) { duration in
-                        Text(timeTitle(duration))
-                            .font(.ironMetric(.subheadline, weight: .semibold))
-                            .tag(duration)
-                    }
-                }
-                .pickerStyle(.segmented)
-            }
-
-            Button {
-                startTimer(duration: selectedDuration)
-            } label: {
-                Label("Start", systemImage: "play.fill")
-                    .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(.borderedProminent)
-            .buttonBorderShape(.capsule)
-            .controlSize(.large)
-        }
-        .padding(.horizontal, IronTheme.horizontalPadding)
-        .padding(.vertical, 12)
-    }
-
-    private var runningTimer: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { _ in
-            let remaining = restTimerStore.restTimerRemainingTime ?? 0
-
+        ScrollView {
             VStack(spacing: 10) {
-                RestTimerDurationDial(
-                    selection: activeDurationBinding(fallback: remaining),
-                    minimumDuration: 0,
-                    maximumDuration: maximumDuration,
-                    secondsStep: durationStep,
-                    subtitle: restTimerStore.isPaused ? "Paused · spin to adjust" : "Spin to adjust remaining"
-                )
-                .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
-
-                HStack(spacing: 8) {
-                    timerActionButton("−15") {
-                        adjustRunningTimer(by: -15)
+                if isRunning {
+                    TimelineView(.periodic(from: .now, by: 1)) { _ in
+                        Text(timeTitle(max(0, restTimerStore.restTimerRemainingTime ?? 0)))
+                            .font(.ironMetric(.title3))
+                            .foregroundStyle(restTimerStore.isPaused ? IronTheme.warning : IronTheme.metricTime)
+                            .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
+                            .accessibilityLabel(restTimerStore.isPaused ? "Rest timer paused" : "Rest remaining")
                     }
-                    timerActionButton(
-                        restTimerStore.isPaused ? "Resume" : "Pause",
-                        systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
-                        prominent: true
-                    ) {
-                        restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
+                    RestLengthRuler(value: Binding(
+                        get: { restTimerStore.restTimerDuration ?? selectedDuration },
+                        set: { _ in }
+                    )) { duration in
+                        if restTimerStore.setTotalRestLength(duration) { clampFeedback += 1 }
                         WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
                     }
-                    timerActionButton("+15") {
-                        adjustRunningTimer(by: 15)
+                    HStack(spacing: 8) {
+                        timerActionButton("−15", label: "Subtract 15 seconds") { adjustRunningTimer(by: -15) }
+                        timerActionButton(
+                            restTimerStore.isPaused ? "Resume" : "Pause",
+                            systemImage: restTimerStore.isPaused ? "play.fill" : "pause.fill",
+                            label: restTimerStore.isPaused ? "Resume rest timer" : "Pause rest timer"
+                        ) {
+                            restTimerStore.isPaused ? restTimerStore.resume() : restTimerStore.pause()
+                            WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
+                        }
+                        timerActionButton("+15", label: "Add 15 seconds") { adjustRunningTimer(by: 15) }
+                        timerActionButton("Stop", systemImage: "xmark", label: "Stop rest timer", destructive: true) {
+                            restTimerStore.cancel()
+                            WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
+                        }
                     }
-                    timerActionButton("Stop", systemImage: "xmark", destructive: true) {
-                        stopTimer()
+                } else {
+                    RestLengthRuler(value: $selectedDuration) { _ in }
+                    Button {
+                        restTimerStore.start(duration: selectedDuration)
+                        restTimerStore.recentRestTimes.removeAll { $0 == selectedDuration }
+                        restTimerStore.recentRestTimes.insert(selectedDuration, at: 0)
+                        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
+                    } label: {
+                        Label("Start Rest", systemImage: "play.fill")
+                            .frame(maxWidth: .infinity)
                     }
+                    .ironProminentGlassButtonStyle()
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .frame(height: 50)
                 }
-                .frame(maxWidth: .infinity)
             }
             .padding(.horizontal, IronTheme.horizontalPadding)
             .padding(.vertical, 12)
         }
-        .frame(maxWidth: .infinity, alignment: .top)
+        .onAppear {
+            if let recent = restTimerStore.recentRestTimes.first {
+                selectedDuration = min(max(recent, 30), 300)
+            }
+        }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isRunning)
+        .sensoryFeedback(.error, trigger: clampFeedback)
     }
 
-    @ViewBuilder
     private func timerActionButton(
         _ title: String,
         systemImage: String? = nil,
-        prominent: Bool = false,
+        label: String,
         destructive: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
-        let button = Button(action: action) {
+        Button(action: action) {
             Group {
-                if let systemImage {
-                    Label(title, systemImage: systemImage)
-                        .labelStyle(.iconOnly)
-                } else {
-                    Text(title)
-                }
+                if let systemImage { Image(systemName: systemImage) } else { Text(title) }
             }
-            .font(.body.weight(.semibold))
-            .lineLimit(1)
-            .minimumScaleFactor(0.8)
-            .frame(maxWidth: .infinity, minHeight: 44)
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .foregroundStyle(destructive ? IronTheme.danger : IronTheme.primaryText)
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+            .background(IronTheme.tertiaryFill, in: Capsule())
         }
-
-        Group {
-            if prominent {
-                button.ironProminentGlassButtonStyle()
-            } else {
-                button.ironGlassButtonStyle()
-            }
-        }
-        .buttonBorderShape(.capsule)
-        .controlSize(.small)
-        .tint(destructive ? .red : .accentColor)
-        .accessibilityLabel(title == "Stop" ? "Stop rest timer" : title)
-    }
-
-    private func clamped(_ duration: TimeInterval) -> TimeInterval {
-        min(max(duration, minimumDuration), maximumDuration)
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
     }
 
     private func timeTitle(_ duration: TimeInterval) -> String {
-        restTimerDurationFormatter.string(from: duration) ?? "0:00"
-    }
-
-    private func startTimer(duration: TimeInterval) {
-        restTimerStore.start(duration: duration)
-        restTimerStore.recentRestTimes.removeAll { $0 == duration }
-        restTimerStore.recentRestTimes.insert(duration, at: 0)
-        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
+        restTimerDurationFormatter.string(from: duration.rounded(.up)) ?? "0:00"
     }
 
     private func adjustRunningTimer(by interval: TimeInterval) {
         restTimerStore.adjust(by: interval)
         WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
     }
-
-    private func activeDurationBinding(fallback: TimeInterval) -> Binding<TimeInterval> {
-        Binding(
-            get: {
-                let current = restTimerStore.restTimerRemainingTime ?? fallback
-                return min(max(current.rounded(.up), 0), maximumDuration)
-            },
-            set: { duration in
-                selectedDuration = duration
-                restTimerStore.setRemaining(duration)
-                WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
-            }
-        )
-    }
-
-    private func stopTimer() {
-        restTimerStore.cancel()
-        WorkoutLiveActivityManager.shared.refreshCurrentWorkoutRestTimer()
-    }
 }
 
-/// Uses the same sheet chrome, dial, notches, presets, and spacing as the live
-/// rest timer. Only the bottom actions change from playback controls to
-/// configuration actions.
+/// Shared by saved-workout and history editors; keeps their existing save paths.
 struct RestTimerConfigurationSheet: View {
     @Environment(\.dismiss) private var dismiss
-
     let title: String
     let subtitle: String
-    let initialDuration: TimeInterval
     let secondaryActionTitle: String?
     let onSecondaryAction: (() -> Void)?
     let shouldDismiss: () -> Bool
     let onApply: (TimeInterval) -> Void
-
     @State private var selection: TimeInterval
-
-    private let minimumDuration: TimeInterval = 30
-    private let maximumDuration: TimeInterval = 600
-    private let durationStep: TimeInterval = 15
-    private let quickDurations: [TimeInterval] = [60, 90, 120, 180]
 
     init(
         title: String = "Rest Timer",
@@ -243,302 +134,70 @@ struct RestTimerConfigurationSheet: View {
     ) {
         self.title = title
         self.subtitle = subtitle
-        self.initialDuration = initialDuration
         self.secondaryActionTitle = secondaryActionTitle
         self.onSecondaryAction = onSecondaryAction
         self.shouldDismiss = shouldDismiss
         self.onApply = onApply
-        _selection = State(initialValue: min(max(initialDuration, 30), 600))
+        _selection = State(initialValue: min(max(initialDuration, 30), 300))
     }
 
     var body: some View {
-        IronUtilitySheet(
-            title: title,
-            subtitle: subtitle,
-            systemImage: "timer",
-            onClose: { dismiss() }
-        ) {
-            VStack(spacing: 10) {
-                RestTimerDurationDial(
-                    selection: $selection,
-                    minimumDuration: minimumDuration,
-                    maximumDuration: maximumDuration,
-                    secondsStep: durationStep,
-                    subtitle: "Spin to choose duration"
-                )
-                .frame(width: RestTimerSheetLayout.dialSize, height: RestTimerSheetLayout.dialSize)
-
-                Picker("Presets", selection: $selection) {
-                    ForEach(quickDurations, id: \.self) { duration in
-                        Text(timeTitle(duration))
-                            .font(.ironMetric(.subheadline, weight: .semibold))
-                            .tag(duration)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .padding(.horizontal, IronTheme.horizontalPadding)
-
-                Button {
-                    onApply(selection)
-                    if shouldDismiss() { dismiss() }
-                } label: {
-                    Text("Use \(timeTitle(selection))")
-                        .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.borderedProminent)
-                .buttonBorderShape(.capsule)
-                .controlSize(.large)
-                .padding(.horizontal, IronTheme.horizontalPadding)
-
-                if let secondaryActionTitle, let onSecondaryAction {
+        IronUtilitySheet(title: title, subtitle: subtitle, systemImage: "timer", onClose: { dismiss() }) {
+            ScrollView {
+                VStack(spacing: 10) {
+                    RestLengthRuler(value: $selection) { _ in }
                     Button {
-                        onSecondaryAction()
+                        onApply(selection)
                         if shouldDismiss() { dismiss() }
                     } label: {
-                        Text(secondaryActionTitle)
+                        Text("Use \(restTimerDurationFormatter.string(from: selection) ?? "0:00")")
                             .frame(maxWidth: .infinity)
                     }
-                    .ironGlassButtonStyle()
+                    .ironProminentGlassButtonStyle()
                     .buttonBorderShape(.capsule)
                     .controlSize(.large)
-                    .padding(.horizontal, IronTheme.horizontalPadding)
+                    .frame(height: 50)
+
+                    if let secondaryActionTitle, let onSecondaryAction {
+                        Button {
+                            onSecondaryAction()
+                            if shouldDismiss() { dismiss() }
+                        } label: {
+                            Text(secondaryActionTitle)
+                                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(IronTheme.accent)
+                    }
                 }
+                .padding(.horizontal, IronTheme.horizontalPadding)
+                .padding(.vertical, 12)
             }
-            .padding(.vertical, 12)
-            .frame(maxWidth: .infinity)
-            .frame(height: RestTimerSheetLayout.contentHeight, alignment: .top)
         }
         .presentationDetents([.height(RestTimerSheetLayout.height)])
         .presentationDragIndicator(.visible)
-        .sensoryFeedback(.selection, trigger: Int(selection))
-    }
-
-    private func timeTitle(_ duration: TimeInterval) -> String {
-        restTimerDurationFormatter.string(from: duration) ?? "0:00"
     }
 }
 
-/// The shared 270-degree duration dial used by both the running timer and every
-/// rest-duration selector. The filled accent arc makes the selected proportion
-/// immediately legible while the notches preserve the physical scrubber feel.
-struct RestTimerDurationDial: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    @Binding var selection: TimeInterval
-
-    let minimumDuration: TimeInterval
-    let maximumDuration: TimeInterval
-    let secondsStep: TimeInterval
-    let subtitle: String
-
-    @State private var isDragging = false
-    @State private var draftSelection: TimeInterval?
-    @State private var lastFeedbackNotch: Int?
-
-    private let startRotation: Double = 135
-    private let startDialAngle: CGFloat = 225
-    private let endDialAngle: CGFloat = 495
-
-    private var displayedSelection: TimeInterval {
-        clamped(draftSelection ?? selection)
-    }
-
-    private var progress: CGFloat {
-        let range = max(maximumDuration - minimumDuration, 1)
-        return CGFloat(min(max((displayedSelection - minimumDuration) / range, 0), 1))
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let size = min(proxy.size.width, proxy.size.height)
-            let center = CGPoint(x: proxy.size.width / 2, y: proxy.size.height / 2)
-            let notchRadius = size * 0.405
-            // `Circle().stroke` follows the circle's geometric path at exactly
-            // half the proposed size. Keep the knob centered on that same path
-            // instead of approximating it with an inset percentage.
-            let trackRadius = size / 2
-            let markerCount = 31
-
-            ZStack {
-                Circle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(
-                        Circle()
-                            .stroke(Color.white.opacity(0.12), lineWidth: 0.8)
-                    )
-                    .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
-
-                Circle()
-                    .trim(from: 0, to: 0.75)
-                    .stroke(
-                        Color.secondary.opacity(0.14),
-                        style: StrokeStyle(lineWidth: 5, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(startRotation))
-
-                Circle()
-                    .trim(from: 0, to: 0.75 * progress)
-                    .stroke(
-                        IronTheme.metricTime.gradient,
-                        style: StrokeStyle(lineWidth: 6, lineCap: .round)
-                    )
-                    .rotationEffect(.degrees(startRotation))
-                    .shadow(color: IronTheme.metricTime.opacity(0.22), radius: 4)
-                    .animation(
-                        isDragging || reduceMotion ? nil : IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
-                        value: progress
-                    )
-
-                ForEach(0..<markerCount, id: \.self) { index in
-                    let markerProgress = Double(index) / Double(markerCount - 1)
-                    Capsule(style: .continuous)
-                        .fill(
-                            markerProgress <= Double(progress)
-                                ? IronTheme.metricTime.opacity(index.isMultiple(of: 5) ? 0.92 : 0.62)
-                                : Color.secondary.opacity(index.isMultiple(of: 5) ? 0.46 : 0.25)
-                        )
-                        .frame(
-                            width: index.isMultiple(of: 5) ? 2.5 : 1.5,
-                            height: index.isMultiple(of: 5) ? 9 : 6
-                        )
-                        .offset(y: -notchRadius)
-                        .rotationEffect(.degrees(-135 + (markerProgress * 270)))
-                }
-
-                Circle()
-                    .fill(IronTheme.metricTime)
-                    .frame(width: 16, height: 16)
-                    .overlay(Circle().stroke(IronTheme.onAccent.opacity(0.88), lineWidth: 1.5))
-                    .shadow(color: IronTheme.metricTime.opacity(0.30), radius: 3, y: 1)
-                    // Scale the knob in its own local space. Applying this
-                    // after the radial offset also scales the offset vector,
-                    // which made a press-and-hold visibly jump outward.
-                    .scaleEffect(isDragging && !reduceMotion ? 1.10 : 1)
-                    .offset(y: -trackRadius)
-                    .rotationEffect(.degrees(-135 + (Double(progress) * 270)))
-                    .animation(
-                        isDragging || reduceMotion ? nil : IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion),
-                        value: progress
-                    )
-                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isDragging)
-
-                VStack(spacing: 3) {
-                    Text(timeTitle(displayedSelection))
-                        .font(.ironMetric(.largeTitle))
-                        .foregroundStyle(IronTheme.metricTime)
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(displayedSelection))
-                    Text(subtitle)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.72)
-                    Text("15-sec steps")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 20)
-                .allowsHitTesting(false)
-            }
-            .frame(width: size, height: size)
-            .contentShape(Circle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !isDragging {
-                            isDragging = true
-                            draftSelection = displayedSelection
-                            lastFeedbackNotch = notch(for: displayedSelection)
-                        }
-                        updateDraft(at: value.location, center: center, radius: notchRadius)
-                    }
-                    .onEnded { _ in
-                        if let draftSelection {
-                            selection = draftSelection
-                        }
-                        isDragging = false
-                        draftSelection = nil
-                        lastFeedbackNotch = nil
-                    }
-            )
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("Rest duration dial")
-            .accessibilityValue(timeTitle(displayedSelection))
-            .accessibilityHint("Rotate around the arc to change the rest duration")
-            .accessibilityAdjustableAction { direction in
-                switch direction {
-                case .increment:
-                    selection = clamped(selection + secondsStep)
-                case .decrement:
-                    selection = clamped(selection - secondsStep)
-                @unknown default:
-                    break
-                }
-            }
-            .onChange(of: selection) { _, _ in
-                guard !isDragging else { return }
-                draftSelection = nil
-            }
-        }
-    }
-
-    private func notch(for duration: TimeInterval) -> Int {
-        Int((duration / max(secondsStep, 1)).rounded())
-    }
-
-    private func updateDraft(at location: CGPoint, center: CGPoint, radius: CGFloat) {
-        let dx = location.x - center.x
-        let dy = center.y - location.y
-        let distance = (dx * dx + dy * dy).squareRoot()
-        guard distance >= radius * 0.48 else { return }
-
-        var angle = atan2(dx, dy) * 180 / .pi
-        if angle < 0 { angle += 360 }
-        if angle > 135, angle < 225 {
-            angle = angle <= 180 ? endDialAngle : startDialAngle
-        } else if angle < startDialAngle {
-            angle += 360
-        }
-
-        let dialProgress = min(max((angle - startDialAngle) / (endDialAngle - startDialAngle), 0), 1)
-        let range = max(maximumDuration - minimumDuration, 1)
-        let raw = minimumDuration + (TimeInterval(dialProgress) * range)
-        let proposed = clamped((raw / secondsStep).rounded() * secondsStep)
-        guard proposed != draftSelection else { return }
-
-        draftSelection = proposed
-        let proposedNotch = notch(for: proposed)
-        guard proposedNotch != lastFeedbackNotch else { return }
-        lastFeedbackNotch = proposedNotch
-
-        if SettingsStore.shared.workoutHaptics {
-            let feedback = UISelectionFeedbackGenerator()
-            feedback.prepare()
-            feedback.selectionChanged()
-        }
-        if SettingsStore.shared.workoutSounds {
-            IronSoundPlayer.shared.play(.tick)
-        }
-    }
-
-    private func clamped(_ duration: TimeInterval) -> TimeInterval {
-        min(max(duration, minimumDuration), maximumDuration)
-    }
-
-    private func timeTitle(_ duration: TimeInterval) -> String {
-        restTimerDurationFormatter.string(from: duration) ?? "0:00"
+extension RestTimerStore {
+    /// Keep elapsed time and paused state. `adjust` owns notification and Watch
+    /// synchronization, and is invoked only once after the ruler is released.
+    /// Returns true when the request needed the elapsed + 15 second clamp.
+    @discardableResult
+    func setTotalRestLength(_ requested: TimeInterval) -> Bool {
+        guard let total = restTimerDuration, let remaining = restTimerRemainingTime,
+              remaining > 0 else { return false }
+        let minimum = max(0, total - remaining) + 15
+        let clamped = max(requested, minimum)
+        if clamped != total { adjust(by: clamped - total) }
+        return requested < minimum
     }
 }
 
 #if DEBUG
 struct RestTimerView_Previews: PreviewProvider {
     static var previews: some View {
-        NavigationStack {
-            RestTimerView()
-                .navigationTitle("Rest Timer")
-                .navigationBarTitleDisplayMode(.inline)
-        }
-        .environmentObject(RestTimerStore.shared)
+        RestTimerView().environmentObject(RestTimerStore.shared)
     }
 }
 #endif

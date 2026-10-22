@@ -71,6 +71,7 @@ struct CurrentWorkoutView: View {
     @State private var supersetExercise: WorkoutExercise?
     @State private var personalRecordBanner: PersonalRecordBanner?
     @State private var scrollTarget: NSManagedObjectID?
+    @State private var openSwipeSetID: NSManagedObjectID?
     @State private var runningSetTimers: [NSManagedObjectID: Date] = [:]
     @State private var restPillExerciseID: NSManagedObjectID?
     @State private var restPillSetID: NSManagedObjectID?
@@ -78,6 +79,10 @@ struct CurrentWorkoutView: View {
     @State private var restPillRevealsAt: Date?
     @State private var restRingPulses = false
     @State private var restEndFeedback = 0
+    @State private var showsRunningRestRuler = false
+    @State private var restLengthClampFeedback = 0
+    @State private var restStripScrollRequest = 0
+    @State private var restStripHighlighted = false
 
     init(workout: Workout, onMinimize: @escaping () -> Void = {}) {
         self.workout = workout
@@ -167,6 +172,14 @@ struct CurrentWorkoutView: View {
 
                 VStack(spacing: 0) {
                     workoutTopBar
+                    if !workoutExercises.isEmpty {
+                        WorkoutSessionProgressBar(workout: workout) { exerciseID in
+                            scrollTarget = exerciseID
+                        }
+                        .padding(.horizontal, IronTheme.horizontalPadding)
+                        .padding(.top, 2)
+                        .padding(.bottom, 8)
+                    }
                     ZStack(alignment: .top) {
                         VStack(spacing: 0) {
                             if !isSessionHeaderCollapsed {
@@ -223,6 +236,11 @@ struct CurrentWorkoutView: View {
                                     setSessionHeaderCollapsed(true)
                                 } else if offset >= -1, isSessionHeaderCollapsed {
                                     setSessionHeaderCollapsed(false)
+                                }
+                            }
+                            .onChange(of: restStripScrollRequest) { _, _ in
+                                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                                    scrollProxy.scrollTo("active-rest-strip", anchor: .center)
                                 }
                             }
                             .onChange(of: scrollTarget) { _, target in
@@ -283,24 +301,6 @@ struct CurrentWorkoutView: View {
         .sheet(item: $activeSheet) { sheet in
             persistenceAlert(sheetView(sheet))
         }
-        .sheet(item: $restTimerEditorExercise) { workoutExercise in
-            let inheritedDuration = workoutDefaultRestTimerDuration(for: workoutExercise)
-            persistenceAlert(RestTimerConfigurationSheet(
-                title: "Rest timer",
-                subtitle: "Recovery after each completed set",
-                initialDuration: workoutExercise.restTimerDurationValue ?? inheritedDuration,
-                secondaryActionTitle: workoutExercise.restTimerDurationValue == nil
-                    ? "Keep workout default · \(restTimerDurationFormatter.string(from: inheritedDuration) ?? "0:00")"
-                    : "Use workout default · \(restTimerDurationFormatter.string(from: inheritedDuration) ?? "0:00")",
-                onSecondaryAction: {
-                    setRestTimer(nil, for: workoutExercise)
-                },
-                shouldDismiss: { persistenceError == nil },
-                onApply: { duration in
-                    setRestTimer(duration, for: workoutExercise)
-                }
-            ))
-        }
         // An alert, not a confirmation dialog: this is irreversible, so it should
         // dim the log behind it and demand an explicit choice.
         .alert("Discard this workout?", isPresented: $showingDiscardConfirmation) {
@@ -320,7 +320,6 @@ struct CurrentWorkoutView: View {
                     && !showingFinishEditor
                     && !showingExerciseSelector
                     && activeSheet == nil
-                    && restTimerEditorExercise == nil
             },
             set: { if !$0 { persistenceError = nil } }
         )) {
@@ -407,6 +406,7 @@ struct CurrentWorkoutView: View {
         .sensoryFeedback(.impact(weight: .light), trigger: restEndFeedback) { _, _ in
             settingsStore.workoutHaptics
         }
+        .sensoryFeedback(.error, trigger: restLengthClampFeedback)
     }
 
     private func applyIdleTimerPreference() {
@@ -442,7 +442,7 @@ struct CurrentWorkoutView: View {
         case .restTimer:
             IronUtilitySheet(
                 title: "Rest Timer",
-                subtitle: "Dial in your recovery",
+                subtitle: "",
                 systemImage: "timer",
                 onClose: { activeSheet = nil }
             ) {
@@ -947,26 +947,33 @@ struct CurrentWorkoutView: View {
         let sets = workoutSets(for: workoutExercise)
         let isBarbell = exercise?.type == .barbell
         let usesDuration = sets.contains { $0.durationValue != nil }
+        let headerLayout = usesAccessibilityHeaderLayout
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
+            : AnyLayout(HStackLayout(spacing: 12))
 
         return VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            headerLayout {
                 if let exercise = exercise {
-                    ExerciseDiagramThumbnail(exercise: exercise, size: 50)
+                    ExerciseDiagramThumbnail(exercise: exercise, size: 42)
                 } else {
                     Circle()
-                        .fill(Color(.tertiarySystemFill))
-                        .frame(width: 50, height: 50)
+                        .fill(IronTheme.tertiaryFill)
+                        .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
                         .overlay(Image(systemName: "dumbbell.fill").foregroundStyle(.secondary))
                 }
 
                 if let exercise = exercise {
                     NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                        VStack(alignment: .leading, spacing: 3) {
+                        VStack(alignment: .leading, spacing: 4) {
                             Text(exercise.title)
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(.tint)
+                                .font(.headline)
+                                .foregroundStyle(IronTheme.primaryText)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                                .lineLimit(2)
+                                .lineLimit(usesAccessibilityHeaderLayout ? nil : 2)
+
+                            Text(exercise.equipment.map { $0.capitalized }.joined(separator: ", "))
+                                .font(.subheadline)
+                                .foregroundStyle(IronTheme.secondaryText)
 
                             if workoutExercise.supersetUuid != nil {
                                 Label("Superset", systemImage: "link")
@@ -980,35 +987,54 @@ struct CurrentWorkoutView: View {
                     .accessibilityHint("Double tap to open. Touch and hold, then drag to reorder.")
                 } else {
                     Text("Unknown Exercise")
-                        .font(.body.weight(.semibold))
+                        .font(.headline)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                Menu {
-                    exerciseMenuItems(
-                        for: workoutExercise,
-                        sets: sets,
-                        isBarbell: isBarbell && !usesDuration
-                    )
-                } label: {
-                    Label("Exercise Actions", systemImage: "ellipsis")
-                        .labelStyle(.iconOnly)
-                        .frame(width: 42, height: 42)
-                        .contentShape(Rectangle())
+                VStack(alignment: .trailing, spacing: 0) {
+                    HStack(spacing: 4) {
+                        exerciseRestChip(for: workoutExercise, sets: sets)
+                        Menu {
+                            exerciseMenuItems(
+                                for: workoutExercise,
+                                sets: sets,
+                                isBarbell: isBarbell && !usesDuration
+                            )
+                        } label: {
+                            Label("Exercise Actions", systemImage: "ellipsis")
+                                .labelStyle(.iconOnly)
+                                .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                                .contentShape(Rectangle())
+                        }
+                    }
+                    if restTimerEditorExercise?.objectID == workoutExercise.objectID {
+                        Button("Done") { toggleDefaultRestRuler(for: workoutExercise) }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(IronTheme.accent)
+                            .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                    }
                 }
+            }
+
+            if restTimerEditorExercise?.objectID == workoutExercise.objectID {
+                RestLengthRuler(value: Binding(
+                    get: { restTimerDuration(for: workoutExercise) }, set: { _ in }
+                )) { duration in
+                    setRestTimer(duration, for: workoutExercise)
+                }
+                .padding(.top, 10)
+                .transition(restPillTransition)
             }
 
             TextField("Add notes here…", text: exerciseCommentBinding(for: workoutExercise))
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
-                .padding(.top, 9)
-
-            restTimerMenu(for: workoutExercise)
-                .padding(.vertical, 13)
+                .padding(.top, 8)
 
             setTableHeader(
                 usesDuration: usesDuration
             )
+            .padding(.top, 12)
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { setIndex, set in
                 let previousSet = latestHistorySet(for: workoutExercise, at: setIndex)
@@ -1030,6 +1056,7 @@ struct CurrentWorkoutView: View {
                         return saved
                     },
                     allowsSwipeToDelete: true,
+                    openSwipeSetID: $openSwipeSetID,
                     isCurrent: sets.first(where: { !$0.isCompleted })?.objectID == set.objectID,
                     previousWeight: previousSet?.weightValue,
                     previousRepetitions: previousSet.map { Int($0.repetitionsValue) }
@@ -1045,7 +1072,7 @@ struct CurrentWorkoutView: View {
                 if isRestPillVisible,
                    restPillExerciseID == workoutExercise.objectID,
                    restPillSetID == set.objectID {
-                    activeRestTimerStrip
+                    activeRestTimerContent
                         .padding(.vertical, 6)
                         .transition(restPillTransition)
                 }
@@ -1062,7 +1089,7 @@ struct CurrentWorkoutView: View {
             if isRestPillVisible,
                restPillExerciseID == workoutExercise.objectID,
                !sets.contains(where: { $0.objectID == restPillSetID }) {
-                activeRestTimerStrip
+                activeRestTimerContent
                     .padding(.vertical, 6)
                     .transition(restPillTransition)
             }
@@ -1083,12 +1110,13 @@ struct CurrentWorkoutView: View {
         // stacked five full-bleed rules per block, which is what made the
         // logger read as a flat spreadsheet instead of an Apple surface.
         .background(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(Color(.secondarySystemGroupedBackground))
+            RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
+                .fill(IronTheme.surface)
         )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
         .padding(.horizontal, IronTheme.horizontalPadding)
         .padding(.top, 14)
+        .id(workoutExercise.objectID)
         .dropDestination(for: String.self) { payloads, _ in
             guard let payload = payloads.first,
                   let source = workoutExercises.firstIndex(where: {
@@ -1207,6 +1235,7 @@ struct CurrentWorkoutView: View {
               let exercise = activeRestTimerExercise else {
             withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
                 isRestPillVisible = false
+                showsRunningRestRuler = false
             }
             return
         }
@@ -1241,6 +1270,35 @@ struct CurrentWorkoutView: View {
         }
         withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
             isRestPillVisible = false
+            showsRunningRestRuler = false
+        }
+    }
+
+    private var activeRestTimerContent: some View {
+        VStack(spacing: 10) {
+            activeRestTimerStrip
+                .scaleEffect(reduceMotion || !restStripHighlighted ? 1 : 1.03)
+                .opacity(reduceMotion && restStripHighlighted ? 0.7 : 1)
+            if showsRunningRestRuler {
+                RestLengthRuler(value: Binding(
+                    get: { restTimerStore.restTimerDuration ?? 90 }, set: { _ in }
+                )) { duration in
+                    if restTimerStore.setTotalRestLength(duration) { restLengthClampFeedback += 1 }
+                    WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+                }
+                .transition(restPillTransition)
+            }
+        }
+        .id("active-rest-strip")
+        .task(id: restStripScrollRequest) {
+            guard restStripScrollRequest > 0 else { return }
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                restStripHighlighted = true
+            }
+            try? await Task.sleep(for: .milliseconds(250))
+            withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                restStripHighlighted = false
+            }
         }
     }
 
@@ -1271,7 +1329,11 @@ struct CurrentWorkoutView: View {
     }
 
     private func activeRestTimerReadout(remaining: TimeInterval, duration: TimeInterval, countdown: String) -> some View {
-        Button(action: { activeSheet = .restTimer }) {
+        Button {
+            withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+                showsRunningRestRuler.toggle()
+            }
+        } label: {
             HStack(spacing: 8) {
                 IronRestRing(progress: duration > 0 ? remaining / duration : 0)
                     .scaleEffect(reduceMotion || !restRingPulses ? 1 : 1.12)
@@ -1295,7 +1357,7 @@ struct CurrentWorkoutView: View {
         .buttonStyle(.plain)
         .accessibilityLabel(restTimerStore.isPaused ? "Rest timer paused" : "Rest timer")
         .accessibilityValue("\(countdown) remaining of \(restTimerTimeText(duration))")
-        .accessibilityHint("Opens the rest timer dial")
+        .accessibilityHint("Shows rest length")
     }
 
     private var activeRestTimerControls: some View {
@@ -1361,30 +1423,64 @@ struct CurrentWorkoutView: View {
     }
 
     private func stopActiveRestTimer() {
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+            showsRunningRestRuler = false
+        }
         restTimerStore.cancel()
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
     }
 
-    private func restTimerMenu(for workoutExercise: WorkoutExercise) -> some View {
-        Button {
-            restTimerEditorExercise = workoutExercise
-        } label: {
-            HStack(spacing: 7) {
-                Label("Rest Timer", systemImage: "timer")
-                Spacer()
-                Text(restTimerTitle(for: workoutExercise))
-                    .monospacedDigit()
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+    @ViewBuilder
+    private func exerciseRestChip(for workoutExercise: WorkoutExercise, sets: [WorkoutSet]) -> some View {
+        let onlyDurationSets = !sets.isEmpty && sets.allSatisfy { $0.durationValue != nil }
+        if !onlyDurationSets || workoutExercise.restTimerDurationValue != nil {
+            TimelineView(.periodic(from: .now, by: 1)) { _ in
+                let remaining = restTimerStore.restTimerRemainingTime ?? 0
+                let running = activeRestTimerExercise?.objectID == workoutExercise.objectID && remaining > 0
+                let duration = restTimerStore.restTimerDuration ?? 0
+                Button {
+                    if running {
+                        restStripScrollRequest += 1
+                    } else {
+                        toggleDefaultRestRuler(for: workoutExercise)
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        if running {
+                            IronRestRing(progress: duration > 0 ? remaining / duration : 0, size: 16, tint: restTimerTint)
+                                .accessibilityHidden(true)
+                        } else {
+                            Image(systemName: "timer")
+                                .font(.system(size: 13, weight: .semibold))
+                        }
+                        Text(running ? restTimerCountdownText(remaining) : restTimerTitle(for: workoutExercise))
+                            .font(.ironMetric(.footnote, weight: .bold))
+                            .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
+                    }
+                    .foregroundStyle(running ? restTimerTint : IronTheme.metricTime)
+                    .padding(.horizontal, 10)
+                    .frame(height: 32)
+                    .background(IronTheme.metricTimeContainer, in: Capsule())
+                    .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: restTimerCountdownText(remaining))
+                .accessibilityLabel(running ? (restTimerStore.isPaused ? "Rest timer paused" : "Rest timer") : "Exercise rest length")
+                .accessibilityValue(running ? restTimerCountdownText(remaining) : restTimerTitle(for: workoutExercise))
+                .accessibilityHint(running ? "Shows the running rest timer" : "Shows rest length")
+                .contextMenu {
+                    Button("Use Workout Default") { setRestTimer(nil, for: workoutExercise) }
+                }
             }
-            .font(.subheadline)
-            .frame(minHeight: 44)
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("Rest timer for \(restTimerTitle(for: workoutExercise))")
-        .accessibilityHint("Opens the rest duration picker")
+    }
+
+    private func toggleDefaultRestRuler(for workoutExercise: WorkoutExercise) {
+        withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
+            restTimerEditorExercise = restTimerEditorExercise?.objectID == workoutExercise.objectID
+                ? nil : workoutExercise
+        }
     }
 
     private var finishWorkoutSheet: some View {
@@ -1987,7 +2083,10 @@ struct CurrentWorkoutView: View {
                 set.isCompleted = false
             }
         }
-        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        if saved {
+            workout.objectWillChange.send()
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        }
         return saved
     }
 
@@ -2000,7 +2099,10 @@ struct CurrentWorkoutView: View {
                 managedObjectContext.delete(set)
             }
         }
-        if saved { WorkoutLiveActivityManager.shared.startOrUpdate(for: workout) }
+        if saved {
+            workout.objectWillChange.send()
+            WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
+        }
         return saved
     }
 
@@ -2119,9 +2221,11 @@ struct CurrentWorkoutView: View {
 
     @discardableResult
     private func setRestTimer(_ duration: TimeInterval?, for workoutExercise: WorkoutExercise) -> Bool {
-        persistMutation {
+        let saved = persistMutation {
             workoutExercise.restTimerDurationValue = duration
         }
+        if saved { workout.objectWillChange.send() }
+        return saved
     }
 
     @discardableResult
@@ -2812,6 +2916,119 @@ enum FinishWorkoutMediaStore {
     }
 }
 
+/// Sits above the scrolling/collapsing region, so the pill's 66 pt content
+/// clearance stays relative to the same scroll-view origin in both states.
+private struct WorkoutSessionProgressBar: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var exerciseStore: ExerciseStore
+    @ObservedObject var workout: Workout
+    let onSelect: (NSManagedObjectID) -> Void
+    private var exercises: [WorkoutExercise] {
+        workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+    }
+    @State private var selectedExerciseID: NSManagedObjectID?
+    @State private var selectionFeedback = 0
+
+    private func sets(for exercise: WorkoutExercise) -> [WorkoutSet] {
+        exercise.workoutSets?.array as? [WorkoutSet] ?? []
+    }
+
+    private var totalCount: Int { exercises.reduce(0) { $0 + sets(for: $1).count } }
+    private var completedCount: Int { exercises.reduce(0) { $0 + sets(for: $1).filter(\.isCompleted).count } }
+    private var currentExercise: WorkoutExercise? {
+        exercises.first { sets(for: $0).contains { !$0.isCompleted } }
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let available = max(0, proxy.size.width - CGFloat(max(exercises.count - 1, 0)) * 2)
+            HStack(spacing: 2) {
+                ForEach(exercises, id: \.objectID) { exercise in
+                    let count = sets(for: exercise).count
+                    let fraction = totalCount > 0 ? Double(count) / Double(totalCount) : 1 / Double(max(exercises.count, 1))
+                    let width = available * fraction
+                    segment(exercise, width: width)
+                        .frame(width: width, height: 6)
+                }
+            }
+            // One 44 pt tall touch surface maps taps to their segment, including
+            // narrow segments, without overlapping individual button targets.
+            .frame(height: IronTheme.controlHeight)
+            .contentShape(Rectangle())
+            .gesture(SpatialTapGesture().onEnded { value in
+                var edge: CGFloat = 0
+                for exercise in exercises {
+                    let fraction = totalCount > 0
+                        ? Double(sets(for: exercise).count) / Double(totalCount)
+                        : 1 / Double(max(exercises.count, 1))
+                    edge += available * fraction + 2
+                    if value.location.x <= edge {
+                        select(exercise)
+                        return
+                    }
+                }
+                if let last = exercises.last { select(last) }
+            })
+            .frame(height: 6)
+        }
+        .frame(height: 6)
+        .sensoryFeedback(.selection, trigger: selectionFeedback)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Workout progress")
+        .accessibilityValue(accessibilitySummary)
+        .accessibilityAdjustableAction { direction in
+            guard !exercises.isEmpty else { return }
+            let id = selectedExerciseID ?? currentExercise?.objectID
+            let index = exercises.firstIndex { $0.objectID == id } ?? 0
+            switch direction {
+            case .increment: select(exercises[min(index + 1, exercises.count - 1)])
+            case .decrement: select(exercises[max(index - 1, 0)])
+            default: break
+            }
+        }
+    }
+
+    private func segment(_ exercise: WorkoutExercise, width: CGFloat) -> some View {
+        let allSets = sets(for: exercise)
+        let completed = allSets.filter(\.isCompleted)
+        let fillWidth = width * Double(completed.count) / Double(max(allSets.count, 1))
+        return Capsule()
+            .fill(IronTheme.tertiaryFill)
+            .overlay(alignment: .leading) {
+                HStack(spacing: 0) {
+                    ForEach(completed, id: \.objectID) { set in
+                        Rectangle()
+                            .fill(set.tagValue == nil ? IronTheme.accent : IronTheme.setFill(for: set.tagValue).tint.opacity(0.7))
+                    }
+                }
+                .frame(width: fillWidth)
+            }
+            .clipShape(Capsule())
+            .overlay {
+                Capsule().strokeBorder(
+                    currentExercise?.objectID == exercise.objectID ? IronTheme.accent.opacity(0.5) : .clear,
+                    lineWidth: 1
+                )
+            }
+            .frame(height: 6)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completed.count)
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: allSets.count)
+    }
+
+    private var accessibilitySummary: String {
+        let progress = "\(completedCount) of \(totalCount) sets complete"
+        guard let currentExercise else { return progress }
+        let title = currentExercise.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise"
+        return "\(progress), current exercise \(title)"
+    }
+
+    private func select(_ exercise: WorkoutExercise) {
+        selectedExerciseID = exercise.objectID
+        selectionFeedback += 1
+        onSelect(exercise.objectID)
+    }
+}
+
 enum InlineWorkoutSetLayout {
     static let spacing: CGFloat = 4
     static let completedChromeExpansion: CGFloat = 6
@@ -2836,6 +3053,7 @@ struct InlineWorkoutSetRow: View {
     let onDelete: () -> Bool
     let onChanged: () -> Bool
     var allowsSwipeToDelete = false
+    var openSwipeSetID: Binding<NSManagedObjectID?> = .constant(nil)
     var isCurrent = false
     // Stored in kilograms, just like the set; history is only a suggestion.
     var previousWeight: Double? = nil
@@ -2855,11 +3073,20 @@ struct InlineWorkoutSetRow: View {
     }
 
     private var badgeColor: Color {
+        if set.isCompleted { return IronTheme.setFill(for: set.tagValue).tint }
         if set.tagValue == .warmUp { return IronTheme.metricSets }
         return set.isCompleted || isRaisedCurrent ? IronTheme.accent : IronTheme.secondaryText
     }
 
     private var badgeFill: Color {
+        if set.isCompleted {
+            switch set.tagValue {
+            case .warmUp: return IronTheme.setWarmUpContainer
+            case .dropSet: return IronTheme.setDropContainer
+            case .failure: return IronTheme.setFailureContainer
+            case nil: return IronTheme.accentSoft
+            }
+        }
         if set.tagValue == .warmUp { return IronTheme.metricSetsContainer }
         if set.isCompleted { return IronTheme.accentSoft }
         return isRaisedCurrent ? .clear : IronTheme.field
@@ -2977,10 +3204,15 @@ struct InlineWorkoutSetRow: View {
     @State private var isSwipingSet = false
     @State private var isPerformingSwipeDelete = false
     @State private var measuredRowWidth: CGFloat = 0
+    @State private var measuredRowHeight: CGFloat = 52
     @FocusState private var focusedField: EntryField?
 
     private let deleteActionWidth: CGFloat = 76
-    private let deleteRevealOverlap: CGFloat = 18
+    private let deleteActionGap: CGFloat = 8
+
+    private var openSwipeOffset: CGFloat {
+        -(deleteActionWidth + deleteActionGap + InlineWorkoutSetLayout.completedChromeExpansion)
+    }
 
     private var fullSwipeDeleteThreshold: CGFloat {
         effectiveRowWidth * 0.55
@@ -3069,13 +3301,37 @@ struct InlineWorkoutSetRow: View {
                 }
             }
             // Keep sweep state and success feedback alive across presentation changes.
-            .ironSetCompletion(isComplete: set.isCompleted, feedbackEnabled: completionFeedbackEnabled)
+            .ironSetCompletion(
+                isComplete: set.isCompleted, feedbackEnabled: completionFeedbackEnabled,
+                tint: IronTheme.setFill(for: set.tagValue).tint,
+                settledOpacity: IronTheme.setFill(for: set.tagValue).settled,
+                peakOpacity: IronTheme.setFill(for: set.tagValue).peak
+            )
             .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
             .animation(
                 IronMotion.preferred(isCurrent && !usesDuration ? IronMotion.collapse : IronMotion.snappy, reduceMotion: reduceMotion),
                 value: set.isCompleted
             )
             .animation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion), value: showsFocusedEditor)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear { measuredRowHeight = proxy.size.height }
+                        .onChange(of: proxy.size.height) { _, height in measuredRowHeight = height }
+                }
+            }
+            .allowsHitTesting(swipeOffset == 0)
+            .accessibilityHidden(swipeOffset < 0)
+            .overlay {
+                if swipeOffset < 0 {
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture(perform: closeSwipe)
+                        .padding(.horizontal, -InlineWorkoutSetLayout.completedChromeExpansion)
+                        .accessibilityLabel("Close delete action")
+                        .accessibilityAddTraits(.isButton)
+                }
+            }
             .padding(.vertical, 2)
             .offset(x: swipeOffset)
         }
@@ -3097,6 +3353,9 @@ struct InlineWorkoutSetRow: View {
             onChanged: handleSwipeChanged,
             onEnded: handleSwipeEnded
         )
+        .onChange(of: openSwipeSetID.wrappedValue) { _, id in
+            if id != set.objectID, !isPerformingSwipeDelete { closeSwipe() }
+        }
         .sensoryFeedback(.selection, trigger: stepFeedback)
         .onChange(of: showsFocusedEditor) { _, _ in
             if focusedField == nil { synchronizeEntryText() }
@@ -3485,9 +3744,9 @@ struct InlineWorkoutSetRow: View {
             .accessibilityRemoveTraits(.isSelected)
             .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
         }
-        // Preserve the compact row's existing insets and columns.
-        .padding(.vertical, 5)
-        .frame(maxWidth: .infinity)
+        // Keep a 52 pt compact row while preserving its columns and 44 pt targets.
+        .padding(.vertical, 2)
+        .frame(maxWidth: .infinity, minHeight: 52)
         .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
         .background {
             RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
@@ -3643,31 +3902,44 @@ struct InlineWorkoutSetRow: View {
 
     private var swipeDeleteAction: some View {
         Button(action: performSwipeDelete) {
-            ZStack(alignment: .trailing) {
-                RoundedRectangle(cornerRadius: IronTheme.pillCornerRadius, style: .continuous)
-                    .fill(IronTheme.danger)
-
-                HStack(spacing: 5) {
-                    Image(systemName: "trash.fill")
-                        .font(.system(size: 14, weight: .bold))
+            HStack(spacing: 6) {
+                Image(systemName: "trash.fill")
+                    .font(.system(size: 14, weight: .bold))
+                if revealedActionWidth >= 52 {
                     Text("Delete")
                         .font(.system(size: 12, weight: .bold))
                 }
-                .fixedSize()
-                .foregroundColor(IronTheme.onMedia)
-                .frame(width: deleteRevealWidth)
-                .opacity(deleteRevealWidth >= 52 ? 1 : deleteRevealWidth / 52)
-                .scaleEffect(reduceMotion || deleteRevealWidth >= 52 ? 1 : 0.82)
             }
-            .frame(width: deleteRevealWidth + deleteRevealOverlap, height: 52)
+            .fixedSize()
+            .foregroundStyle(IronTheme.onMedia)
+            .opacity(min(revealedActionWidth / 52, 1))
+            .scaleEffect(reduceMotion ? 1 : 0.82 + 0.18 * min(revealedActionWidth / 52, 1))
+            .frame(width: revealedActionWidth, height: measuredRowHeight)
+            .background(IronTheme.danger, in: RoundedRectangle(
+                cornerRadius: IronTheme.compactCornerRadius, style: .continuous
+            ))
+            .clipped()
         }
         .buttonStyle(.plain)
-        .frame(width: deleteRevealWidth + deleteRevealOverlap, height: 52)
         .contentShape(Rectangle())
-        .clipped()
-        .allowsHitTesting(deleteRevealWidth >= deleteActionWidth * 0.8)
+        .allowsHitTesting(revealedActionWidth >= deleteActionWidth * 0.8)
         .accessibilityLabel("Delete set \(index + 1)")
-        .accessibilityHidden(deleteRevealWidth < deleteActionWidth * 0.8)
+        .accessibilityHidden(revealedActionWidth < deleteActionWidth * 0.8)
+    }
+
+    private var revealedActionWidth: CGFloat {
+        // With row width W, reveal R and chrome expansion E, the row ends at
+        // W - R + E. The action begins at W - (R - 8 - E), exactly 8 pt later.
+        // This holds for every offset and for compact, timed and focused rows.
+        max(0, deleteRevealWidth - deleteActionGap - InlineWorkoutSetLayout.completedChromeExpansion)
+    }
+
+    private func closeSwipe() {
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            swipeOffset = 0
+            isSwipingSet = false
+            if openSwipeSetID.wrappedValue == set.objectID { openSwipeSetID.wrappedValue = nil }
+        }
     }
 
     private var deleteRevealWidth: CGFloat {
@@ -3695,6 +3967,7 @@ struct InlineWorkoutSetRow: View {
         if !isSwipingSet {
             isSwipingSet = true
             swipeStartOffset = swipeOffset
+            openSwipeSetID.wrappedValue = set.objectID
             focusedField = nil
         }
 
@@ -3715,7 +3988,7 @@ struct InlineWorkoutSetRow: View {
         } else {
             withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 swipeOffset = projectedOffset < -deleteActionWidth * 0.42
-                    ? -deleteActionWidth
+                    ? openSwipeOffset
                     : 0
             }
         }
@@ -3731,7 +4004,12 @@ struct InlineWorkoutSetRow: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
             withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
-                if !onDelete() {
+                if onDelete() {
+                    if settingsStore.workoutHaptics {
+                        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                    }
+                    if openSwipeSetID.wrappedValue == set.objectID { openSwipeSetID.wrappedValue = nil }
+                } else {
                     swipeOffset = 0
                     isPerformingSwipeDelete = false
                 }
@@ -3742,17 +4020,25 @@ struct InlineWorkoutSetRow: View {
 
 private struct RPEPickerSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @ObservedObject var set: WorkoutSet
     let onChanged: () -> Bool
 
-    @State private var selection: Double
+    @State private var selection: Double?
     @State private var showingSaveError = false
+    private let values = Array(RPE.allowedValues)
 
     init(set: WorkoutSet, onChanged: @escaping () -> Bool) {
         self.set = set
         self.onChanged = onChanged
-        _selection = State(initialValue: set.rpeValue ?? 7)
+        let sets = set.workoutExercise?.workoutSets?.array as? [WorkoutSet] ?? []
+        let index = sets.firstIndex(of: set) ?? 0
+        let previousRPE = index > 0 ? sets[index - 1].rpeValue : nil
+        _selection = State(initialValue: set.rpeValue ?? previousRPE)
     }
+
+    private var valueTitle: String { selection.map { String(format: "%g", $0) } ?? "—" }
 
     var body: some View {
         IronUtilitySheet(
@@ -3761,50 +4047,78 @@ private struct RPEPickerSheet: View {
             systemImage: "gauge.with.dots.needle.50percent",
             onClose: { dismiss() }
         ) {
-            List {
-                Section {
-                    // A wheel is the platform control for picking one value from
-                    // an ordered scale, and it reads the selected RPE without the
-                    // bespoke carousel's custom scroll math.
-                    Picker("RPE", selection: $selection) {
-                        ForEach(Array(RPE.allowedValues), id: \.self) { value in
-                            Text(String(format: "%g", value))
-                                .font(.ironMetric(.body, weight: .semibold))
-                                .tag(value)
+            ScrollView {
+                VStack(spacing: 10) {
+                    VStack(spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text("RPE")
+                                .font(.headline)
+                                .foregroundStyle(IronTheme.secondaryText)
+                            Text(valueTitle)
+                                .font(.ironMetric(.largeTitle))
+                                .foregroundStyle(IronTheme.metricEffort)
+                                .contentTransition(reduceMotion ? .opacity : .numericText())
                         }
+                        Text(selection.flatMap { RPE.title($0) } ?? "Drag to rate this set")
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
-                    .pickerStyle(.wheel)
-                    .labelsHidden()
-                    .frame(height: 130)
-                } footer: {
-                    Text(RPE.title(selection) ?? "Choose how many repetitions you had left in reserve.")
-                }
+                    .multilineTextAlignment(.center)
+                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
 
-                Section {
-                    Button("Apply RPE \(String(format: "%g", selection))") {
+                    VStack(spacing: 4) {
+                        IronIntensityGraph(values: values, selection: $selection, color: IronTheme.metricEffort) {
+                            "RPE \(String(format: "%g", $0)), \(RPE.title($0) ?? "")"
+                        }
+                        .frame(height: 120)
+                        .accessibilityLabel("Set RPE")
+
+                        HStack(spacing: 5) {
+                            ForEach(values, id: \.self) { value in
+                                Text(value.rounded() == value ? String(format: "%g", value) : "")
+                                    .font(.ironMetric(.caption2, weight: .semibold))
+                                    .foregroundStyle(IronTheme.secondaryText)
+                                    .lineLimit(1)
+                                    .minimumScaleFactor(0.7)
+                                    .frame(maxWidth: .infinity)
+                            }
+                        }
+                        .accessibilityHidden(true)
+                    }
+                    Button {
                         set.rpeValue = selection
                         if onChanged() { dismiss() } else { showingSaveError = true }
+                    } label: {
+                        Text(selection == nil ? "Set RPE" : "Set RPE \(valueTitle)")
+                            .frame(maxWidth: .infinity)
                     }
-                    .fontWeight(.semibold)
+                    .ironProminentGlassButtonStyle()
+                    .buttonBorderShape(.capsule)
+                    .controlSize(.large)
+                    .frame(height: 50)
+                    .disabled(selection == nil)
 
                     if set.rpeValue != nil {
                         Button("Clear RPE", role: .destructive) {
                             set.rpeValue = nil
                             if onChanged() { dismiss() } else { showingSaveError = true }
                         }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(IronTheme.danger)
+                        .frame(minHeight: IronTheme.controlHeight)
                     }
                 }
+                .padding(.horizontal, IronTheme.horizontalPadding)
+                .padding(.vertical, 8)
             }
-            .listStyle(.insetGrouped)
         }
-        .presentationDetents([.height(430), .large])
+        .presentationDetents(dynamicTypeSize.isAccessibilitySize ? [.large] : [.height(400)])
         .presentationDragIndicator(.visible)
         .alert("Effort Not Saved", isPresented: $showingSaveError) {
             Button("OK", role: .cancel) { }
         } message: {
             Text("Your effort change has not been saved. Try applying it again before closing.")
         }
-        .sensoryFeedback(.selection, trigger: selection)
     }
 }
 

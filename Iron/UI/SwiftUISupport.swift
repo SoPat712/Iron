@@ -97,23 +97,29 @@ private struct IronSetCompletionModifier: ViewModifier {
 
     let isComplete: Bool
     let feedbackEnabled: Bool
+    let tint: Color
+    let settledOpacity: Double
+    let peakOpacity: Double
     @State private var lastCompletion: Bool
     @State private var fillProgress: CGFloat
     @State private var fillOpacity: Double
 
-    init(isComplete: Bool, feedbackEnabled: Bool) {
+    init(isComplete: Bool, feedbackEnabled: Bool, tint: Color, settledOpacity: Double, peakOpacity: Double) {
         self.isComplete = isComplete
         self.feedbackEnabled = feedbackEnabled
+        self.tint = tint
+        self.settledOpacity = settledOpacity
+        self.peakOpacity = peakOpacity
         _lastCompletion = State(initialValue: isComplete)
         _fillProgress = State(initialValue: isComplete ? 1 : 0)
-        _fillOpacity = State(initialValue: isComplete ? 0.12 : 0)
+        _fillOpacity = State(initialValue: isComplete ? settledOpacity : 0)
     }
 
     func body(content: Content) -> some View {
         content
             .background {
                 RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .fill(IronTheme.accent.opacity(fillOpacity))
+                    .fill(tint.opacity(fillOpacity))
                     .scaleEffect(x: reduceMotion ? 1 : fillProgress, anchor: .leading)
                     .clipShape(RoundedRectangle(
                         cornerRadius: IronTheme.compactCornerRadius, style: .continuous
@@ -124,13 +130,13 @@ private struct IronSetCompletionModifier: ViewModifier {
                 // Existing completed rows appear settled, without replaying feedback.
                 guard lastCompletion != isComplete else {
                     fillProgress = isComplete ? 1 : 0
-                    fillOpacity = isComplete ? 0.12 : 0
+                    fillOpacity = isComplete ? settledOpacity : 0
                     return
                 }
                 lastCompletion = isComplete
                 withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
                     fillProgress = isComplete ? 1 : 0
-                    fillOpacity = isComplete ? (reduceMotion ? 0.12 : 0.24) : 0
+                    fillOpacity = isComplete ? (reduceMotion ? settledOpacity : peakOpacity) : 0
                 }
                 guard isComplete, !reduceMotion else { return }
                 do {
@@ -139,8 +145,11 @@ private struct IronSetCompletionModifier: ViewModifier {
                     return
                 }
                 withAnimation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion)) {
-                    fillOpacity = 0.12
+                    fillOpacity = settledOpacity
                 }
+            }
+            .onChange(of: settledOpacity) { _, opacity in
+                if isComplete { fillOpacity = opacity }
             }
             .sensoryFeedback(.success, trigger: isComplete) { _, completed in
                 completed && feedbackEnabled
@@ -175,8 +184,17 @@ extension View {
     /// Apply to the row content inside its existing inset; this adds no geometry.
     /// Callers still own check symbols, field states, and the completion label.
     /// Reduce Motion uses a fade and keeps the haptic.
-    func ironSetCompletion(isComplete: Bool, feedbackEnabled: Bool = true) -> some View {
-        modifier(IronSetCompletionModifier(isComplete: isComplete, feedbackEnabled: feedbackEnabled))
+    func ironSetCompletion(
+        isComplete: Bool,
+        feedbackEnabled: Bool = true,
+        tint: Color = IronTheme.accent,
+        settledOpacity: Double = 0.12,
+        peakOpacity: Double = 0.24
+    ) -> some View {
+        modifier(IronSetCompletionModifier(
+            isComplete: isComplete, feedbackEnabled: feedbackEnabled,
+            tint: tint, settledOpacity: settledOpacity, peakOpacity: peakOpacity
+        ))
     }
 
     /// Fades and rises 8 points on appearance, delayed 40 ms per zero-based index.
@@ -194,6 +212,7 @@ struct IronRestRing: View {
 
     let progress: Double
     var size: CGFloat = 34
+    var tint: Color = IronTheme.metricTime
     var accessibilityLabel: String = "Rest remaining"
 
     private var fraction: Double {
@@ -220,7 +239,7 @@ struct IronRestRing: View {
     private var progressArc: some View {
         Circle()
             .trim(from: 0, to: fraction)
-            .stroke(IronTheme.metricTime, style: StrokeStyle(lineWidth: 4, lineCap: .round))
+            .stroke(tint, style: StrokeStyle(lineWidth: 4, lineCap: .round))
             .rotationEffect(.degrees(-90))
             .opacity(fraction > 0 ? 1 : 0)
     }
@@ -516,103 +535,162 @@ struct IronDateTimePickerSheet: View {
     }
 }
 
-/// Fitness-style effort graph: ten rising capsules, each keeping its own color
-/// with the effort color role. Inactive bars stay neutral; the selected bar is the
-/// one you last scrubbed to.
-struct EffortRatingGraph: View {
+/// Discrete intensity input shared by session effort and set RPE.
+struct IronIntensityGraph<Value: Hashable>: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Binding var rating: Int
-    var allowsUnrated: Bool = false
+    let values: [Value]
+    @Binding var selection: Value?
+    let color: Color
+    let label: (Value) -> String
 
-    private let levels = 1...10
-    private let graphHeight: CGFloat = 108
+    private var selectedIndex: Int? { selection.flatMap { values.firstIndex(of: $0) } }
 
     var body: some View {
-        VStack(spacing: 14) {
-            VStack(spacing: 2) {
-                Text(title)
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(titleColor)
-                    .contentTransition(.opacity)
-                Text(subtitle)
-                    .font(.footnote.monospacedDigit())
-                    .foregroundStyle(.secondary)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-            }
-
-            GeometryReader { proxy in
-                let spacing: CGFloat = 5
-                let barWidth = max((proxy.size.width - spacing * 9) / 10, 7)
-
-                HStack(alignment: .bottom, spacing: spacing) {
-                    ForEach(Array(levels), id: \.self) { level in
-                        bar(for: level, width: barWidth, maxHeight: proxy.size.height)
-                    }
+        GeometryReader { proxy in
+            let spacing: CGFloat = 5
+            let count = values.count
+            let barWidth = max(0, (proxy.size.width - spacing * CGFloat(max(count - 1, 0))) / CGFloat(max(count, 1)))
+            HStack(alignment: .bottom, spacing: spacing) {
+                ForEach(Array(values.enumerated()), id: \.element) { index, _ in
+                    let ratio = 0.18 + 0.82 * Double(index) / Double(max(count - 1, 1))
+                    let active = selectedIndex.map { index <= $0 } ?? false
+                    let selected = selectedIndex == index
+                    Capsule(style: .continuous)
+                        .fill(active ? AnyShapeStyle(color.gradient) : AnyShapeStyle(Color(.quaternarySystemFill)))
+                        .frame(width: barWidth, height: proxy.size.height * ratio)
+                        .scaleEffect(selected && !reduceMotion ? 1.06 : 1, anchor: .bottom)
+                        .shadow(color: selected ? color.opacity(0.45) : .clear, radius: 6, y: 2)
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in
-                            select(at: value.location.x, barWidth: barWidth, spacing: spacing)
-                        }
-                )
             }
-            .frame(height: graphHeight)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+            .contentShape(Rectangle())
+            .ironHorizontalScrub { location in
+                select(at: location.x, barWidth: barWidth, spacing: spacing)
+            } onEnded: { }
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
         }
-        .sensoryFeedback(.selection, trigger: rating)
+        .sensoryFeedback(.selection, trigger: selection)
         .accessibilityElement()
-        .accessibilityLabel("Session effort")
-        .accessibilityValue(accessibilityValue)
+        .accessibilityLabel("Intensity")
+        .accessibilityValue(selection.map(label) ?? "Not rated")
         .accessibilityAdjustableAction { direction in
-            let minimum = allowsUnrated ? 0 : 1
+            guard !values.isEmpty else { return }
+            let index = selectedIndex ?? -1
             switch direction {
-            case .increment: rating = min(rating + 1, 10)
-            case .decrement: rating = max(rating - 1, minimum)
+            case .increment: selection = values[min(index + 1, values.count - 1)]
+            case .decrement: selection = values[max(index - 1, 0)]
             default: break
             }
         }
     }
 
-    private var title: String {
-        rating == 0 ? "Not Rated" : EffortTier.tier(for: rating).title
-    }
-
-    private var subtitle: String {
-        rating == 0 ? "Drag to rate this session" : "\(rating) of 10"
-    }
-
-    private var titleColor: Color {
-        rating == 0 ? Color.secondary : EffortTier.color(for: rating)
-    }
-
-    private var accessibilityValue: String {
-        rating == 0 ? "Not rated" : "\(rating) of 10, \(EffortTier.tier(for: rating).title)"
-    }
-
-    private func bar(for level: Int, width: CGFloat, maxHeight: CGFloat) -> some View {
-        let ratio = 0.18 + 0.82 * (Double(level - 1) / 9)
-        let isActive = rating > 0 && level <= rating
-        let isSelected = level == rating
-        let fill: AnyShapeStyle = isActive
-            ? AnyShapeStyle(EffortTier.color(for: level).gradient)
-            : AnyShapeStyle(Color(.quaternarySystemFill))
-
-        return Capsule(style: .continuous)
-            .fill(fill)
-            .frame(width: width, height: maxHeight * ratio)
-            .scaleEffect(isSelected && !reduceMotion ? 1.06 : 1, anchor: .bottom)
-            .shadow(color: isSelected ? EffortTier.color(for: level).opacity(0.45) : .clear, radius: 6, y: 2)
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: rating)
-    }
-
     private func select(at x: CGFloat, barWidth: CGFloat, spacing: CGFloat) {
-        let step = barWidth + spacing
-        guard step > 0 else { return }
-        let index = Int((x / step).rounded(.down)) + 1
-        let clamped = min(max(index, 1), 10)
-        guard clamped != rating else { return }
-        rating = clamped
+        guard !values.isEmpty, barWidth + spacing > 0 else { return }
+        let index = min(max(Int((x / (barWidth + spacing)).rounded(.down)), 0), values.count - 1)
+        selection = values[index]
+    }
+}
+
+/// The session readout and unrated behavior remain unchanged.
+struct EffortRatingGraph: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Binding var rating: Int
+    var allowsUnrated: Bool = false
+
+    var body: some View {
+        VStack(spacing: 14) {
+            VStack(spacing: 2) {
+                Text(rating == 0 ? "Not Rated" : EffortTier.tier(for: rating).title)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(rating == 0 ? IronTheme.secondaryText : IronTheme.metricEffort)
+                    .contentTransition(.opacity)
+                Text(rating == 0 ? "Drag to rate this session" : "\(rating) of 10")
+                    .font(.ironMetric(.footnote, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+            }
+            IronIntensityGraph(
+                values: Array(1...10),
+                selection: Binding(get: { rating == 0 ? nil : rating }, set: { rating = $0 ?? 0 }),
+                color: IronTheme.metricEffort,
+                label: { "\($0) of 10, \(EffortTier.tier(for: $0).title)" }
+            )
+            .frame(height: 108)
+            .accessibilityHidden(true)
+        }
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: rating)
+        .accessibilityElement()
+        .accessibilityLabel("Session effort")
+        .accessibilityValue(rating == 0 ? "Not rated" : "\(rating) of 10, \(EffortTier.tier(for: rating).title)")
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment: rating = min(rating + 1, 10)
+            case .decrement: rating = max(rating - 1, allowsUnrated ? 0 : 1)
+            default: break
+            }
+        }
+    }
+}
+
+/// Horizontal controls yield vertical intent to their containing scroll view.
+@available(iOS 18.0, *)
+private struct IronHorizontalScrubRecognizer: UIGestureRecognizerRepresentable {
+    let onChanged: (CGPoint) -> Void
+    let onEnded: () -> Void
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UIPanGestureRecognizer {
+        let recognizer = UIPanGestureRecognizer()
+        recognizer.delegate = context.coordinator
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UIPanGestureRecognizer, context: Context) {
+        switch recognizer.state {
+        case .began, .changed: onChanged(context.converter.localLocation)
+        case .ended:
+            onChanged(context.converter.localLocation)
+            onEnded()
+        case .cancelled, .failed: onEnded()
+        default: break
+        }
+    }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func ironHorizontalScrub(
+        includingTaps: Bool = true,
+        onChanged: @escaping (CGPoint) -> Void,
+        onEnded: @escaping () -> Void
+    ) -> some View {
+        let tap = SpatialTapGesture().onEnded { value in
+            onChanged(value.location)
+            onEnded()
+        }
+        if #available(iOS 18.0, *) {
+            let horizontal = self.gesture(IronHorizontalScrubRecognizer(onChanged: onChanged, onEnded: onEnded))
+            if includingTaps { horizontal.simultaneousGesture(tap) } else { horizontal }
+        } else {
+            let horizontal = self.simultaneousGesture(
+                DragGesture(minimumDistance: 8)
+                    .onChanged { value in
+                        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+                        onChanged(value.location)
+                    }
+                    .onEnded { _ in onEnded() }
+            )
+            if includingTaps { horizontal.simultaneousGesture(tap) } else { horizontal }
+        }
     }
 }
 
