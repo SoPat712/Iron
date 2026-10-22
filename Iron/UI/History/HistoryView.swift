@@ -540,7 +540,7 @@ struct HistoryView: View {
                     isCurrent: index == weekCount - 1
                 )
             }
-        case .year, .all:
+        case .sixMonths, .year, .all:
             let earliest = selectedTimeFrame.from
                 ?? completedWorkouts.compactMap(\.start).min()
                 ?? calendar.date(byAdding: .year, value: -1, to: now)

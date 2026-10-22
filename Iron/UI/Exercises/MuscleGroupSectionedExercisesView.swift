@@ -14,13 +14,9 @@ struct MuscleGroupSectionedExercisesView : View {
     
     var body: some View {
         List {
-            ForEach(exerciseGroups) { exerciseGroup in
-                Section(exerciseGroup.title.capitalized) {
-                    ForEach(exerciseGroup.exercises) { exercise in
-                        NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
-                            ExerciseLibraryRow(exercise: exercise)
-                        }
-                    }
+            ExerciseRecencyListContent(exerciseGroups: exerciseGroups) { exercise in
+                NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                    ExerciseLibraryRow(exercise: exercise)
                 }
             }
         }

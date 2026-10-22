@@ -26,16 +26,19 @@ class ExerciseFilter: ObservableObject {
     private var searchSubject = PassthroughSubject<String, Never>()
     private var cancellable: Cancellable?
     
-    init(exercises: [Exercise], filter: String = "") {
-        self.exercises = exercises
+    init(exercises: [Exercise], filter: String = "", exerciseStore: ExerciseStore = .shared) {
+        self.exercises = exerciseStore.orderedByRecency(ExerciseStore.filter(exercises: exercises, using: filter))
         self.filter = filter
         self.isEmpty = filter.isEmpty
         
         cancellable = searchSubject
+            .prepend(filter)
             .debounce(for: .milliseconds(500), scheduler: DispatchQueue.global(qos: .userInteractive))
             .removeDuplicates()
             .map { ExerciseStore.filter(exercises: exercises, using: $0) }
+            .combineLatest(exerciseStore.$lastPerformedDates)
+            .map { ExerciseRecency.ordered($0.0, dates: $0.1) }
             .receive(on: DispatchQueue.main)
-            .assign(to: \.exercises, on: self)
+            .sink { [weak self] in self?.exercises = $0 }
     }
 }

@@ -785,12 +785,10 @@ extension WatchConnectionManager {
             picks.append(WatchExercisePick(id: exercise.uuid, name: exercise.title, muscle: exercise.muscleGroup, imageURL: exercise.imageURL?.absoluteString))
         }
 
-        for workoutExercise in workoutExercises {
-            if let exercise = workoutExercise.exercise(in: ExerciseStore.shared.exercises) {
-                append(exercise)
-            }
-        }
-        for exercise in ExerciseStore.shared.shownExercises.sorted(by: { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }) {
+        let store = ExerciseStore.shared
+        let currentExercises = workoutExercises.compactMap { $0.exercise(in: store.exercises) }
+        let library = store.shownExercises.sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        for exercise in store.orderedByRecency(currentExercises + library) {
             if picks.count >= 120 { break }
             append(exercise)
         }

@@ -15,15 +15,11 @@ struct ExerciseSingleSelectionView: View {
     
     var body: some View {
         List {
-            ForEach(exerciseGroups) { exerciseGroup in
-                Section(exerciseGroup.title.capitalized) {
-                    ForEach(exerciseGroup.exercises, id: \.self) { exercise in
-                        Button {
-                            onSelection(exercise)
-                        } label: {
-                            ExerciseLibraryRow(exercise: exercise)
-                        }
-                    }
+            ExerciseRecencyListContent(exerciseGroups: exerciseGroups) { exercise in
+                Button {
+                    onSelection(exercise)
+                } label: {
+                    ExerciseLibraryRow(exercise: exercise)
                 }
             }
         }
@@ -35,6 +31,7 @@ struct ExerciseSingleSelectionView: View {
 struct ExerciseSingleSelectionView_Previews: PreviewProvider {
     static var previews: some View {
         ExerciseSingleSelectionView(exerciseGroups: ExerciseStore.splitIntoMuscleGroups(exercises: ExerciseStore.shared.shownExercises)) { _ in }
+            .environmentObject(ExerciseStore.shared)
     }
 }
 #endif

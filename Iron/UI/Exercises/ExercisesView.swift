@@ -164,15 +164,54 @@ struct ExerciseLibraryRow: View {
 }
 
 struct ExercisesView : View {
+    @EnvironmentObject private var exerciseStore: ExerciseStore
     var exercises: [Exercise]
     
     var body: some View {
-        List(exercises, id: \.id) { exercise in
+        List(exerciseStore.orderedByRecency(exercises), id: \.id) { exercise in
             NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
                 ExerciseLibraryRow(exercise: exercise)
             }
         }
         .listStyle(.insetGrouped)
+    }
+}
+
+/// Shared content for grouped library and selection lists. Search is represented
+/// by a single untitled group; browsing keeps the existing sections after Recent.
+struct ExerciseRecencyListContent<Row: View>: View {
+    @EnvironmentObject private var exerciseStore: ExerciseStore
+    let exerciseGroups: [ExerciseGroup]
+    @ViewBuilder var row: (Exercise) -> Row
+
+    private var isSearchResult: Bool {
+        exerciseGroups.count == 1 && exerciseGroups[0].title.isEmpty
+    }
+
+    private var recentExercises: [Exercise] {
+        exerciseStore.orderedByRecency(exerciseGroups.flatMap(\.exercises))
+            .filter { exerciseStore.lastPerformedDates[$0.uuid] != nil }
+    }
+
+    var body: some View {
+        if isSearchResult {
+            ForEach(exerciseStore.orderedByRecency(exerciseGroups[0].exercises), id: \.self, content: row)
+        } else {
+            let recent = recentExercises
+            if !recent.isEmpty {
+                Section("Recent") {
+                    ForEach(recent, id: \.self, content: row)
+                }
+            }
+            ForEach(exerciseGroups) { group in
+                let remaining = group.exercises.filter { exerciseStore.lastPerformedDates[$0.uuid] == nil }
+                if !remaining.isEmpty {
+                    Section(group.title.capitalized) {
+                        ForEach(remaining, id: \.self, content: row)
+                    }
+                }
+            }
+        }
     }
 }
 

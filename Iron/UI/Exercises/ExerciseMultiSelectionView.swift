@@ -15,12 +15,9 @@ struct ExerciseMultiSelectionView: View {
     
     var body: some View {
         List(selection: $selection) {
-            ForEach(exerciseGroups) { exerciseGroup in
-                Section(header: Text(exerciseGroup.title.capitalized)) {
-                    ForEach(exerciseGroup.exercises, id: \.self) { exercise in
-                        Text(exercise.title)
-                    }
-                }
+            ExerciseRecencyListContent(exerciseGroups: exerciseGroups) { exercise in
+                Text(exercise.title)
+                    .tag(exercise)
             }
         }
         .listStyleCompat_InsetGroupedListStyle()
@@ -32,6 +29,7 @@ struct ExerciseMultiSelectionView: View {
 struct ExerciseMultiSelectionView_Previews: PreviewProvider {
     static var previews: some View {
         ExerciseMultiSelectionView(exerciseGroups: ExerciseStore.splitIntoMuscleGroups(exercises: ExerciseStore.shared.shownExercises), selection: .constant(Set()))
+            .environmentObject(ExerciseStore.shared)
     }
 }
 #endif

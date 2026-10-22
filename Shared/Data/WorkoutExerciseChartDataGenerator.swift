@@ -76,8 +76,11 @@ enum WorkoutExerciseChartData {
         case week
         case month
         case threeMonths
+        case sixMonths
         case year
         case all
+
+        static let progressCases: [TimeFrame] = [.month, .threeMonths, .sixMonths, .year, .all]
 
         var title: String {
             switch self {
@@ -87,6 +90,8 @@ enum WorkoutExerciseChartData {
                 return "Month"
             case .threeMonths:
                 return "3 Months"
+            case .sixMonths:
+                return "6 Months"
             case .year:
                 return "Year"
             case .all:
@@ -99,6 +104,7 @@ enum WorkoutExerciseChartData {
             case .week: return "1W"
             case .month: return "1M"
             case .threeMonths: return "3M"
+            case .sixMonths: return "6M"
             case .year: return "1Y"
             case .all: return "All"
             }
@@ -109,6 +115,7 @@ enum WorkoutExerciseChartData {
             case .week: return "Completed work from the past week"
             case .month: return "Completed work from the past month"
             case .threeMonths: return "Completed work from the past 3 months"
+            case .sixMonths: return "Completed work from the past 6 months"
             case .year: return "Completed work from the past year"
             case .all: return "All recorded history"
             }
@@ -122,6 +129,8 @@ enum WorkoutExerciseChartData {
                 return Calendar.current.date(byAdding: .month, value: -1, to: Date())
             case .threeMonths:
                 return Calendar.current.date(byAdding: .month, value: -3, to: Date())
+            case .sixMonths:
+                return Calendar.current.date(byAdding: .month, value: -6, to: Date())
             case .year:
                 return Calendar.current.date(byAdding: .year, value: -1, to: Date())
             case .all:

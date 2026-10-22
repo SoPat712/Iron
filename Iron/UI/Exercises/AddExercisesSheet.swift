@@ -15,7 +15,6 @@ struct AddExercisesSheet: View {
     @EnvironmentObject private var exerciseStore: ExerciseStore
 
     private let exercises: [Exercise]
-    private let recentExercises: [Exercise]
     private let title: String
     private let actionTitle: String
     private let maximumSelectionCount: Int?
@@ -32,7 +31,7 @@ struct AddExercisesSheet: View {
 
     init(
         exercises: [Exercise],
-        recentExercises: [Exercise],
+        recentExercises: [Exercise] = [],
         title: String = "Add Exercise",
         actionTitle: String = "Add",
         maximumSelectionCount: Int? = nil,
@@ -41,7 +40,8 @@ struct AddExercisesSheet: View {
         onAdd: @escaping ([Exercise]) -> Void
     ) {
         self.exercises = exercises
-        self.recentExercises = recentExercises
+        // Kept as an initializer argument for existing callers. Recents now
+        // come from the live shared cache, rather than a presentation snapshot.
         self.title = title
         self.actionTitle = actionTitle
         self.maximumSelectionCount = maximumSelectionCount
@@ -67,25 +67,23 @@ struct AddExercisesSheet: View {
     }
 
     private var matchingExercises: [Exercise] {
-        ExerciseStore.filter(exercises: availableExercises, using: search)
+        let matches = ExerciseStore.filter(exercises: availableExercises, using: search)
             .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
             .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return exerciseStore.orderedByRecency(matches)
     }
 
-    /// Recents only earn their own section while browsing. Once the person
-    /// searches or filters, a pinned Recent group buries the actual matches.
+    private var recentExercises: [Exercise] {
+        matchingExercises.filter { exerciseStore.lastPerformedDates[$0.uuid] != nil }
+    }
+
+    /// Search and filters use a flat list with exactly the same recency order.
     private var showsRecentSection: Bool {
         search.isEmpty
             && selectedMuscleGroup == nil
             && selectedEquipment == nil
             && !recentExercises.isEmpty
-    }
-
-    private var filteredExercises: [Exercise] {
-        guard showsRecentSection else { return matchingExercises }
-        let recentSet = Set(recentExercises)
-        return recentExercises + matchingExercises.filter { !recentSet.contains($0) }
     }
 
     private func resetAndDismiss() {
@@ -99,28 +97,15 @@ struct AddExercisesSheet: View {
         self.search = ""
     }
     
-    static func loadRecentExercises(context: NSManagedObjectContext, exercises: [Exercise], maxCount: Int = 7) -> [Exercise] {
+    static func loadRecentExercises(context: NSManagedObjectContext, exercises: [Exercise], maxCount: Int = .max) -> [Exercise] {
         guard maxCount > 0 else { return [] }
-        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-        request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-        guard let workouts = try? context.fetch(request) else { return [] }
-        var recentExercises = [Exercise]()
-        for workout in workouts {
-            if let workoutExercises = workout.workoutExercises?.array as? [WorkoutExercise] {
-                for workoutExercise in workoutExercises {
-                    if let exercise = workoutExercise.exercise(in: exercises) {
-                        if !recentExercises.contains(exercise) {
-                            recentExercises.append(exercise)
-                            if recentExercises.count >= maxCount {
-                                return recentExercises
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return recentExercises
+        // Compatibility for CurrentWorkoutView and other existing callers.
+        // No history fetch runs on presentation or on a search keystroke.
+        let store = ExerciseStore.shared
+        store.observeWorkoutHistory(in: context)
+        return Array(store.orderedByRecency(exercises)
+            .filter { store.lastPerformedDates[$0.uuid] != nil }
+            .prefix(maxCount))
     }
 
     var body: some View {

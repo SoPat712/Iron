@@ -2292,3 +2292,119 @@ final class DurableWorkoutHealthExportTests: XCTestCase {
         XCTAssertEqual(writes, 0)
     }
 }
+
+final class ExerciseRecencyTests: XCTestCase {
+    private func exercise(_ title: String, alias: [String] = []) -> Exercise {
+        Exercise(uuid: UUID(), everkineticId: Exercise.customEverkineticId,
+                 title: title, alias: alias, description: nil, primaryMuscle: [],
+                 secondaryMuscle: [], equipment: [], steps: [], tips: [], references: [], pdfPaths: [])
+    }
+
+    @discardableResult
+    private func workout(in context: NSManagedObjectContext, exercises: [Exercise],
+                         at date: Date, imported: Bool = false, current: Bool = false,
+                         completed: Bool = true) -> Workout {
+        let workout = Workout.create(context: context)
+        workout.start = date
+        workout.end = date.addingTimeInterval(3600)
+        workout.isCurrentWorkout = current
+        workout.importSource = imported ? "hevy" : nil
+        for exercise in exercises {
+            let entry = WorkoutExercise.create(context: context)
+            entry.exerciseUuid = exercise.uuid
+            entry.workout = workout
+            if completed {
+                let set = WorkoutSet.create(context: context)
+                set.isCompleted = true
+                set.workoutExercise = entry
+            }
+        }
+        return workout
+    }
+
+    func testHistoryIncludesImportsAndAllEntriesInQualifyingWorkouts() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let exercises = (0..<12).map { exercise("Exercise \($0)") }
+        let older = Date(timeIntervalSince1970: 1000)
+        let newer = Date(timeIntervalSince1970: 2000)
+        workout(in: context, exercises: Array(exercises.prefix(9)), at: older, imported: true)
+        let latest = workout(in: context, exercises: [exercises[0]], at: newer)
+        let noSets = WorkoutExercise.create(context: context)
+        noSets.exerciseUuid = exercises[9].uuid
+        noSets.workout = latest
+        workout(in: context, exercises: [exercises[10]], at: newer, completed: false)
+        workout(in: context, exercises: [exercises[11]], at: newer, current: true)
+        try context.save()
+
+        let dates = try ExerciseRecency.latestDates(in: context)
+        XCTAssertEqual(dates.count, 10, "Recents must not be capped at seven")
+        XCTAssertEqual(dates[exercises[0].uuid], newer)
+        XCTAssertEqual(dates[exercises[1].uuid], older)
+        XCTAssertEqual(dates[exercises[9].uuid], newer, "Qualification is at the workout level")
+        XCTAssertNil(dates[exercises[10].uuid])
+        XCTAssertNil(dates[exercises[11].uuid])
+    }
+
+    func testSearchAndBrowseShareRecencyWithTitleTiesAndStableUnseenOrder() {
+        let barbell = exercise("Barbell Bench Press")
+        let dumbbell = exercise("Dumbbell Bench Press")
+        let alias = exercise("Chest Press", alias: ["bench"])
+        let unseenZ = exercise("Z Bench Press")
+        let unseenA = exercise("A Bench Press")
+        let unrelated = exercise("Squat")
+        let today = Date(timeIntervalSince1970: 1_000_000)
+        let dates = [barbell.uuid: today, dumbbell.uuid: today.addingTimeInterval(-7 * 86400), alias.uuid: today]
+        let input = [unseenZ, dumbbell, unrelated, unseenA, alias, barbell]
+        XCTAssertEqual(ExerciseRecency.ordered(input, dates: dates),
+                       [barbell, alias, dumbbell, unseenZ, unrelated, unseenA])
+        let matches = ExerciseStore.filter(exercises: input, using: "bench")
+        XCTAssertEqual(ExerciseRecency.ordered(matches, dates: dates),
+                       [barbell, alias, dumbbell, unseenZ, unseenA])
+    }
+
+    @MainActor
+    func testCacheRefreshesOnCompletionEditingAndDeletionWithoutAnotherSearch() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        let exercise = exercise("Bench Press")
+        let older = Date(timeIntervalSince1970: 1000)
+        let newer = Date(timeIntervalSince1970: 2000)
+        let imported = workout(in: context, exercises: [exercise], at: older, imported: true)
+        let active = workout(in: context, exercises: [exercise], at: newer, current: true)
+        try context.save()
+        let store = ExerciseStore(customExercisesURL: nil)
+
+        func expectSnapshot(_ expected: [UUID: Date], mutation: () throws -> Void) throws {
+            let updated = expectation(description: "Recency snapshot")
+            let subscription = store.$lastPerformedDates
+                .first { $0 == expected }
+                .sink { _ in
+                    XCTAssertTrue(Thread.isMainThread)
+                    updated.fulfill()
+                }
+            try mutation()
+            wait(for: [updated], timeout: 3)
+            withExtendedLifetime(subscription) {}
+        }
+
+        try expectSnapshot([exercise.uuid: older]) { store.observeWorkoutHistory(in: context) }
+        try expectSnapshot([exercise.uuid: newer]) {
+            active.isCurrentWorkout = false
+            try context.save()
+        }
+        let revised = newer.addingTimeInterval(100)
+        try expectSnapshot([exercise.uuid: revised]) {
+            active.start = revised
+            try context.save()
+        }
+        try expectSnapshot([exercise.uuid: older]) {
+            context.delete(active)
+            try context.save()
+        }
+        try expectSnapshot([:]) {
+            context.delete(imported)
+            try context.save()
+        }
+    }
+}

@@ -8,27 +8,32 @@
 
 import SwiftUI
 import Charts
+import CoreData
 import WorkoutDataKit
 
 struct ExerciseStatisticsView: View {
     @EnvironmentObject private var settingsStore: SettingsStore
-    @Environment(\.managedObjectContext) private var managedObjectContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let exercise: Exercise
 
     @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
+    @FetchRequest private var history: FetchedResults<WorkoutExercise>
 
-    private var workoutExercises: [WorkoutExercise] {
-        WorkoutExerciseChartData.workoutExercises(
-            uuid: exercise.uuid,
-            timeFrame: selectedTimeFrame,
-            context: managedObjectContext
-        ) ?? []
+    init(exercise: Exercise) {
+        self.exercise = exercise
+        _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
+    }
+
+    private var progress: ExerciseProgressData {
+        ExerciseProgressData(exercise: exercise, workoutExercises: Array(history), settingsStore: settingsStore)
     }
 
     private var completedWorkoutExercises: [WorkoutExercise] {
-        workoutExercises.filter { ($0.numberOfCompletedSets ?? 0) > 0 }
+        history.filter { session in
+            (session.numberOfCompletedSets ?? 0) > 0 &&
+                (selectedTimeFrame.from.map { (session.workout?.start ?? .distantPast) >= $0 } ?? true)
+        }
     }
 
     private var completedSets: Int {
@@ -39,58 +44,11 @@ struct ExerciseStatisticsView: View {
         completedWorkoutExercises.compactMap { $0.workout?.start }.max()
     }
 
-    private var completedWorkoutSets: [WorkoutSet] {
-        completedWorkoutExercises.flatMap { completedSets(for: $0) }
-    }
-
-    private var progressMetrics: [ExerciseProgressMetric] {
-        let hasWeight = completedWorkoutSets.contains { $0.weightValue > 0 }
-        let hasRepetitions = completedWorkoutSets.contains { $0.repetitionsValue > 0 }
-        let hasDuration = completedWorkoutSets.contains { $0.durationValue != nil }
-        let hasDistance = completedWorkoutSets.contains { $0.distanceValue != nil }
-        let isBodyweight = exercise.equipment.contains { equipment in
-            let normalized = equipment.lowercased().replacingOccurrences(of: "-", with: " ")
-            return normalized.contains("body weight") || normalized.contains("bodyweight")
-        }
-
-        if hasDistance {
-            var metrics: [ExerciseProgressMetric] = [.totalDistance, .bestDistance]
-            if hasDuration {
-                metrics += [.totalDuration, .bestDuration]
-            }
-            if hasRepetitions {
-                metrics.append(.totalRepetitions)
-            }
-            metrics.append(.totalSets)
-            return metrics
-        }
-
-        if hasDuration && !hasWeight {
-            var metrics: [ExerciseProgressMetric] = [.totalDuration, .bestDuration]
-            if hasRepetitions {
-                metrics.append(.totalRepetitions)
-            }
-            metrics.append(.totalSets)
-            return metrics
-        }
-
-        if isBodyweight && !hasWeight {
-            var metrics: [ExerciseProgressMetric] = []
-            if hasRepetitions {
-                metrics += [.bestRepetitions, .totalRepetitions]
-            }
-            metrics.append(.totalSets)
-            return metrics
-        }
-
-        return [.oneRM, .totalWeight, .totalSets, .totalRepetitions]
-    }
-
     var body: some View {
         List {
             Section {
                 Picker("Time Frame", selection: $selectedTimeFrame) {
-                    ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { timeFrame in
+                    ForEach(WorkoutExerciseChartData.TimeFrame.progressCases, id: \.title) { timeFrame in
                         Text(timeFrame.compactTitle).tag(timeFrame)
                     }
                 }
@@ -137,7 +95,7 @@ struct ExerciseStatisticsView: View {
                     .listRowBackground(Color.clear)
                 }
             } else {
-                ForEach(progressMetrics, id: \.self) { metric in
+                ForEach(progress.progressMetrics, id: \.self) { metric in
                     progressSection(metric)
                 }
             }
@@ -156,7 +114,9 @@ struct ExerciseStatisticsView: View {
 
     @ViewBuilder
     private func progressSection(_ metric: ExerciseProgressMetric) -> some View {
-        let points = progressPoints(for: metric)
+        let points = progress.progressPoints(for: metric).filter { point in
+            selectedTimeFrame.from.map { point.date >= $0 } ?? true
+        }
 
         Section {
             if points.isEmpty {
@@ -168,19 +128,19 @@ struct ExerciseStatisticsView: View {
                     points: points,
                     domainStart: selectedTimeFrame.domainStart(earliestDate: points.first?.date),
                     domainEnd: Date(),
-                    valueLabel: { formatted($0, for: metric) },
+                    valueLabel: { progress.formatted($0, for: metric) },
                     valueText: { value, style, unitStyle in
-                        metricText(value, for: metric, style: style, unitStyle: unitStyle)
+                        progress.metricText(value, for: metric, style: style, unitStyle: unitStyle)
                     },
                     color: metric.color,
-                    dateLabel: { Self.detailDateFormatter.string(from: $0) }
+                    dateLabel: { ExerciseProgressData.detailDateFormatter.string(from: $0) }
                 )
                 .frame(height: 170)
                 .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 16))
 
                 if let latest = points.last {
                     LabeledContent("Latest") {
-                        metricText(latest.value, for: metric)
+                        progress.metricText(latest.value, for: metric)
                             .contentTransition(reduceMotion ? .opacity : .numericText())
                             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: latest.value)
                     }
@@ -194,7 +154,7 @@ struct ExerciseStatisticsView: View {
                                 .foregroundStyle(.secondary)
                         } else {
                             Label {
-                                metricText(difference, for: metric, prefix: difference > 0 ? "+" : "")
+                                progress.metricText(difference, for: metric, prefix: difference > 0 ? "+" : "")
                                     .contentTransition(reduceMotion ? .opacity : .numericText())
                                     .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: difference)
                             } icon: {
@@ -213,10 +173,289 @@ struct ExerciseStatisticsView: View {
         }
     }
 
-    private func progressPoints(
+    private static let compactDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.setLocalizedDateFormatFromTemplate("MMMd")
+        return formatter
+    }()
+
+}
+
+/// A single native List card, with at most four metric/history segments.
+struct ExerciseInlineProgressView: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FetchRequest private var history: FetchedResults<WorkoutExercise>
+
+    let exercise: Exercise
+    @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
+    @State private var selection: Selection = .metric(.oneRM)
+    @State private var alternateMetric: ExerciseProgressMetric?
+
+    private enum Selection: Hashable {
+        case metric(ExerciseProgressMetric)
+        case history
+    }
+
+    init(exercise: Exercise) {
+        self.exercise = exercise
+        _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
+    }
+
+    private var progress: ExerciseProgressData {
+        ExerciseProgressData(exercise: exercise, workoutExercises: Array(history), settingsStore: settingsStore)
+    }
+
+    private var metrics: [ExerciseProgressMetric] { progress.progressMetrics }
+
+    private var visibleMetrics: [ExerciseProgressMetric] {
+        guard metrics.count > 3 else { return metrics }
+        let third = alternateMetric.flatMap { metrics.dropFirst(2).contains($0) ? $0 : nil } ?? metrics[2]
+        return Array(metrics.prefix(2)) + [third]
+    }
+
+    private var activeSelection: Selection {
+        if case .metric(let metric) = selection, !metrics.contains(metric), let first = metrics.first {
+            return .metric(first)
+        }
+        return selection
+    }
+
+    private var completedHistory: [WorkoutExercise] {
+        history.filter { ($0.numberOfCompletedSets ?? 0) > 0 }
+    }
+
+    private var rangedHistory: [WorkoutExercise] {
+        let start = selectedTimeFrame.from
+        return completedHistory.filter { session in
+            start.map { (session.workout?.start ?? .distantPast) >= $0 } ?? true
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Picker("Progress view", selection: Binding(get: { activeSelection }, set: { selection = $0 })) {
+                ForEach(visibleMetrics, id: \.self) { metric in
+                    Text(metric.compactTitle).tag(Selection.metric(metric))
+                }
+                Text("History").tag(Selection.history)
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Time range", selection: $selectedTimeFrame) {
+                ForEach(WorkoutExerciseChartData.TimeFrame.progressCases, id: \.self) { range in
+                    Text(range.compactTitle).tag(range)
+                }
+            }
+            .pickerStyle(.segmented)
+
+            if metrics.count > 3 {
+                Menu {
+                    ForEach(metrics.dropFirst(2), id: \.self) { metric in
+                        Button {
+                            alternateMetric = metric
+                            selection = .metric(metric)
+                        } label: {
+                            Label(metric.title, systemImage: metric.icon)
+                        }
+                    }
+                } label: {
+                    Label("More metrics", systemImage: "slider.horizontal.3")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.borderless)
+                .accessibilityHint("Changes the third progress segment")
+            }
+
+            if completedHistory.isEmpty {
+                placeholder("No sessions yet — your progress will chart here")
+            } else if rangedHistory.isEmpty {
+                placeholder("No sessions in this range")
+                Button("Show all history") { selectedTimeFrame = .all }
+                    .font(.subheadline.weight(.medium))
+            } else {
+                switch activeSelection {
+                case .history:
+                    recentHistory
+                        .transition(.opacity)
+                case .metric(let metric):
+                    metricContent(metric)
+                        .transition(.opacity)
+                }
+            }
+        }
+        .padding(.vertical, 4)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selection)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedTimeFrame)
+        .onChange(of: metrics, initial: true) { _, metrics in
+            if case .metric(let metric) = selection, !metrics.contains(metric), let first = metrics.first {
+                selection = .metric(first)
+            }
+        }
+    }
+
+    private func placeholder(_ message: String) -> some View {
+        VStack(spacing: 12) {
+            Image(systemName: "chart.xyaxis.line")
+                .font(.title2)
+                .foregroundStyle(IronTheme.accent)
+            Text(message)
+                .font(.subheadline)
+                .foregroundStyle(IronTheme.secondaryText)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, minHeight: 160)
+    }
+
+    @ViewBuilder
+    private func metricContent(_ metric: ExerciseProgressMetric) -> some View {
+        let data = progress
+        let start = selectedTimeFrame.from
+        let points = data.progressPoints(for: metric).filter { point in start.map { point.date >= $0 } ?? true }
+        if let latest = points.last {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Latest · \(metric.title)")
+                    .font(.caption)
+                    .foregroundStyle(IronTheme.secondaryText)
+                data.metricText(latest.value, for: metric, style: .largeTitle, unitStyle: .title3)
+                    .contentTransition(reduceMotion ? .opacity : .numericText())
+                    .accessibilityLabel("Latest \(metric.title): \(data.formatted(latest.value, for: metric))")
+                if let first = points.first, points.count > 1 {
+                    let delta = latest.value - first.value
+                    Text("\(delta > 0 ? "+" : "")\(data.formatted(delta, for: metric)) since range start")
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .contentTransition(reduceMotion ? .opacity : .numericText())
+                } else {
+                    Text("First session in this range")
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+            }
+            ExerciseProgressChart(
+                points: points,
+                domainStart: selectedTimeFrame.domainStart(earliestDate: points.first?.date),
+                domainEnd: Date(),
+                valueLabel: { data.formatted($0, for: metric) },
+                valueText: { data.metricText($0, for: metric, style: $1, unitStyle: $2) },
+                color: metric.color,
+                dateLabel: { ExerciseProgressData.detailDateFormatter.string(from: $0) }
+            )
+            .frame(height: 200)
+            HStack(alignment: .top, spacing: 8) {
+                Text(metric.caption)
+                    .foregroundStyle(IronTheme.secondaryText)
+                Spacer(minLength: 0)
+                if points.contains(where: \.isRecord) {
+                    Label("PR", systemImage: "circle.fill")
+                        .foregroundStyle(IronTheme.metricRecord)
+                        .accessibilityLabel("Personal record for this metric")
+                }
+            }
+            .font(.caption2)
+        } else {
+            placeholder(metric.emptyMessage)
+        }
+    }
+
+    private var recentHistory: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            ForEach(Array(rangedHistory.prefix(5))) { session in
+                VStack(alignment: .leading, spacing: 10) {
+                    if let workout = session.workout {
+                        NavigationLink {
+                            WorkoutDetailView(workout: workout)
+                        } label: {
+                            HStack {
+                                Text(Workout.dateFormatter.string(from: workout.start, fallback: "Unknown date"))
+                                Spacer()
+                                Image(systemName: "chevron.right").font(.caption2.weight(.semibold))
+                            }
+                            .font(.subheadline.weight(.semibold))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if let comment = session.comment, !comment.isEmpty {
+                        Text(comment).font(.caption).foregroundStyle(IronTheme.secondaryText)
+                    }
+                    let sets = session.workoutSets?.array as? [WorkoutSet] ?? []
+                    ForEach(Array(sets.enumerated()).filter { $0.element.isCompleted }, id: \.element.id) { index, set in
+                        ExerciseHistorySetRow(set: set, index: index)
+                    }
+                }
+                Divider()
+            }
+            NavigationLink {
+                ExerciseHistoryView(exercise: exercise)
+                    .navigationTitle("History")
+                    .navigationBarTitleDisplayMode(.inline)
+            } label: {
+                Label("Show all", systemImage: "clock.arrow.circlepath")
+                    .font(.subheadline.weight(.medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(IronTheme.accent)
+        }
+    }
+}
+
+/// Shared session calculations keep standalone and inline progress consistent.
+struct ExerciseProgressData {
+    let exercise: Exercise
+    let workoutExercises: [WorkoutExercise]
+    let settingsStore: SettingsStore
+
+    private var completedWorkoutSets: [WorkoutSet] {
+        workoutExercises.flatMap { completedSets(for: $0) }
+    }
+
+    var progressMetrics: [ExerciseProgressMetric] {
+        let hasWeight = completedWorkoutSets.contains { $0.weightValue > 0 }
+        let hasRepetitions = completedWorkoutSets.contains { $0.repetitionsValue > 0 }
+        let hasDuration = completedWorkoutSets.contains { $0.durationValue != nil }
+        let hasDistance = completedWorkoutSets.contains { $0.distanceValue != nil }
+        let isBodyweight = exercise.equipment.contains { equipment in
+            let normalized = equipment.lowercased().replacingOccurrences(of: "-", with: " ")
+            return normalized.contains("body weight") || normalized.contains("bodyweight")
+        }
+
+        if hasDistance {
+            var metrics: [ExerciseProgressMetric] = [.totalDistance, .bestDistance]
+            if hasDuration {
+                metrics += [.totalDuration, .bestDuration]
+            }
+            if hasRepetitions {
+                metrics.append(.totalRepetitions)
+            }
+            metrics.append(.totalSets)
+            return metrics
+        }
+
+        if hasDuration && !hasWeight {
+            var metrics: [ExerciseProgressMetric] = [.totalDuration, .bestDuration]
+            if hasRepetitions {
+                metrics.append(.totalRepetitions)
+            }
+            metrics.append(.totalSets)
+            return metrics
+        }
+
+        if isBodyweight && !hasWeight {
+            var metrics: [ExerciseProgressMetric] = []
+            if hasRepetitions {
+                metrics += [.bestRepetitions, .totalRepetitions]
+            }
+            metrics.append(.totalSets)
+            return metrics
+        }
+
+        return [.oneRM, .totalWeight, .totalRepetitions, .totalSets]
+    }
+
+    func progressPoints(
         for metric: ExerciseProgressMetric
     ) -> [ExerciseProgressPoint] {
-        return workoutExercises.compactMap { workoutExercise in
+        let points: [ExerciseProgressPoint] = workoutExercises.compactMap { workoutExercise in
             guard let date = workoutExercise.workout?.start,
                   let value = value(for: metric, in: workoutExercise),
                   value > 0,
@@ -231,6 +470,14 @@ struct ExerciseStatisticsView: View {
             )
         }
         .sorted { $0.date < $1.date }
+        // Compare with all earlier sessions, never just the visible range.
+        var best: Double?
+        return points.map { point in
+            var point = point
+            point.isRecord = best.map { point.value > $0 } ?? false
+            best = max(best ?? point.value, point.value)
+            return point
+        }
     }
 
     private func sessionDetails(for workoutExercise: WorkoutExercise) -> [Text] {
@@ -264,7 +511,7 @@ struct ExerciseStatisticsView: View {
         return Array(details.prefix(4))
     }
 
-    private func formatted(
+    func formatted(
         _ value: Double,
         for metric: ExerciseProgressMetric
     ) -> String {
@@ -272,7 +519,7 @@ struct ExerciseStatisticsView: View {
         return parts.number + (parts.unit.map { " \($0)" } ?? "")
     }
 
-    private func metricText(
+    func metricText(
         _ value: Double,
         for metric: ExerciseProgressMetric,
         prefix: String = "",
@@ -383,33 +630,22 @@ struct ExerciseStatisticsView: View {
         }
     }
 
-    private static let compactDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("MMMd")
-        return formatter
-    }()
-
-    private static let axisDateFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.setLocalizedDateFormatFromTemplate("MMMd")
-        return formatter
-    }()
-
-    private static let detailDateFormatter: DateFormatter = {
+    static let detailDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.setLocalizedDateFormatFromTemplate("MMM d yyyy jm")
         return formatter
     }()
 }
 
-private struct ExerciseProgressPoint: Identifiable {
+struct ExerciseProgressPoint: Identifiable {
     let id: String
     let date: Date
     let value: Double
     let details: [Text]
+    var isRecord = false
 }
 
-private struct ExerciseProgressChart: View {
+struct ExerciseProgressChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let points: [ExerciseProgressPoint]
@@ -454,6 +690,7 @@ private struct ExerciseProgressChart: View {
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: chartIdentity)
         }
+        .onChange(of: chartIdentity) { _, _ in selectedDate = nil }
         .task {
             withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
                 hasAppeared = true
@@ -481,8 +718,10 @@ private struct ExerciseProgressChart: View {
                         .foregroundStyle(color)
 
                     PointMark(x: .value("Date", point.date), y: .value("Value", value))
-                        .symbolSize(points.count > 40 ? 0 : 28)
-                        .foregroundStyle(color)
+                        .symbolSize(point.isRecord ? 52 : (points.count > 40 ? 0 : 28))
+                        .foregroundStyle(point.isRecord ? IronTheme.metricRecord : color)
+                        .accessibilityLabel(point.isRecord ? "Personal record" : "Session")
+                        .accessibilityValue(valueLabel(point.value))
                 }
 
                 if let selectedPoint {
@@ -541,7 +780,7 @@ private struct ExerciseProgressChart: View {
     }
 }
 
-private enum ExerciseProgressMetric: Hashable {
+enum ExerciseProgressMetric: Hashable {
     case oneRM
     case totalWeight
     case totalSets
@@ -563,7 +802,7 @@ private enum ExerciseProgressMetric: Hashable {
     var title: String {
         switch self {
         case .oneRM: return "Estimated 1RM"
-        case .totalWeight: return "Total Weight"
+        case .totalWeight: return "Volume"
         case .totalSets: return "Total Sets"
         case .totalRepetitions: return "Total Repetitions"
         case .bestRepetitions: return "Best Set Reps"
@@ -571,6 +810,20 @@ private enum ExerciseProgressMetric: Hashable {
         case .bestDuration: return "Best Duration"
         case .totalDistance: return "Total Distance"
         case .bestDistance: return "Best Distance"
+        }
+    }
+
+    var compactTitle: String {
+        switch self {
+        case .oneRM: return "1RM"
+        case .totalWeight: return "Volume"
+        case .totalSets: return "Sets"
+        case .totalRepetitions: return "Reps"
+        case .bestRepetitions: return "Best reps"
+        case .totalDuration: return "Time"
+        case .bestDuration: return "Best time"
+        case .totalDistance: return "Distance"
+        case .bestDistance: return "Best dist."
         }
     }
 

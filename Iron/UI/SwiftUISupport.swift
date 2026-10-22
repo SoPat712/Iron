@@ -8,6 +8,7 @@
 
 import SwiftUI
 import UIKit
+import MuscleMap
 
 // Palette, metric typography, and motion tokens live in Shared/UI/SwiftUI/IronStyle.swift
 // so the app and widget extension use the same visual roles.
@@ -960,5 +961,39 @@ extension View {
         } else {
             falseContent(self)
         }
+    }
+}
+
+/// Normalizes catalog muscle names for the detail and live-workout maps.
+func ironMapMuscle(_ rawName: String) -> Muscle? {
+    switch rawName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
+    case "abs", "abdominals", "core": return .abs
+    case "lower abs", "lowerabs": return .lowerAbs
+    case "obliques": return .obliques
+    case "serratus", "serratus anterior": return .serratus
+    case "biceps", "biceps brachii", "brachialis": return .biceps
+    case "triceps", "triceps brachii": return .triceps
+    case "forearm", "forearms", "forerm", "wrists", "wrist flexors", "wrist extensors", "grip muscles": return .forearm
+    case "hands": return .hands
+    case "shoulders", "deltoid", "deltoids", "delts": return .deltoids
+    case "rear deltoid", "rear deltoids", "reardeltoid": return .rearDeltoid
+    case "rotator cuff", "rotatorcuff": return .rotatorCuff
+    case "trapezius", "traps", "levator scapulae": return .trapezius
+    case "rhomboids": return .rhomboids
+    case "neck", "sternocleidomastoid": return .neck
+    case "chest", "pectorals", "pectoralis major": return .chest
+    case "upper chest", "upperchest": return .upperChest
+    case "lats", "latissimus", "latissimus dorsi", "upper back", "upperback", "back": return .upperBack
+    case "lower back", "lowerback", "spine", "erector spinae": return .lowerBack
+    case "glutes", "glutaeus maximus", "abductors": return .gluteal
+    case "hamstrings", "ischiocrural muscles": return .hamstring
+    case "quadriceps", "quads": return .quadriceps
+    case "adductors", "groin", "inner thighs": return .adductors
+    case "hip flexor", "hip flexors", "hipflexors": return .hipFlexors
+    case "calves", "gastrocnemius", "soleus": return .calves
+    case "shin", "shins", "tibialis", "tibialis anterior": return .tibialis
+    case "ankles", "ankle stabilizers": return .ankles
+    case "feet": return .feet
+    default: return nil
     }
 }

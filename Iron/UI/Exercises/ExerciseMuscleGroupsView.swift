@@ -32,10 +32,11 @@ struct ExerciseMuscleGroupsView : View {
     }
 
     private var filteredExercises: [Exercise] {
-        ExerciseStore.filter(exercises: exerciseStore.shownExercises, using: search)
+        let matches = ExerciseStore.filter(exercises: exerciseStore.shownExercises, using: search)
             .filter { selectedMuscleGroup == nil || $0.muscleGroup == selectedMuscleGroup }
             .filter { selectedEquipment == nil || $0.equipment.contains(selectedEquipment!) }
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return exerciseStore.orderedByRecency(matches)
     }
 
     private var hasActiveFilter: Bool {
@@ -183,8 +184,9 @@ private struct HiddenExercisesView: View {
     @State private var search = ""
 
     private var filteredExercises: [Exercise] {
-        ExerciseStore.filter(exercises: exerciseStore.hiddenExercises, using: search)
+        let matches = ExerciseStore.filter(exercises: exerciseStore.hiddenExercises, using: search)
             .sorted { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return exerciseStore.orderedByRecency(matches)
     }
 
     var body: some View {

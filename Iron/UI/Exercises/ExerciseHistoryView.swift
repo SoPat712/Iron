@@ -11,7 +11,6 @@ import CoreData
 import WorkoutDataKit
 
 struct ExerciseHistoryView: View {
-    @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @FetchRequest(fetchRequest: WorkoutExercise.fetchRequest()) private var history
 
@@ -55,7 +54,7 @@ struct ExerciseHistoryView: View {
     }
 
     private func sessionSection(_ workoutExercise: WorkoutExercise) -> some View {
-        let sets = workoutSets(for: workoutExercise)
+        let sets = workoutExercise.workoutSets?.array as? [WorkoutSet] ?? []
         let completedCount = sets.filter(\.isCompleted).count
         let isFullyCompleted = !sets.isEmpty && completedCount == sets.count
 
@@ -84,7 +83,7 @@ struct ExerciseHistoryView: View {
             }
 
             ForEach(Array(sets.enumerated()), id: \.element.id) { index, set in
-                historySetRow(set, index: index)
+                ExerciseHistorySetRow(set: set, index: index)
             }
         } header: {
             Text(Workout.dateFormatter.string(from: workoutExercise.workout?.start, fallback: "Unknown date"))
@@ -100,7 +99,16 @@ struct ExerciseHistoryView: View {
         }
     }
 
-    private func historySetRow(_ set: WorkoutSet, index: Int) -> some View {
+}
+
+/// The same completed-set presentation is used in full and inline history.
+struct ExerciseHistorySetRow: View {
+    @EnvironmentObject private var settingsStore: SettingsStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ObservedObject var set: WorkoutSet
+    let index: Int
+
+    var body: some View {
         HStack(spacing: 12) {
             Text(set.tagValue?.title.first.map(String.init) ?? "\(index + 1)")
                 .font(.ironMetric(.subheadline, weight: .semibold))
@@ -180,10 +188,6 @@ struct ExerciseHistoryView: View {
 
     private func unitText(_ unit: String) -> Text {
         Text(" \(unit)").font(.caption).foregroundColor(IronTheme.secondaryText)
-    }
-
-    private func workoutSets(for workoutExercise: WorkoutExercise) -> [WorkoutSet] {
-        workoutExercise.workoutSets?.array as? [WorkoutSet] ?? []
     }
 
     private func rpeText(_ value: Double?) -> String {

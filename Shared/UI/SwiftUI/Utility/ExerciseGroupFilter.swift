@@ -34,8 +34,17 @@ class ExerciseGroupFilter: ObservableObject {
         
         cancellable = searchSubject
             .debounce(for: .milliseconds(300), scheduler: DispatchQueue.global(qos: .userInteractive))
-            .map { ExerciseStore.filter(exerciseGroups: self.originalExerciseGroups, using: $0) }
+            .map { query in
+                guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                    return exerciseGroups
+                }
+                // A single untitled group lets all picker/list consumers show
+                // flat search matches, then apply the shared recency snapshot.
+                return [ExerciseGroup(title: "", exercises: ExerciseStore.filter(
+                    exercises: exerciseGroups.flatMap(\.exercises), using: query
+                ))]
+            }
             .receive(on: DispatchQueue.main)
-            .assign(to: \.exerciseGroups, on: self)
+            .sink { [weak self] in self?.exerciseGroups = $0 }
     }
 }

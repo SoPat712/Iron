@@ -82,7 +82,7 @@ struct CustomExercisesView: View {
                 }
             } else {
                 Section {
-                    ForEach(exerciseStore.customExercises) { exercise in
+                    ForEach(exerciseStore.orderedByRecency(exerciseStore.customExercises)) { exercise in
                         customExerciseRow(exercise)
                     }
                 } header: {

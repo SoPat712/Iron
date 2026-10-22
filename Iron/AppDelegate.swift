@@ -28,6 +28,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         seedSampleDataIfRequested()
         #endif
 
+        ExerciseStore.shared.observeWorkoutHistory(in: WorkoutDataStorage.shared.persistentContainer.viewContext)
         WatchConnectionManager.shared.activateSession()
         protectedDataObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.protectedDataDidBecomeAvailableNotification,

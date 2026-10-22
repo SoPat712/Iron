@@ -7,6 +7,8 @@
 //
 
 import Foundation
+import CoreData
+import Combine
 import os.log
 
 public class ExerciseStore: ObservableObject {
@@ -21,13 +23,20 @@ public class ExerciseStore: ObservableObject {
     public let builtInExercises: [Exercise]
     
     @Published private(set) public var customExercises: [Exercise]
+
+    /// Shared history snapshot. Searching and rendering only read this cache.
+    @Published private(set) public var lastPerformedDates: [UUID: Date] = [:]
+    private var recencyContext: NSManagedObjectContext?
+    private var recencyObserver: AnyCancellable?
+    private var recencyRefreshRunning = false
+    private var recencyRefreshPending = false
     
     public var exercises: [Exercise] {
         builtInExercises + customExercises
     }
     
     public var shownExercises: [Exercise] {
-        exercises.filter { !isHidden(exercise: $0) }
+        orderedByRecency(exercises.filter { !isHidden(exercise: $0) })
     }
     
     public var hiddenExercises: [Exercise] {
@@ -66,6 +75,123 @@ public class ExerciseStore: ObservableObject {
             os_log("Successfully migrated custom exercises", log: .migration, type: .info)
             return (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
         }
+    }
+}
+
+// MARK: - Exercise recency
+extension ExerciseStore {
+    /// Call on the main queue once the history store is loaded. Repeated calls
+    /// with the same store are cheap, including when presenting a picker.
+    public func observeWorkoutHistory(in context: NSManagedObjectContext) {
+        precondition(Thread.isMainThread)
+        guard let coordinator = context.persistentStoreCoordinator,
+              recencyContext?.persistentStoreCoordinator !== coordinator else { return }
+
+        let reader = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        reader.persistentStoreCoordinator = coordinator
+        reader.undoManager = nil
+        recencyContext = reader
+        recencyRefreshRunning = false
+        recencyRefreshPending = false
+
+        recencyObserver = NotificationCenter.default.publisher(for: .NSManagedObjectContextDidSave)
+            .filter { notification in
+                // Inspect managed objects on the saving context's queue, before
+                // hopping to main. Imports may save from a background context.
+                guard let savedContext = notification.object as? NSManagedObjectContext,
+                      savedContext.persistentStoreCoordinator === coordinator else { return false }
+                return [NSInsertedObjectsKey, NSUpdatedObjectsKey, NSDeletedObjectsKey].contains { key in
+                    (notification.userInfo?[key] as? Set<NSManagedObject>)?.contains {
+                        $0 is Workout || $0 is WorkoutExercise || $0 is WorkoutSet
+                    } == true
+                }
+            }
+            .map { _ in () }
+            .debounce(for: .milliseconds(100), scheduler: DispatchQueue.main)
+            .sink { [weak self] in self?.refreshExerciseRecency() }
+        refreshExerciseRecency()
+    }
+
+    private func refreshExerciseRecency() {
+        guard let context = recencyContext else { return }
+        guard !recencyRefreshRunning else {
+            recencyRefreshPending = true
+            return
+        }
+        recencyRefreshRunning = true
+        context.perform { [weak self] in
+            context.reset()
+            let result = Result { try ExerciseRecency.latestDates(in: context) }
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.recencyContext === context else { return }
+                self.recencyRefreshRunning = false
+                switch result {
+                case .success(let dates):
+                    if self.lastPerformedDates != dates { self.lastPerformedDates = dates }
+                case .failure(let error):
+                    // Keep the previous snapshot if the store is temporarily unavailable.
+                    os_log("Could not refresh exercise recency: %{public}@", type: .error, error.localizedDescription)
+                }
+                if self.recencyRefreshPending {
+                    self.recencyRefreshPending = false
+                    self.refreshExerciseRecency()
+                }
+            }
+        }
+    }
+
+    public func orderedByRecency(_ exercises: [Exercise]) -> [Exercise] {
+        ExerciseRecency.ordered(exercises, dates: lastPerformedDates)
+    }
+}
+
+public enum ExerciseRecency {
+    /// One scalar fetch for the entire history, with no managed-object faults or
+    /// per-exercise queries. A qualifying workout has at least one completed set;
+    /// every exercise appearing in it counts, including an entry with no sets.
+    /// importSource is deliberately unrestricted (Hevy and Iron use the same rule).
+    public static func latestDates(in context: NSManagedObjectContext) throws -> [UUID: Date] {
+        let request = NSFetchRequest<NSDictionary>(entityName: "WorkoutExercise")
+        request.resultType = .dictionaryResultType
+        request.includesPendingChanges = false
+        request.predicate = NSPredicate(format: """
+            workout.isCurrentWorkout == NO AND
+            SUBQUERY(workout.workoutExercises, $entry, ANY $entry.workoutSets.isCompleted == YES).@count > 0
+            """)
+        let start = NSExpressionDescription()
+        start.name = "start"
+        start.expression = NSExpression(forKeyPath: "workout.start")
+        start.expressionResultType = .dateAttributeType
+        let end = NSExpressionDescription()
+        end.name = "end"
+        end.expression = NSExpression(forKeyPath: "workout.end")
+        end.expressionResultType = .dateAttributeType
+        request.propertiesToFetch = ["exerciseUuid", start, end]
+
+        var dates: [UUID: Date] = [:]
+        for row in try context.fetch(request) {
+            guard let uuid = row["exerciseUuid"] as? UUID,
+                  let date = (row["start"] as? Date) ?? (row["end"] as? Date) else { continue }
+            dates[uuid] = max(dates[uuid] ?? date, date)
+        }
+        return dates
+    }
+
+    /// Keep the caller's existing order (including search relevance) for unseen
+    /// exercises. Recency is always primary; equal dates are ordered by title.
+    public static func ordered(_ exercises: [Exercise], dates: [UUID: Date]) -> [Exercise] {
+        exercises.enumerated().sorted { lhs, rhs in
+            switch (dates[lhs.element.uuid], dates[rhs.element.uuid]) {
+            case let (left?, right?):
+                if left != right { return left > right }
+                let comparison = lhs.element.title.localizedCaseInsensitiveCompare(rhs.element.title)
+                if comparison != .orderedSame { return comparison == .orderedAscending }
+                return lhs.element.uuid.uuidString < rhs.element.uuid.uuidString
+            case (_?, nil): return true
+            case (nil, _?): return false
+            case (nil, nil): return lhs.offset < rhs.offset
+            }
+        }.map(\.element)
     }
 }
 

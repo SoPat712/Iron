@@ -402,38 +402,12 @@ struct ExerciseDetailView : View {
                     .listRowSeparator(.hidden)
             }
 
-            Section {
-                NavigationLink {
-                    ExerciseHistoryView(exercise: currentExercise)
-                        .navigationTitle("History")
-                        .navigationBarTitleDisplayMode(.inline)
-                } label: {
-                    Label("History", systemImage: "clock.arrow.circlepath")
-                }
-
-                NavigationLink {
-                    ExerciseStatisticsView(exercise: currentExercise)
-                        .navigationTitle("Progress")
-                        .navigationBarTitleDisplayMode(.inline)
-                } label: {
-                    Label("Progress", systemImage: "chart.xyaxis.line")
-                }
+            Section("Progress") {
+                ExerciseInlineProgressView(exercise: currentExercise)
+                    .id(currentExercise.uuid)
             }
 
-            Section("Target") {
-                LabeledContent("Primary", value: muscleList(currentExercise.primaryMuscleCommonName))
-                LabeledContent("Secondary", value: muscleList(currentExercise.secondaryMuscleCommonName))
-                if !currentExercise.equipment.isEmpty {
-                    LabeledContent(
-                        "Equipment",
-                        value: currentExercise.equipment.map { $0.capitalized }.joined(separator: ", ")
-                    )
-                }
-            }
-
-            if !primaryMapMuscles.isEmpty || !secondaryMapMuscles.isEmpty {
-                muscleMapSection
-            }
+            muscleMapSection
 
             if let description = currentExercise.description, !description.isEmpty {
                 Section("About") {
@@ -521,10 +495,6 @@ struct ExerciseDetailView : View {
         }
     }
 
-    private func muscleList(_ values: [String]) -> String {
-        values.isEmpty ? "—" : values.map { $0.capitalized }.joined(separator: ", ")
-    }
-
     private func instructionRow(number: Int, step: String) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text("\(number)")
@@ -539,24 +509,21 @@ struct ExerciseDetailView : View {
     }
 
     private var muscleMapSection: some View {
-        Section {
-            HStack(spacing: 8) {
-                muscleBody(side: .front)
-                muscleBody(side: .back)
+        Section("Target") {
+            if !primaryMapMuscles.isEmpty || !secondaryMapMuscles.isEmpty {
+                ExerciseTargetMuscleMap(primary: primaryMapMuscles, secondary: secondaryMapMuscles)
+                    .id(currentExercise.uuid)
+            } else {
+                Text("No target muscles specified")
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
             }
-            .frame(height: 210)
-
-            HStack {
-                Text("Front")
-                Spacer()
-                Text("Back")
+            if !currentExercise.equipment.isEmpty {
+                LabeledContent(
+                    "Equipment",
+                    value: currentExercise.equipment.map { $0.capitalized }.joined(separator: ", ")
+                )
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        } header: {
-            Text("Muscle Map")
-        } footer: {
-            Text("Solid highlights are primary movers; lighter highlights assist.")
         }
     }
 
@@ -584,64 +551,151 @@ struct ExerciseDetailView : View {
         mappedMuscles(currentExercise.secondaryMuscle).filter { !primaryMapMuscles.contains($0) }
     }
 
-    private func muscleBody(side: BodySide) -> BodyView {
-        let style = BodyViewStyle(
-            defaultFillColor: Color(.tertiaryLabel).opacity(0.4),
-            strokeColor: Color(.separator),
-            strokeWidth: 0.6,
-            selectionColor: IronTheme.accent,
-            selectionStrokeColor: IronTheme.accent,
-            selectionStrokeWidth: 1.5,
-            headColor: Color(.tertiaryLabel).opacity(0.5),
-            hairColor: Color(.quaternaryLabel)
-        )
-        return BodyView(gender: .male, side: side, style: style)
-            .highlight(secondaryMapMuscles, color: IronTheme.accent, opacity: 0.42)
-            .highlight(primaryMapMuscles, color: IronTheme.accent)
-    }
-
     private func mappedMuscles(_ names: [String]) -> [Muscle] {
         var result: [Muscle] = []
         for name in names {
-            guard let muscle = mapMuscle(name), !result.contains(muscle) else { continue }
+            guard let muscle = ironMapMuscle(name), !result.contains(muscle) else { continue }
             result.append(muscle)
         }
         return result
     }
 
-    private func mapMuscle(_ name: String) -> Muscle? {
-        switch name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) {
-        case "abs", "abdominals", "core": return .abs
-        case "lower abs": return .lowerAbs
-        case "obliques": return .obliques
-        case "serratus anterior": return .serratus
-        case "biceps", "biceps brachii", "brachialis": return .biceps
-        case "triceps", "triceps brachii": return .triceps
-        case "forearm", "forearms", "forerm", "wrists", "wrist flexors", "wrist extensors", "grip muscles": return .forearm
-        case "hands": return .hands
-        case "shoulders", "deltoid", "deltoids", "delts": return .deltoids
-        case "rear deltoids": return .rearDeltoid
-        case "rotator cuff": return .rotatorCuff
-        case "trapezius", "traps", "levator scapulae": return .trapezius
-        case "rhomboids": return .rhomboids
-        case "sternocleidomastoid": return .neck
-        case "chest", "pectorals", "pectoralis major": return .chest
-        case "upper chest": return .upperChest
-        case "lats", "latissimus dorsi", "upper back", "back": return .upperBack
-        case "lower back", "spine", "erector spinae": return .lowerBack
-        case "glutes", "glutaeus maximus", "abductors": return .gluteal
-        case "hamstrings", "ischiocrural muscles": return .hamstring
-        case "quadriceps", "quads": return .quadriceps
-        case "adductors", "groin", "inner thighs": return .adductors
-        case "hip flexors": return .hipFlexors
-        case "calves", "gastrocnemius", "soleus": return .calves
-        case "shins": return .tibialis
-        case "ankles", "ankle stabilizers": return .ankles
-        case "feet": return .feet
-        default: return nil
+
+}
+
+/// Tap selection uses MuscleMap's own path hit-testing and anchored tooltip.
+/// Do not enable its minimum-distance-one drag: that steals List scrolling.
+private struct ExerciseTargetMuscleMap: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let primary: [Muscle]
+    let secondary: [Muscle]
+
+    @State private var selectedMuscle: Muscle?
+    @State private var selectedSide: BodySide?
+    @State private var selectionID = UUID()
+
+    private var accessibilitySummary: String {
+        let primaryNames = primary.map(\.displayName).joined(separator: ", ")
+        let secondaryNames = secondary.map(\.displayName).joined(separator: ", ")
+        return "Target muscles. Primary: \(primaryNames.isEmpty ? "None" : primaryNames). Secondary: \(secondaryNames.isEmpty ? "None" : secondaryNames)."
+    }
+
+    var body: some View {
+        VStack(spacing: 12) {
+            HStack(spacing: 8) {
+                muscleBody(side: .front)
+                muscleBody(side: .back)
+            }
+            .frame(height: 230)
+            .padding(.top, 12)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(accessibilitySummary)
+            .accessibilityAddTraits(.isImage)
+
+            HStack(spacing: 20) {
+                legend("Primary", opacity: 1)
+                legend("Secondary", opacity: 0.42)
+            }
+            .accessibilityHidden(true)
+
+            Text("Tap a highlighted muscle to inspect")
+                .font(.caption2)
+                .foregroundStyle(IronTheme.secondaryText)
+                .accessibilityHidden(true)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.bottom, 4)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedMuscle)
+        .sensoryFeedback(.selection, trigger: selectedMuscle) { _, muscle in muscle != nil }
+        .task(id: selectionID) {
+            guard selectedMuscle != nil else { return }
+            do {
+                try await Task.sleep(for: .seconds(2))
+            } catch {
+                return
+            }
+            selectedMuscle = nil
+            selectedSide = nil
+        }
+        .onDisappear {
+            selectedMuscle = nil
+            selectedSide = nil
         }
     }
 
+    private func legend(_ title: String, opacity: Double) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(IronTheme.accent.opacity(opacity)).frame(width: 7, height: 7)
+            Text(title).font(.caption)
+        }
+        .foregroundStyle(IronTheme.secondaryText)
+    }
+
+    private func muscleBody(side: BodySide) -> some View {
+        // Match the live-workout map's semantic system colors and highlight weights.
+        let style = BodyViewStyle(
+            defaultFillColor: Color(.tertiaryLabel).opacity(0.35),
+            strokeColor: Color(.separator),
+            strokeWidth: 0.5,
+            selectionColor: IronTheme.accent.opacity(0.72),
+            selectionStrokeColor: IronTheme.accent,
+            selectionStrokeWidth: 1,
+            headColor: Color(.tertiaryLabel).opacity(0.45),
+            hairColor: Color(.quaternaryLabel)
+        )
+        // Render subgroups so upper chest, rear deltoids, etc. remain touchable.
+        // Inherit parent highlights on those paths, with explicit targets winning.
+        let primaryHighlights = Array(Set(primary + primary.flatMap(\.subGroups)))
+        let secondaryHighlights = Array(Set(secondary + secondary.flatMap(\.subGroups)))
+        return BodyView(gender: .male, side: side, style: style)
+            .showSubGroups()
+            .highlight(secondaryHighlights, color: IronTheme.accent, opacity: 0.42)
+            .highlight(primaryHighlights, color: IronTheme.accent)
+            .highlight(secondary, color: IronTheme.accent, opacity: 0.42)
+            .highlight(primary, color: IronTheme.accent)
+            .selected(selectedSide == side ? selectedMuscle : nil)
+            .onMuscleSelected { muscle, _ in
+                guard role(for: muscle) != nil else {
+                    selectedMuscle = nil
+                    selectedSide = nil
+                    return
+                }
+                selectedSide = side
+                selectedMuscle = muscle
+                selectionID = UUID()
+            }
+            .tooltip { muscle, _ in
+                if let role = role(for: muscle) {
+                    Text("\(targetName(for: muscle)) · \(role)")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(IronTheme.primaryText)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 140)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.regularMaterial, in: Capsule())
+                        .transition(reduceMotion ? .opacity : .scale(scale: 0.92).combined(with: .opacity))
+                        .accessibilityHidden(true)
+                }
+            }
+    }
+
+    private func role(for muscle: Muscle) -> String? {
+        if primary.contains(muscle) { return "Primary" }
+        if secondary.contains(muscle) { return "Secondary" }
+        if let parent = muscle.parentGroup {
+            if primary.contains(parent) { return "Primary" }
+            if secondary.contains(parent) { return "Secondary" }
+        }
+        return nil
+    }
+
+    private func targetName(for muscle: Muscle) -> String {
+        if !primary.contains(muscle), !secondary.contains(muscle), let parent = muscle.parentGroup {
+            return parent.displayName
+        }
+        return muscle.displayName
+    }
 }
 
 #if DEBUG
