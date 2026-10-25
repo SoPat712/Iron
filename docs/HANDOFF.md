@@ -162,6 +162,39 @@ Spec: `DESIGN_SYSTEM.md` §9.8, backlog B6.3.
 ### T4 [OWNER] Push `3ab7e2f..c3f401a` to the fork's `main` when the owner says so
 `git fetch origin && git merge-base --is-ancestor origin/main main && git push origin main`
 
+### T4b [CODEX, design the screen first] "Remove imported workouts" and re-import tools (owner request, 2026-10-25)
+**What exists:** Hevy re-import already deduplicates. `HevyCSV.importData` builds a key
+(start time rounded to the second, plus the normalized workout title) for every existing
+workout and skips CSV sessions that match, reporting "N duplicate workouts skipped". Importing a
+fresh full Hevy export therefore adds only the new sessions.
+
+**Gaps to fix:**
+1. A Hevy workout that the owner **renamed in Iron**, or whose start time they edited,
+   no longer matches and would be re-imported as a duplicate. Match imported workouts
+   (`importSource == "hevy"`) by start second plus exercise and set fingerprint as well, so a
+   title change alone doesn't defeat deduplication.
+2. Sessions **edited in Hevy** after the first import are skipped, not updated.
+3. There is no way to undo an import.
+
+**Build**, in Settings → Import & Export, as a new "Imported Data" section:
+- A summary row: "Hevy · 412 workouts · Oct 2019 – Oct 2026" (count and date range of
+  `importSource == "hevy"`).
+- **"Remove Imported Workouts"**, a destructive action:
+  - It deletes only workouts with `importSource == "hevy"` (never Iron-completed ones).
+  - A `.confirmationDialog` states the count and says "Workouts you logged in Iron are kept."
+  - It runs on a background context with the import progress overlay pattern.
+  - It refreshes exercise recency afterwards (it observes saves, so this is automatic).
+  - Imported workouts were never exported, so there is no Apple Health effect; assert that in
+    code.
+- **"Replace with New Export…"**: pick a CSV, remove the imported workouts, then import, as one
+  operation that rolls back if the import fails. This is the clean way to pick up workouts
+  edited in Hevy.
+- Optional: "Remove imported body measurements". Measurements merge by date today; check
+  whether they're tagged before offering this.
+
+Never touch workouts without `importSource`. Add unit tests for the deduplication key and the
+removal predicate.
+
 ### T5 [CODEX] B7 recency captions and B10 motion gaps
 These are optional and low priority (backlog B7 and B10). B10's accessory-to-logger zoom
 transition is the most visible of them.
