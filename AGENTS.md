@@ -6,6 +6,7 @@ Iron is a SwiftUI strength-training app for iPhone and Apple Watch (Core Data mo
 
 1. [`docs/DESIGN_SYSTEM.md`](docs/DESIGN_SYSTEM.md): colors, type, spacing, components, motion, haptics, sounds and copy. To restyle a screen from a screenshot, follow §16.
 2. [`docs/DESIGN_BACKLOG.md`](docs/DESIGN_BACKLOG.md): approved build specs (B1–B10), lane and file ownership, and build and install commands.
+3. [`docs/HANDOFF.md`](docs/HANDOFF.md): mission, current state, owner preferences, the prioritized task list, and the UI ideas log.
 
 ## Hard rules
 
