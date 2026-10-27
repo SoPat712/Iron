@@ -77,6 +77,9 @@ struct CustomExercisesView: View {
                     } actions: {
                         Button("Create Exercise") { activeSheet = .createCustomExercise }
                             .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .listRowBackground(Color.clear)
                 }
@@ -88,7 +91,7 @@ struct CustomExercisesView: View {
                 } header: {
                     Text("Your Library")
                 } footer: {
-                    Text("\(exerciseStore.customExercises.count) custom exercise\(exerciseStore.customExercises.count == 1 ? "" : "s") · private to Iron")
+                    Text("\(exerciseStore.customExercises.count) custom exercise\(exerciseStore.customExercises.count == 1 ? "" : "s") · private to Light")
                 }
             }
         }
@@ -143,12 +146,7 @@ struct CustomExercisesView: View {
             ExerciseDetailView(exercise: exercise)
                 .environmentObject(self.settingsStore)
         } label: {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(exercise.title)
-                Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-            }
+            ExerciseLibraryRow(exercise: exercise)
         }
         .swipeActions(edge: .trailing) {
             Button("Delete", systemImage: "trash", role: .destructive) {

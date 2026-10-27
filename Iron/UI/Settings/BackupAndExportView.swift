@@ -18,6 +18,10 @@ struct BackupAndExportView: View {
     @EnvironmentObject var exerciseStore: ExerciseStore
 
     @ObservedObject var backupStore = BackupFileStore.shared
+    @FetchRequest(
+        sortDescriptors: [NSSortDescriptor(keyPath: \Workout.start, ascending: true)],
+        predicate: HevyImportedWorkouts.predicate
+    ) private var importedWorkouts: FetchedResults<Workout>
 
     @State private var operationError: DataOperationError?
     private struct DataOperationError: Identifiable {
@@ -28,6 +32,10 @@ struct BackupAndExportView: View {
 
     @State private var activityItems: [Any]?
     @State private var isShowingCSVImporter = false
+    @State private var isReplacingImport = false
+    @State private var replacementCSV: Data?
+    @State private var showingRemoveConfirmation = false
+    @State private var showingReplaceConfirmation = false
     @State private var hevyImportOutcome: HevyCSVImportOutcome?
     @State private var isCreatingCloudBackup = false
     @State private var cloudBackupSucceeded = false
@@ -35,9 +43,9 @@ struct BackupAndExportView: View {
     private var cloudBackupFooterText: String {
         var strings = [String]()
         if settingsStore.autoBackup {
-            strings.append("Iron attempts an automatic backup when iOS closes the app.")
+            strings.append("Light attempts an automatic backup when iOS closes the app.")
         }
-        strings.append("Backups are stored in Iron's app folder in your iCloud Drive. Only the last backup of each day is kept, and the files are also available from the Files app.")
+        strings.append("Backups are stored in Light's app folder in your iCloud Drive. Only the last backup of each day is kept, and the files are also available from the Files app.")
         if let creationDate = backupStore.lastBackup?.creationDate {
             strings.append("Last backup: " + BackupFileStore.BackupFile.dateFormatter.string(from: creationDate))
         }
@@ -49,24 +57,56 @@ struct BackupAndExportView: View {
         List {
             Section {
                 nativeSummaryRow(
-                    title: "Bring everything into Iron",
+                    title: "Bring everything into Light",
                     detail: "Imports one or both Hevy CSV files automatically.",
                     systemImage: "square.and.arrow.down"
                 )
 
-                Button(action: { isShowingCSVImporter = true }) {
+                Button(action: {
+                    isReplacingImport = false
+                    isShowingCSVImporter = true
+                }) {
                     Label("Choose CSV from Files", systemImage: "folder")
                 }
             } header: {
                 Text("Import")
             } footer: {
-                Text("Choose workout_data.csv, measurement_data.csv, or both. Iron detects each file automatically.")
+                Text("Choose workout_data.csv, measurement_data.csv, or both. Light detects each file automatically.")
+            }
+
+            Section {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Hevy").font(.body)
+                    Text("\(importedWorkouts.count.formatted()) workouts")
+                        .font(.ironMetric(.subheadline, weight: .semibold))
+                    Text(importedDateRange)
+                        .font(.caption)
+                        .foregroundStyle(IronTheme.secondaryText)
+                }
+                .accessibilityElement(children: .combine)
+
+                Button("Replace with New Export…", systemImage: "arrow.triangle.2.circlepath") {
+                    isReplacingImport = true
+                    isShowingCSVImporter = true
+                }
+                Button("Remove Imported Workouts", systemImage: "trash", role: .destructive) {
+                    showingRemoveConfirmation = true
+                }
+                .tint(IronTheme.danger)
+                // ironScreen supplies the legacy accent environment used by
+                // native List label icons; override it for this destructive row.
+                .accentColor(IronTheme.danger)
+                .disabled(importedWorkouts.isEmpty)
+            } header: {
+                Text("Imported Data")
+            } footer: {
+                Text("Workouts you logged in Light and body measurements are kept. Imported workouts are never exported to Apple Health.")
             }
 
             Section {
                 nativeSummaryRow(
                     title: "Take your data with you",
-                    detail: "Share Hevy-compatible CSV files or a complete Iron backup.",
+                    detail: "Share Hevy-compatible CSV files or a complete Light backup.",
                     systemImage: "square.and.arrow.up"
                 )
 
@@ -121,17 +161,62 @@ struct BackupAndExportView: View {
         .alert("Backup created", isPresented: $cloudBackupSucceeded) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Your latest Iron data is now stored in iCloud Drive and is available from Restore Backup or the Files app.")
+            Text("Your latest Light data is now stored in iCloud Drive and is available from Restore Backup or the Files app.")
         }
         .ironActivitySheet(activityItems: $activityItems)
         .fileImporter(
             isPresented: $isShowingCSVImporter,
             allowedContentTypes: [.commaSeparatedText],
-            allowsMultipleSelection: true,
+            allowsMultipleSelection: !isReplacingImport,
             onCompletion: importCSV
         )
+        .confirmationDialog(
+            "Remove \(importedWorkouts.count.formatted()) Imported Workouts?",
+            isPresented: $showingRemoveConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Remove Imported Workouts", role: .destructive) {
+                let count = importedWorkouts.count
+                Task {
+                    hevyImportOutcome = await HevyImportController.shared.remove(count: count, from: managedObjectContext)
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This removes \(importedWorkouts.count.formatted()) Hevy workouts and their sets. Workouts you logged in Light are kept.")
+        }
+        .confirmationDialog(
+            "Replace \(importedWorkouts.count.formatted()) Imported Workouts?",
+            isPresented: $showingReplaceConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button("Replace Imported Workouts", role: .destructive, action: replaceImportedWorkouts)
+            Button("Cancel", role: .cancel) { replacementCSV = nil }
+        } message: {
+            Text("The selected export replaces your Hevy workouts. Workouts you logged in Light are kept. If the import fails, your existing imported workouts are restored.")
+        }
         .sheet(item: $hevyImportOutcome) { outcome in
             HevyCSVImportResultSheet(outcome: outcome)
+        }
+    }
+
+    private var importedDateRange: String {
+        guard let first = importedWorkouts.first?.start, let last = importedWorkouts.last?.start else {
+            return "No imported workouts"
+        }
+        let format = Date.FormatStyle.dateTime.month(.abbreviated).year()
+        let firstText = first.formatted(format)
+        let lastText = last.formatted(format)
+        return firstText == lastText ? firstText : "\(firstText) – \(lastText)"
+    }
+
+    private func replaceImportedWorkouts() {
+        guard let document = replacementCSV else { return }
+        replacementCSV = nil
+        Task {
+            hevyImportOutcome = await HevyImportController.shared.replace(
+                document, into: managedObjectContext, exerciseStore: exerciseStore
+            )
         }
     }
 
@@ -166,7 +251,7 @@ struct BackupAndExportView: View {
             Label {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Checking iCloud Drive")
-                    Text("Looking for Iron backups saved by your devices…")
+                    Text("Looking for Light backups saved by your devices…")
                         .font(.caption)
                         .foregroundColor(IronTheme.secondaryText)
                 }
@@ -226,7 +311,7 @@ struct BackupAndExportView: View {
                 Label {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Automatic backups")
-                        Text("Attempt a backup when Iron closes")
+                        Text("Attempt a backup when Light closes")
                             .font(.caption)
                             .foregroundColor(IronTheme.secondaryText)
                     }
@@ -289,6 +374,13 @@ struct BackupAndExportView: View {
                     if isSecurityScoped { url.stopAccessingSecurityScopedResource() }
                 }
                 return try Data(contentsOf: url)
+            }
+
+            if isReplacingImport {
+                guard dataDocuments.count == 1 else { throw HevyCSVError.replacementRequiresWorkouts }
+                replacementCSV = dataDocuments[0]
+                showingReplaceConfirmation = true
+                return
             }
 
             Task {

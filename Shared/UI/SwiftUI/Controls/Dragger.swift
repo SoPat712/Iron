@@ -180,6 +180,79 @@ struct Dragger : View {
     private var valueString: String? {
         (tmpValueInitialized ? tmpValue : value).map { numberFormatter.string(from: NSNumber(value: $0)) ?? "" }
     }
+
+    private var accessibilityValueText: String {
+        if let valueString {
+            return "\(valueString) \(unit)"
+        }
+        return nilPlaceholder.isEmpty ? "Not set" : nilPlaceholder
+    }
+
+    private func adjustValue(_ direction: AccessibilityAdjustmentDirection) {
+        guard stepSize > 0 else { return }
+
+        let delta: Double
+        switch direction {
+        case .increment:
+            delta = stepSize
+        case .decrement:
+            delta = -stepSize
+        default:
+            return
+        }
+        let currentValue: Double
+        switch nilPosition {
+        case .belowMin:
+            currentValue = value ?? ((minValue ?? 0) - stepSize)
+        case .aboveMax:
+            currentValue = value ?? ((maxValue ?? 0) + stepSize)
+        case .undefined:
+            currentValue = value ?? 0
+        }
+
+        var adjustedValue = currentValue + delta
+        let remainder = adjustedValue.truncatingRemainder(dividingBy: stepSize)
+        if remainder > 0 {
+            adjustedValue -= remainder
+            if delta < 0 { adjustedValue += stepSize }
+        } else if remainder < 0 {
+            adjustedValue -= remainder
+            if delta > 0 { adjustedValue -= stepSize }
+        }
+        var shouldSetNil = false
+
+        if let minValue {
+            if nilPosition == .belowMin {
+                let nilValue = minValue - stepSize
+                if adjustedValue <= nilValue {
+                    shouldSetNil = true
+                } else {
+                    adjustedValue = max(adjustedValue, minValue)
+                }
+            } else {
+                adjustedValue = max(adjustedValue, minValue)
+            }
+        }
+
+        if let maxValue {
+            if nilPosition == .aboveMax {
+                let nilValue = maxValue + stepSize
+                if adjustedValue >= nilValue {
+                    shouldSetNil = true
+                } else {
+                    adjustedValue = min(adjustedValue, maxValue)
+                }
+            } else {
+                adjustedValue = min(adjustedValue, maxValue)
+            }
+        }
+
+        let newValue: Double? = shouldSetNil ? nil : adjustedValue
+        guard newValue != value else { return }
+        value = newValue
+        onDragStep(newValue)
+        onDragCompleted()
+    }
     
     // toggle to wiggle the dragger, the toggling is kind of a hack
     @State private var wiggleDraggerToggle: Bool = false
@@ -190,7 +263,7 @@ struct Dragger : View {
                 HStack(spacing: 0) {
                     valueString.map {
                         Text($0)
-                            .font(Font.body.monospacedDigit())
+                            .font(.ironMetric(.body, weight: .semibold))
                             .lineLimit(1)
                     }
                     if showCursor {
@@ -199,8 +272,9 @@ struct Dragger : View {
                 }
                 
                 Text(unit)
+                    .font(.caption)
                     .lineLimit(1)
-                    .foregroundColor(Color.secondary)
+                    .foregroundStyle(Color.secondary)
                 
                 Spacer()
             }
@@ -218,7 +292,7 @@ struct Dragger : View {
                 .offset(y: draggerOffset)
                 /// disable for now, crashes on iOS 13.1.x production builds but not on iOS 13.2 (built with Xcode 11.2.1 GM)
 //                .modifier(WiggleModifier(wiggleToggle: wiggleDraggerToggle, wiggleDistance: Self.DRAGGER_MOVEMENT).animation(.linear(duration: 1)))
-                .foregroundColor(isDragging ? Color.primary : Color.secondary)
+                .foregroundStyle(isDragging ? Color.primary : Color.secondary)
 //                .padding()
                 .imageScale(.large)
                 .frame(width: 44, height: 44)
@@ -231,6 +305,17 @@ struct Dragger : View {
                         self.wiggleDraggerToggle.toggle()
                     }
                 )
+        }
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(Text(unit.capitalized))
+        .accessibilityValue(Text(accessibilityValueText))
+        .accessibilityHint("Swipe up or down to adjust. Double-tap to edit.")
+        .accessibilityAdjustableAction { direction in
+            adjustValue(direction)
+        }
+        .accessibilityAction(named: Text("Edit")) {
+            onTextTapped()
         }
     }
 }
@@ -258,7 +343,7 @@ private struct Cursor: View {
     var body: some View {
         RoundedRectangle(cornerRadius: 2, style: .circular)
             .frame(width: 2, height: 20)
-            .foregroundColor(blink ? .clear : .accentColor)
+            .foregroundStyle(blink ? .clear : Color.accentColor)
             .onReceive(Timer.publish(every: 0.6, on: .main, in: .common).autoconnect()) { _ in self.blink.toggle() }
     }
 }

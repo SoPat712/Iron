@@ -37,7 +37,7 @@ struct SettingsView: View {
             .navigationBarTitleDisplayMode(.large)
             .sheet(item: $actionAlert) { alert in
                 IronStatusSheet(
-                    headerTitle: "Iron",
+                    headerTitle: "Light",
                     title: alert.title,
                     message: alert.message,
                     systemImage: "info.circle.fill",
@@ -49,7 +49,7 @@ struct SettingsView: View {
                 case .composer:
                     FeedbackMailComposer(
                         recipients: ["iron@ka.codes"],
-                        subject: "Iron feedback"
+                        subject: "Light feedback"
                     ) { error in
                         feedbackPresentation = nil
                         guard let error else { return }
@@ -87,9 +87,9 @@ struct SettingsView: View {
                     destination: UnitsSettingsView()
                 )
                 settingsLink("Workout preferences", icon: "slider.horizontal.3", destination: GeneralSettingsView())
-                settingsLink("Sounds & haptics", icon: "speaker.wave.2.fill", tint: .pink, destination: SoundsSettingsView())
+                settingsLink("Sounds & haptics", icon: "speaker.wave.2.fill", tint: IronTheme.metricEffort, destination: SoundsSettingsView())
                 if HealthSettingsView.isSupported {
-                    settingsLink("Apple Health", icon: "heart.fill", tint: .red, destination: HealthSettingsView())
+                    settingsLink("Apple Health", icon: "heart.fill", tint: IronTheme.danger, destination: HealthSettingsView())
                 }
                 if WatchSettingsView.isSupported {
                     settingsLink("Apple Watch", icon: "applewatch", destination: WatchSettingsView())
@@ -109,7 +109,7 @@ struct SettingsView: View {
                 .buttonStyle(.plain)
 
                 Button(action: openReview) {
-                    settingsRow("Rate Iron", icon: "star.fill", tint: .orange)
+                    settingsRow("Rate Light", icon: "star.fill", tint: IronTheme.metricRecord)
                 }
                 .buttonStyle(.plain)
 
@@ -118,7 +118,7 @@ struct SettingsView: View {
                     icon: "doc.text.magnifyingglass",
                     destination: LicensesAttributionsView()
                 )
-                settingsLink("About Iron", icon: "info.circle.fill", destination: AboutView())
+                settingsLink("About Light", icon: "info.circle.fill", destination: AboutView())
             }
 
             #if DEBUG
@@ -138,27 +138,26 @@ struct SettingsView: View {
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tint: Color = .accentColor,
+        tint: Color = IronTheme.accent,
         destination: Destination
     ) -> some View {
         NavigationLink(destination: destination) {
             settingsRow(title, detail: detail, icon: icon, tint: tint)
         }
-        .buttonStyle(.plain)
     }
 
     private func settingsRow(
         _ title: String,
         detail: String? = nil,
         icon: String,
-        tint: Color = .accentColor
+        tint: Color = IronTheme.accent
     ) -> some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
-                .font(.footnote.weight(.semibold))
-                .foregroundStyle(.white)
-                .frame(width: 29, height: 29)
-                .background(tint, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+                .font(.body.weight(.semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+                .frame(width: 24)
+                .accessibilityHidden(true)
             if dynamicTypeSize.isAccessibilitySize {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(title)
@@ -189,7 +188,7 @@ struct SettingsView: View {
             DispatchQueue.main.async {
                 actionAlert = ActionAlert(
                     title: "Could Not Open the App Store",
-                    message: "You can rate Iron from its App Store page when the store is available."
+                    message: "You can rate Light from its App Store page when the store is available."
                 )
             }
         }
@@ -305,7 +304,7 @@ private struct FeedbackOptionsSheet: View {
         var components = URLComponents()
         components.scheme = "mailto"
         components.path = emailAddress
-        components.queryItems = [URLQueryItem(name: "subject", value: "Iron feedback")]
+        components.queryItems = [URLQueryItem(name: "subject", value: "Light feedback")]
         return components.url
     }
 }
@@ -356,9 +355,11 @@ struct LicensesAttributionsView: View {
         List {
             Section {
                 attributionSectionContent(
-                    message: "Exercise names, metadata, and English instructions are generated from Hasan Emir Yıldırım’s exercises dataset supplied through the openGym reference material.",
-                    license: "MIT",
+                    message: "Exercise metadata includes OpenGym’s community-written catalog, with AGPL-3.0 descriptions, instructions and corrections. Original ExerciseDB text from Hasan Emir Yıldırım’s dataset retains its MIT notice. These notices and source details are bundled with Light’s catalog.",
+                    license: "AGPL-3.0 / MIT",
                     links: [
+                        AttributionLink(title: "OpenGym catalog", url: URL(string: "https://github.com/DuarteSantos8/openGym/tree/main/catalogue")!),
+                        AttributionLink(title: "Catalog notices", url: URL(string: "https://github.com/DuarteSantos8/openGym/blob/main/NOTICE.md")!),
                         AttributionLink(title: "Dataset source", url: URL(string: "https://github.com/hasaneyldrm/exercises-dataset")!)
                     ]
                 )
@@ -368,7 +369,7 @@ struct LicensesAttributionsView: View {
 
             Section {
                 attributionSectionContent(
-                    message: "Iron downloads ExerciseDB’s Gym Visual GIFs once, stores them on this device, and does not delete them. Later launches fill any missing files over Wi-Fi so the library works offline. The upstream notice requests the following attribution: \(Exercise.mediaAttribution). The media is not covered by the catalogue’s MIT license.",
+                    message: "Light caches ExerciseDB’s Gym Visual media on this device, with still images for lists and animations for demonstrations. Later launches fill missing originals over Wi-Fi. \(Exercise.mediaAttribution). Media rights are separate from catalog text licenses; OpenGym’s separately licensed artwork is not included.",
                     license: "Cached media",
                     links: [
                         AttributionLink(title: "Gym Visual", url: URL(string: "https://gymvisual.com/")!),
@@ -390,7 +391,7 @@ struct LicensesAttributionsView: View {
             } header: {
                 Text("Muscle Maps")
             } footer: {
-                Text("Full third-party license text ships with Iron’s source distribution in THIRD_PARTY_NOTICES.md.")
+                Text("Full third-party license text ships with Light’s source distribution in THIRD_PARTY_NOTICES.md.")
             }
         }
         .listStyle(.insetGrouped)
@@ -423,16 +424,13 @@ struct LicensesAttributionsView: View {
 struct WorkoutCalendarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var exerciseStore: ExerciseStore
-    @FetchRequest(fetchRequest: WorkoutCalendarView.fetchRequest) private var workouts: FetchedResults<Workout>
+    @Environment(\.managedObjectContext) private var context
+    @ObservedObject private var history = TrainingHistoryStore.shared
 
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @ScaledMetric(relativeTo: .subheadline) private var dayDiameter: CGFloat = 34
+    @State private var selectedDay: TrainingDay?
     @State private var visibleMonth = Calendar.current.dateInterval(of: .month, for: Date())?.start ?? Date()
-
-    private static var fetchRequest: NSFetchRequest<Workout> {
-        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-        request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-        return request
-    }
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 4), count: 7)
 
@@ -448,52 +446,18 @@ struct WorkoutCalendarView: View {
         visibleMonth.formatted(.dateTime.month(.wide).year())
     }
 
-    private var monthWorkouts: [Workout] {
+    private var completedWorkouts: [TrainingSessionSnapshot] { history.snapshot.sessions }
+    private var monthWorkouts: [TrainingSessionSnapshot] {
         guard let interval = Calendar.current.dateInterval(of: .month, for: visibleMonth) else { return [] }
-        return workouts.filter { workout in
-            guard let start = workout.start else { return false }
-            return interval.contains(start) && (workout.hasCompletedSets ?? false)
-        }
+        return completedWorkouts.filter { interval.contains($0.date) }
     }
-
-    private var completedWorkouts: [Workout] {
-        workouts.filter { ($0.hasCompletedSets ?? false) && $0.start != nil }
-    }
-
-    private var trainingStreak: Int {
-        let calendar = Calendar.current
-        var streak = 0
-        var cursor = Date()
-
-        for weekOffset in 0..<520 {
-            guard let interval = calendar.dateInterval(of: .weekOfYear, for: cursor) else { break }
-            let trained = completedWorkouts.contains { workout in
-                guard let date = workout.start else { return false }
-                return interval.contains(date)
-            }
-
-            if trained {
-                streak += 1
-            } else if weekOffset > 0 || !interval.contains(Date()) {
-                break
-            }
-
-            guard let previousWeek = calendar.date(
-                byAdding: .weekOfYear,
-                value: -1,
-                to: interval.start
-            ) else { break }
-            cursor = previousWeek
-        }
-
-        return streak
-    }
+    private var trainingStreak: Int { history.snapshot.streak() }
 
     private var restDayCount: Int {
         let calendar = Calendar.current
         let today = calendar.startOfDay(for: Date())
         guard let lastWorkoutDate = completedWorkouts
-            .compactMap(\.start)
+            .map(\.date)
             .map({ calendar.startOfDay(for: $0) })
             .filter({ $0 <= today })
             .max() else { return 0 }
@@ -531,19 +495,11 @@ struct WorkoutCalendarView: View {
                     }
                     .buttonStyle(.borderless)
 
-                    LazyVGrid(columns: columns, spacing: 6) {
-                        ForEach(Array(weekdays.enumerated()), id: \.offset) { _, weekday in
-                            Text(weekday.uppercased())
-                                .font(.caption2.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity)
-                        }
-                    }
-
-                    LazyVGrid(columns: columns, spacing: 6) {
-                        ForEach(Array(calendarCells.enumerated()), id: \.offset) { _, date in
-                            calendarDay(date)
-                        }
+                    if dynamicTypeSize.isAccessibilitySize {
+                        ScrollView(.horizontal) { calendarGrid }
+                            .scrollIndicators(.hidden)
+                    } else {
+                        calendarGrid
                     }
                 }
                 .padding(.vertical, 6)
@@ -552,8 +508,14 @@ struct WorkoutCalendarView: View {
             }
 
             Section("Momentum") {
-                LabeledContent("Streak", value: "^[\(trainingStreak) week](inflect: true)")
-                LabeledContent("Rest Days", value: "^[\(restDayCount) day](inflect: true)")
+                LabeledContent("Streak") {
+                    Text("^[\(trainingStreak) week](inflect: true)")
+                        .font(.ironMetric(.body, weight: .semibold))
+                }
+                LabeledContent("Rest Days") {
+                    Text("^[\(restDayCount) day](inflect: true)")
+                        .font(.ironMetric(.body, weight: .semibold))
+                }
             }
 
             Section("This Month") {
@@ -563,8 +525,8 @@ struct WorkoutCalendarView: View {
                         .foregroundStyle(.secondary)
                 } else {
                     ForEach(monthWorkouts) { workout in
-                        NavigationLink(destination: WorkoutDetailView(workout: workout)) {
-                            CalendarWorkoutRow(workout: workout, showsDate: true)
+                        NavigationLink(destination: WorkoutDetailView(workout: context.object(with: workout.id) as! Workout)) {
+                            CalendarWorkoutRow(workout: context.object(with: workout.id) as! Workout, showsDate: true)
                         }
                     }
                 }
@@ -572,6 +534,8 @@ struct WorkoutCalendarView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("Calendar")
+        .task { history.observe(in: context) }
+        .navigationDestination(item: $selectedDay) { day in TrainingDayRecapView(date: day.date) }
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
                 Button("Today") {
@@ -583,6 +547,21 @@ struct WorkoutCalendarView: View {
         }
     }
 
+    private var calendarGrid: some View {
+        VStack(spacing: 6) {
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(Array(weekdays.enumerated()), id: \.offset) { _, weekday in
+                    Text(weekday.uppercased()).font(.caption2.weight(.semibold))
+                        .foregroundStyle(IronTheme.secondaryText).frame(maxWidth: .infinity)
+                }
+            }
+            LazyVGrid(columns: columns, spacing: 6) {
+                ForEach(Array(calendarCells.enumerated()), id: \.offset) { _, date in calendarDay(date) }
+            }
+        }
+        .frame(width: dynamicTypeSize.isAccessibilitySize ? 7 * max(44, dayDiameter + 10) + 36 : nil)
+    }
+
     private func shiftMonth(_ direction: Int) {
         guard let month = Calendar.current.date(byAdding: .month, value: direction, to: visibleMonth) else { return }
         withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) { visibleMonth = month }
@@ -590,34 +569,14 @@ struct WorkoutCalendarView: View {
 
     @ViewBuilder private func calendarDay(_ date: Date?) -> some View {
         if let date {
-            let dayWorkouts = completedWorkouts(on: date)
-            if dayWorkouts.isEmpty {
-                calendarDayContent(date, workoutCount: 0)
-            } else {
-                NavigationLink(destination: calendarDestination(date: date, workouts: dayWorkouts)) {
-                    calendarDayContent(date, workoutCount: dayWorkouts.count)
-                }
-                .buttonStyle(.plain)
-                .accessibilityHint(dayWorkouts.count == 1 ? "Opens this workout" : "Opens workouts from this day")
+            let count = history.snapshot.byDay[Calendar.current.startOfDay(for: date)]?.count ?? 0
+            Button { selectedDay = TrainingDay(date: date) } label: {
+                calendarDayContent(date, workoutCount: count)
             }
+            .buttonStyle(.plain)
+            .accessibilityHint("Opens the daily recap")
         } else {
-            Color.clear.frame(minHeight: 40)
-        }
-    }
-
-    private func completedWorkouts(on date: Date) -> [Workout] {
-        workouts.filter { workout in
-            guard let start = workout.start, workout.hasCompletedSets ?? false else { return false }
-            return Calendar.current.isDate(start, inSameDayAs: date)
-        }
-    }
-
-    @ViewBuilder
-    private func calendarDestination(date: Date, workouts: [Workout]) -> some View {
-        if workouts.count == 1, let workout = workouts.first {
-            WorkoutDetailView(workout: workout)
-        } else {
-            WorkoutCalendarDayView(date: date, workouts: workouts)
+            Color.clear.frame(minHeight: IronTheme.controlHeight)
         }
     }
 
@@ -626,18 +585,17 @@ struct WorkoutCalendarView: View {
 
         return ZStack {
             if workoutCount > 0 {
-                Circle().fill(Color.accentColor)
+                Circle().fill(IronTheme.accent)
             } else if isToday {
-                Circle().strokeBorder(Color.accentColor, lineWidth: 1.5)
+                Circle().strokeBorder(IronTheme.accent, lineWidth: 1.5)
             }
 
             Text("\(Calendar.current.component(.day, from: date))")
-                .font(.subheadline.monospacedDigit())
-                .fontWeight(workoutCount > 0 || isToday ? .semibold : .regular)
-                .foregroundStyle(workoutCount > 0 ? Color.white : (isToday ? Color.accentColor : Color.primary))
+                .font(.ironMetric(.subheadline, weight: workoutCount > 0 || isToday ? .bold : .semibold))
+                .foregroundStyle(workoutCount > 0 ? IronTheme.onAccent : (isToday ? IronTheme.accent : IronTheme.primaryText))
         }
-        .frame(width: 34, height: 34)
-        .frame(maxWidth: .infinity, minHeight: 40)
+        .frame(width: dayDiameter, height: dayDiameter)
+        .frame(maxWidth: .infinity, minHeight: max(IronTheme.controlHeight, dayDiameter + 10))
         .contentShape(Rectangle())
         .accessibilityLabel(
             "\(date.formatted(date: .long, time: .omitted)), \(workoutCount) workout\(workoutCount == 1 ? "" : "s")"
@@ -652,12 +610,15 @@ private struct WorkoutCalendarDayView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Sessions", value: "\(workouts.count)")
-                LabeledContent("Completed Sets", value: "\(workouts.reduce(0) { $0 + ($1.numberOfCompletedSets ?? 0) })")
-                LabeledContent(
-                    "Time",
-                    value: Workout.durationFormatter.string(from: workouts.reduce(0) { $0 + ($1.duration ?? 0) }) ?? "0m"
-                )
+                LabeledContent("Sessions") { Text("\(workouts.count)").font(.ironMetric(.body, weight: .semibold)) }
+                LabeledContent("Completed Sets") {
+                    Text("\(workouts.reduce(0) { $0 + ($1.numberOfCompletedSets ?? 0) })")
+                        .font(.ironMetric(.body, weight: .semibold))
+                }
+                LabeledContent("Time") {
+                    Text(Workout.durationFormatter.string(from: workouts.reduce(0) { $0 + ($1.duration ?? 0) }) ?? "0m")
+                        .font(.ironMetric(.body, weight: .semibold))
+                }
             }
 
             Section("Workouts") {
@@ -709,9 +670,8 @@ private struct CalendarWorkoutRow: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Text("\(durationText) · \(workout.numberOfCompletedSets ?? 0) sets · \(volumeText)")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+                .font(.ironMetric(.caption, weight: .semibold))
+                .foregroundStyle(IronTheme.secondaryText)
         }
     }
 }

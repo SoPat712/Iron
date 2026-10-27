@@ -10,6 +10,8 @@ import SwiftUI
 import WorkoutDataKit
 
 struct ExerciseMuscleGroupsView : View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject var exerciseStore: ExerciseStore
 
     @State private var search = ""
@@ -44,6 +46,7 @@ struct ExerciseMuscleGroupsView : View {
     }
 
     var body: some View {
+        let filteredExercises = filteredExercises
         List {
             if filteredExercises.isEmpty {
                 emptyExerciseState
@@ -57,21 +60,25 @@ struct ExerciseMuscleGroupsView : View {
                 } header: {
                     if hasActiveFilter {
                         HStack {
-                            Text(activeFilterSummary)
+                            activeFilterSummaryView
                             Spacer()
                             Button("Clear") {
                                 selectedEquipment = nil
                                 selectedMuscleGroup = nil
                             }
                             .textCase(nil)
+                            .frame(minHeight: IronTheme.controlHeight)
                         }
                     }
                 } footer: {
                     Text("\(filteredExercises.count) exercises")
+                        .font(.footnote)
+                        .foregroundStyle(IronTheme.secondaryText)
                 }
             }
         }
         .listStyle(.insetGrouped)
+        .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: search)
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
@@ -88,7 +95,7 @@ struct ExerciseMuscleGroupsView : View {
                     }
                 } label: {
                     Image(systemName: "figure.arms.open")
-                        .foregroundStyle(selectedMuscleGroup == nil ? Color.primary : Color.accentColor)
+                        .foregroundStyle(selectedMuscleGroup == nil ? IronTheme.primaryText : IronTheme.accent)
                 }
                 .accessibilityLabel("Filter by muscle group")
                 .accessibilityValue(selectedMuscleGroup?.capitalized ?? "All muscles")
@@ -103,7 +110,7 @@ struct ExerciseMuscleGroupsView : View {
                     }
                 } label: {
                     Image(systemName: "dumbbell")
-                        .foregroundStyle(selectedEquipment == nil ? Color.primary : Color.accentColor)
+                        .foregroundStyle(selectedEquipment == nil ? IronTheme.primaryText : IronTheme.accent)
                 }
                 .accessibilityLabel("Filter by equipment")
                 .accessibilityValue(selectedEquipment?.capitalized ?? "All equipment")
@@ -128,7 +135,7 @@ struct ExerciseMuscleGroupsView : View {
                 .accessibilityLabel("Create exercise or manage library")
             }
         }
-        .searchable(text: $search, prompt: "Search 1,400+ exercises")
+        .searchable(text: $search, prompt: "Search exercises")
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
         .sheet(isPresented: $showingCreateExercise) {
@@ -175,6 +182,33 @@ struct ExerciseMuscleGroupsView : View {
         [selectedMuscleGroup?.capitalized, selectedEquipment?.capitalized]
             .compactMap { $0 }
             .joined(separator: " · ")
+    }
+
+    @ViewBuilder
+    private var activeFilterSummaryView: some View {
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                VStack(alignment: .leading, spacing: 4) {
+                    activeFilterTags
+                }
+            } else {
+                HStack(spacing: 6) {
+                    activeFilterTags
+                }
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Active filters: \(activeFilterSummary)")
+    }
+
+    @ViewBuilder
+    private var activeFilterTags: some View {
+        if let selectedMuscleGroup {
+            ExerciseLibraryTag(title: selectedMuscleGroup.capitalized)
+        }
+        if let selectedEquipment {
+            ExerciseLibraryTag(title: selectedEquipment.capitalized)
+        }
     }
 }
 

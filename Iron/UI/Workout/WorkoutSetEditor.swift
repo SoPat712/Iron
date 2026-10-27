@@ -564,9 +564,11 @@ struct PlateCalculatorView: View {
             Section {
                 VStack(spacing: 16) {
                     VStack(spacing: 2) {
-                        Text("\(weightTitle(loadedWeight)) \(unit.unit.symbol)")
-                            .font(.system(size: 42, weight: .semibold).monospacedDigit())
-                            .contentTransition(.numericText())
+                        HStack(alignment: .firstTextBaseline, spacing: 4) {
+                            Text(weightTitle(loadedWeight)).font(.ironMetric(.largeTitle))
+                                .contentTransition(.numericText())
+                            Text(unit.unit.symbol).font(.headline).foregroundStyle(IronTheme.secondaryText)
+                        }
 
                         Text(isExactLoad
                              ? "Loads your target exactly"
@@ -596,16 +598,20 @@ struct PlateCalculatorView: View {
                     onIncrement: targetWeight >= 2000 ? nil : { adjustTarget(by: unit.barbellIncrement) },
                     onDecrement: targetWeight <= barWeight ? nil : { adjustTarget(by: -unit.barbellIncrement) }
                 ) {
-                    LabeledContent("Target", value: "\(weightTitle(targetWeight)) \(unit.unit.symbol)")
-                        .monospacedDigit()
+                    LabeledContent("Target") {
+                        Text("\(weightTitle(targetWeight)) \(unit.unit.symbol)")
+                            .font(.ironMetric(.body, weight: .semibold))
+                    }
                 }
 
                 Stepper(
                     onIncrement: barWeight >= 100 ? nil : { adjustBar(by: 5) },
                     onDecrement: barWeight <= 0 ? nil : { adjustBar(by: -5) }
                 ) {
-                    LabeledContent("Bar", value: "\(weightTitle(barWeight)) \(unit.unit.symbol)")
-                        .monospacedDigit()
+                    LabeledContent("Bar") {
+                        Text("\(weightTitle(barWeight)) \(unit.unit.symbol)")
+                            .font(.ironMetric(.body, weight: .semibold))
+                    }
                 }
             } header: {
                 Text("Load")
@@ -618,7 +624,7 @@ struct PlateCalculatorView: View {
                     ForEach(platesPerSide, id: \.weight) { plate in
                         LabeledContent {
                             Text("× \(plate.count)")
-                                .monospacedDigit()
+                                .font(.ironMetric(.body, weight: .semibold))
                                 .foregroundStyle(.secondary)
                         } label: {
                             HStack(spacing: 10) {
@@ -627,7 +633,7 @@ struct PlateCalculatorView: View {
                                     .overlay(Capsule().stroke(Color(.separator), lineWidth: 0.5))
                                     .frame(width: 12, height: 20)
                                 Text("\(weightTitle(plate.weight)) \(unit.unit.symbol)")
-                                    .monospacedDigit()
+                                    .font(.ironMetric(.body, weight: .semibold))
                             }
                         }
                     }
@@ -685,8 +691,10 @@ struct WarmupCalculatorView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Working Set", value: "\(String(format: "%g", workingWeight)) \(unit.unit.symbol)")
-                    .monospacedDigit()
+                LabeledContent("Working Set") {
+                    Text("\(String(format: "%g", workingWeight)) \(unit.unit.symbol)")
+                        .font(.ironMetric(.body, weight: .semibold))
+                }
             } footer: {
                 Text("Warm-up weights are rounded to your barbell increment.")
             }
@@ -705,11 +713,13 @@ struct WarmupCalculatorView: View {
                     ForEach(recommendations) { item in
                         LabeledContent {
                             Text("\(item.repetitions) reps")
-                                .foregroundStyle(.secondary)
+                                .font(.ironMetric(.body, weight: .semibold))
+                                .foregroundStyle(IronTheme.secondaryText)
                         } label: {
                             Text("\(item.weight, specifier: "%g") \(unit.unit.symbol)")
-                                .monospacedDigit()
+                                .font(.ironMetric(.body, weight: .semibold))
                             Text("\(Int(item.percentage * 100))% of working set")
+                                .font(.ironMetric(.caption, weight: .semibold))
                         }
                     }
                 }
@@ -798,6 +808,7 @@ private struct MoreView: View {
         }) {
             HStack {
                 Text(String(format: "%.1f", rpe))
+                    .font(.ironMetric(.body, weight: .semibold))
                 Text(RPE.title(rpe) ?? "")
                     .lineLimit(nil)
                     .foregroundColor(.secondary)

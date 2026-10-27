@@ -9,6 +9,7 @@
 import SwiftUI
 import CoreData
 import ImageIO
+import UIKit
 import MuscleMap
 import WorkoutDataKit
 
@@ -27,7 +28,10 @@ private enum ExerciseMediaPipeline {
             return cached
         }
 
-        guard let data = await ExerciseMediaStore.shared.data(for: url),
+        let data = animated
+            ? await ExerciseMediaStore.shared.data(for: url)
+            : await ExerciseMediaStore.shared.stillData(for: url)
+        guard let data,
               !Task.isCancelled,
               let image = await Task.detached(priority: .userInitiated, operation: {
                   decode(data: data, animated: animated, targetPixelSize: normalizedTarget)
@@ -262,6 +266,33 @@ struct ExerciseDetailView : View {
     @State private var showingEditExercise = false
     @State private var showingMedia = false
     @State private var loadedRemoteMediaURL: URL?
+    @State private var historyDestination: HistoryDestination?
+
+    private enum HistoryDestination: Hashable {
+        case allSessions
+        case workout(Workout)
+
+        static func == (lhs: HistoryDestination, rhs: HistoryDestination) -> Bool {
+            switch (lhs, rhs) {
+            case (.allSessions, .allSessions):
+                return true
+            case let (.workout(lhsWorkout), .workout(rhsWorkout)):
+                return lhsWorkout.objectID.uriRepresentation() == rhsWorkout.objectID.uriRepresentation()
+            default:
+                return false
+            }
+        }
+
+        func hash(into hasher: inout Hasher) {
+            switch self {
+            case .allSessions:
+                hasher.combine(0)
+            case .workout(let workout):
+                hasher.combine(1)
+                hasher.combine(workout.objectID.uriRepresentation())
+            }
+        }
+    }
 
     private var currentExercise: Exercise {
         exerciseStore.find(with: exercise.uuid) ?? exercise
@@ -344,7 +375,7 @@ struct ExerciseDetailView : View {
                         )
                         .padding(16)
                     } else {
-                        Exercise.imageFor(muscleGroup: currentExercise.muscleGroup)
+                        Image(systemName: "figure.strengthtraining.traditional")
                             .font(.system(size: 72, weight: .semibold))
                             .foregroundStyle(.secondary)
                     }
@@ -400,13 +431,21 @@ struct ExerciseDetailView : View {
         List {
             Section {
                 exerciseHeader
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
-                ExerciseInlineProgressView(exercise: currentExercise)
+                ExerciseInlineProgressView(
+                    exercise: currentExercise,
+                    onOpenWorkout: { workout in
+                        historyDestination = .workout(workout)
+                    },
+                    onShowAllHistory: {
+                        historyDestination = .allSessions
+                    }
+                )
                     .id(currentExercise.uuid)
-                    .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                    .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                     .listRowBackground(Color.clear)
                     .listRowSeparator(.hidden)
 
@@ -416,7 +455,7 @@ struct ExerciseDetailView : View {
                     equipment: currentExercise.equipment.map { $0.capitalized }
                 )
                 .id(currentExercise.uuid)
-                .listRowInsets(EdgeInsets(top: 6, leading: 16, bottom: 6, trailing: 16))
+                .listRowInsets(EdgeInsets(top: 6, leading: 0, bottom: 6, trailing: 0))
                 .listRowBackground(Color.clear)
                 .listRowSeparator(.hidden)
             }
@@ -475,6 +514,16 @@ struct ExerciseDetailView : View {
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 28)
         }
+        .navigationDestination(item: $historyDestination) { destination in
+            switch destination {
+            case .allSessions:
+                ExerciseHistoryView(exercise: currentExercise)
+                    .navigationTitle("History")
+                    .navigationBarTitleDisplayMode(.inline)
+            case .workout(let workout):
+                WorkoutDetailView(workout: workout)
+            }
+        }
         .sheet(isPresented: $showingEditExercise) {
             EditCustomExerciseSheet(exercise: currentExercise)
                 .environmentObject(exerciseStore)
@@ -498,7 +547,7 @@ struct ExerciseDetailView : View {
             .presentationDetents([.large])
             .presentationDragIndicator(.visible)
         }
-        .navigationTitle(currentExercise.title)
+        .navigationTitle("")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarTrailing) {
@@ -542,6 +591,7 @@ struct ExerciseDetailView : View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(currentExercise.title)
                     .font(.title.bold())
+                    .accessibilityAddTraits(.isHeader)
                     .foregroundStyle(IronTheme.primaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                     .fixedSize(horizontal: false, vertical: true)
@@ -614,9 +664,9 @@ struct ExerciseDetailView : View {
 
 }
 
-/// B6 fallback: the package's hit tester is internal and its drag begins at 1 pt.
-/// Tap + long press preserve List scrolling. The package delivers long press on
-/// release; do not enable onMuscleDragged until it supports a hold-gated drag.
+/// T3 owns the hold gate in an app-local UIKit overlay. Its long press does not
+/// recognize until 0.25 s, so a pre-hold vertical drag can remain with the List;
+/// once recognized, the same recognizer supplies continuous scrub locations.
 private struct ExerciseTargetMuscleMap: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
@@ -626,7 +676,9 @@ private struct ExerciseTargetMuscleMap: View {
 
     @State private var selectedMuscle: Muscle?
     @State private var selectedSide: BodySide?
+    @State private var touchLocation: CGPoint?
     @State private var selectionID = UUID()
+    @State private var isHolding = false
     @State private var tooltipSize = CGSize(width: 180, height: 37)
 
     private var hasMuscles: Bool { !primary.isEmpty || !secondary.isEmpty }
@@ -647,7 +699,7 @@ private struct ExerciseTargetMuscleMap: View {
                 : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 8))
             headerLayout {
                 Text("Target")
-                    .font(.title3.bold())
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(IronTheme.primaryText)
                 if hasMuscles {
                     Text("Touch and hold a muscle")
@@ -684,14 +736,16 @@ private struct ExerciseTargetMuscleMap: View {
         .padding(EdgeInsets(top: 12, leading: 16, bottom: 14, trailing: 16))
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
-        .overlayPreferenceValue(ExerciseMuscleAnchorKey.self) { anchor in
+        .coordinateSpace(name: "exerciseTargetMuscleMap")
+        .overlay {
             GeometryReader { geometry in
-                if let anchor, let muscle = selectedMuscle, let role = role(for: muscle) {
-                    let point = geometry[anchor].origin
+                if let point = touchLocation, let muscle = selectedMuscle, let role = role(for: muscle) {
                     let halfWidth = tooltipSize.width / 2
                     let halfHeight = tooltipSize.height / 2
                     let x = max(halfWidth + 8, min(point.x, geometry.size.width - halfWidth - 8))
-                    let y = max(halfHeight + 8, min(point.y, geometry.size.height - halfHeight - 8))
+                    let aboveY = point.y - halfHeight - 8
+                    let preferredY = aboveY < halfHeight + 8 ? point.y + halfHeight + 8 : aboveY
+                    let y = max(halfHeight + 8, min(preferredY, geometry.size.height - halfHeight - 8))
                     tooltip(muscle: muscle, role: role, pointerOffset: point.x - x)
                         .frame(maxWidth: geometry.size.width - 16)
                         .fixedSize(horizontal: !dynamicTypeSize.isAccessibilitySize, vertical: true)
@@ -709,20 +763,21 @@ private struct ExerciseTargetMuscleMap: View {
         .onPreferenceChange(ExerciseMuscleTooltipSizeKey.self) { size in
             if size.width > 0, size.height > 0 { tooltipSize = size }
         }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(accessibilitySummary)
-        .accessibilityAddTraits(.isImage)
+        .accessibilityRepresentation {
+            Text(accessibilitySummary)
+                .accessibilityAddTraits(.isImage)
+        }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: selectedMuscle)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: touchLocation)
         .sensoryFeedback(.selection, trigger: selectedMuscle) { _, muscle in muscle != nil }
         .task(id: selectionID) {
             guard selectedMuscle != nil else { return }
             do { try await Task.sleep(for: .seconds(2)) } catch { return }
-            selectedMuscle = nil
-            selectedSide = nil
+            guard !isHolding else { return }
+            clearSelection()
         }
         .onDisappear {
-            selectedMuscle = nil
-            selectedSide = nil
+            clearSelection()
         }
     }
 
@@ -760,7 +815,7 @@ private struct ExerciseTargetMuscleMap: View {
 
     private func bodyColumn(side: BodySide, title: String) -> some View {
         VStack(spacing: 4) {
-            muscleBody(side: side).frame(width: 96, height: 169)
+            muscleBody(side: side)
             Text(title).font(.caption2).foregroundStyle(IronTheme.secondaryText)
         }
     }
@@ -776,18 +831,22 @@ private struct ExerciseTargetMuscleMap: View {
             headColor: Color(.tertiaryLabel).opacity(0.45),
             hairColor: Color(.quaternaryLabel)
         )
-        return BodyView(gender: .male, side: side, style: style)
-            .highlight(secondary, color: IronTheme.accent, opacity: 0.42)
-            .highlight(primary, color: IronTheme.accent)
-            .selected(selectedSide == side ? selectedMuscle : nil)
-            .onMuscleSelected { muscle, _ in select(muscle, side: side) }
-            .onMuscleLongPressed(duration: 0.25) { muscle, _ in select(muscle, side: side) }
-            .tooltip { _, _ in
-                // Lift the package's muscle anchor into the whole card, so a
-                // tooltip can be clamped to the card instead of the 96 pt body.
-                Color.clear.frame(width: 1, height: 1)
-                    .anchorPreference(key: ExerciseMuscleAnchorKey.self, value: .bounds) { $0 }
+        return GeometryReader { geometry in
+            BodyView(gender: .male, side: side, style: style)
+                .highlight(secondary, color: IronTheme.accent, opacity: 0.42)
+                .highlight(primary, color: IronTheme.accent)
+                .selected(selectedSide == side ? selectedMuscle : nil)
+                .accessibilityHidden(true)
+                .overlay {
+                    muscleInteractionOverlay(
+                        side: side,
+                        size: geometry.size,
+                        origin: geometry.frame(in: .named("exerciseTargetMuscleMap")).origin
+                    )
+                }
             }
+        .frame(width: 96, height: 169)
+        .accessibilityHidden(true)
     }
 
     private func tooltip(muscle: Muscle, role: String, pointerOffset: CGFloat) -> some View {
@@ -810,15 +869,68 @@ private struct ExerciseTargetMuscleMap: View {
         .shadow(color: IronTheme.mediaBackdrop.opacity(0.28), radius: 18, x: 0, y: 6)
     }
 
-    private func select(_ muscle: Muscle, side: BodySide) {
-        guard role(for: muscle) != nil else {
+    private func muscleInteractionOverlay(side: BodySide, size: CGSize, origin: CGPoint) -> some View {
+        MuscleInteractionOverlay(
+            onTap: { localPoint in
+                updateSelection(
+                    at: localPoint,
+                    side: side,
+                    size: size,
+                    origin: origin,
+                    isHolding: false
+                )
+            },
+            onHoldChanged: { localPoint in
+                updateSelection(
+                    at: localPoint,
+                    side: side,
+                    size: size,
+                    origin: origin,
+                    isHolding: true
+                )
+            },
+            onHoldEnded: clearSelection
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityHidden(true)
+    }
+
+    private func updateSelection(
+        at localPoint: CGPoint,
+        side: BodySide,
+        size: CGSize,
+        origin: CGPoint,
+        isHolding: Bool
+    ) {
+        let cardPoint = CGPoint(x: origin.x + localPoint.x, y: origin.y + localPoint.y)
+        guard let (muscle, _) = MuscleHitTester.muscle(
+            at: localPoint,
+            in: size,
+            gender: .male,
+            side: side
+        ), role(for: muscle) != nil else {
+            self.isHolding = isHolding
             selectedMuscle = nil
             selectedSide = nil
+            touchLocation = cardPoint
             return
         }
+
+        let changed = selectedMuscle != muscle || selectedSide != side
+        self.isHolding = isHolding
         selectedSide = side
         selectedMuscle = muscle
-        selectionID = UUID()
+        touchLocation = cardPoint
+        if changed || !isHolding {
+            selectionID = UUID()
+        }
+    }
+
+    private func clearSelection() {
+        selectedMuscle = nil
+        selectedSide = nil
+        touchLocation = nil
+        isHolding = false
     }
 
     private func role(for muscle: Muscle) -> String? {
@@ -828,10 +940,86 @@ private struct ExerciseTargetMuscleMap: View {
     }
 }
 
-private struct ExerciseMuscleAnchorKey: PreferenceKey {
-    static var defaultValue: Anchor<CGRect>? { nil }
-    static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
-        value = nextValue() ?? value
+private struct MuscleInteractionOverlay: UIViewRepresentable {
+    let onTap: (CGPoint) -> Void
+    let onHoldChanged: (CGPoint) -> Void
+    let onHoldEnded: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(
+            onTap: onTap,
+            onHoldChanged: onHoldChanged,
+            onHoldEnded: onHoldEnded
+        )
+    }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .clear
+        view.isOpaque = false
+        view.isAccessibilityElement = false
+        view.accessibilityElementsHidden = true
+
+        let longPress = UILongPressGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleLongPress(_:))
+        )
+        longPress.minimumPressDuration = 0.25
+        longPress.allowableMovement = 10
+
+        let tap = UITapGestureRecognizer(
+            target: context.coordinator,
+            action: #selector(Coordinator.handleTap(_:))
+        )
+        tap.require(toFail: longPress)
+
+        view.addGestureRecognizer(longPress)
+        view.addGestureRecognizer(tap)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.onTap = onTap
+        context.coordinator.onHoldChanged = onHoldChanged
+        context.coordinator.onHoldEnded = onHoldEnded
+    }
+
+    static func dismantleUIView(_ uiView: UIView, coordinator: Coordinator) {
+        coordinator.onHoldEnded()
+    }
+
+    final class Coordinator: NSObject {
+        var onTap: (CGPoint) -> Void
+        var onHoldChanged: (CGPoint) -> Void
+        var onHoldEnded: () -> Void
+
+        init(
+            onTap: @escaping (CGPoint) -> Void,
+            onHoldChanged: @escaping (CGPoint) -> Void,
+            onHoldEnded: @escaping () -> Void
+        ) {
+            self.onTap = onTap
+            self.onHoldChanged = onHoldChanged
+            self.onHoldEnded = onHoldEnded
+        }
+
+        @objc func handleLongPress(_ recognizer: UILongPressGestureRecognizer) {
+            switch recognizer.state {
+            case .began, .changed:
+                guard let view = recognizer.view else { return }
+                let location = recognizer.location(in: view)
+                onHoldChanged(location)
+            case .ended, .cancelled, .failed:
+                onHoldEnded()
+            default:
+                break
+            }
+        }
+
+        @objc func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended, let view = recognizer.view else { return }
+            onTap(recognizer.location(in: view))
+        }
     }
 }
 

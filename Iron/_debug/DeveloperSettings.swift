@@ -227,3 +227,132 @@ struct DeveloperSettings_Previews: PreviewProvider {
 }
 
 #endif
+
+#if DEBUG
+/// Runs the real import/removal services against a disposable in-memory store.
+/// This ordinary-app check also works when Xcode's XCTest device service is unavailable.
+@MainActor
+enum IronImportedDataSmokeCheck {
+    private struct CheckFailure: LocalizedError {
+        let message: String
+        var errorDescription: String? { message }
+    }
+
+    static func run() async {
+        var checks = [String]()
+        var failure: String?
+        let suiteName = "IronImportedDataSmoke.\(UUID().uuidString)"
+        let exerciseURL = FileManager.default.temporaryDirectory.appendingPathComponent("\(suiteName).json")
+        defer { try? FileManager.default.removeItem(at: exerciseURL) }
+        do {
+            func require(_ condition: Bool, _ label: String) throws {
+                guard condition else { throw CheckFailure(message: label) }
+                checks.append(label)
+            }
+            let container = NSPersistentContainer(name: "ImportedDataSmoke", managedObjectModel: WorkoutDataStorage.model)
+            let description = NSPersistentStoreDescription()
+            description.type = NSInMemoryStoreType
+            description.shouldAddStoreAsynchronously = false
+            container.persistentStoreDescriptions = [description]
+            var loadError: Error?
+            container.loadPersistentStores { _, error in loadError = error }
+            if let loadError { throw loadError }
+            let context = container.viewContext
+            func importedWorkout() throws -> Workout {
+                guard let workout = try HevyImportedWorkouts.fetch(in: context).first else {
+                    throw CheckFailure(message: "Expected an imported workout")
+                }
+                return workout
+            }
+            let store = ExerciseStore(customExercisesURL: exerciseURL)
+            guard let exercise = store.exercises.first, let defaults = UserDefaults(suiteName: suiteName) else {
+                throw CheckFailure(message: "Could not create disposable stores")
+            }
+            defer { defaults.removePersistentDomain(forName: suiteName) }
+            let measurements = BodyMetricsStore(userDefaults: defaults)
+            let measurement = BodyMeasurementEntry(values: [BodyMeasurementKind.bodyWeight.rawValue: 82])
+            try require(measurements.save(measurement, exportToHealth: false), "Seed isolated measurement")
+            func csv(weight: Int = 100, exerciseTitle: String? = nil) -> Data {
+                let name = (exerciseTitle ?? exercise.title).replacingOccurrences(of: "\"", with: "\"\"")
+                return Data("title,start_time,end_time,exercise_title,set_index,weight_kg,reps\nImported,2026-08-17T08:16:00Z,2026-08-17T08:35:00Z,\"\(name)\",0,\(weight),8\n".utf8)
+            }
+            let initial = try HevyCSV.importData(csv(), into: context, exerciseStore: store, bodyMetricsStore: measurements)
+            try require(initial.importedWorkouts == 1 && initial.importedSets == 1, "Import workout and set")
+            let imported = try importedWorkout()
+            imported.title = "Renamed in Iron"
+            let native = Workout.create(context: context)
+            native.title = "Native workout"
+            native.start = Date(timeIntervalSince1970: 1_790_000_000)
+            native.end = native.start?.addingTimeInterval(60)
+            let other = Workout.create(context: context)
+            other.importSource = "json"
+            other.start = native.start
+            other.end = native.end
+            try context.save()
+            let nativeID = native.objectID
+            let otherID = other.objectID
+            let duplicate = try HevyCSV.importData(csv(), into: context, exerciseStore: store, bodyMetricsStore: measurements)
+            try require(duplicate.importedWorkouts == 0 && duplicate.skippedDuplicateWorkouts == 1,
+                        "Renamed Hevy session deduplicates by content")
+            native.comment = "Pending native edit"
+            let controller = HevyImportController()
+            let replacement = try await controller.replace(csv(weight: 105), into: context, exerciseStore: store).result.get()
+            try require(replacement.removedWorkouts == 1 && replacement.importedWorkouts == 1,
+                        "Background replacement commits removal and import")
+            let replaced = try importedWorkout()
+            let replacedID = replaced.objectID
+            let replacedExercise = replaced.workoutExercises?.firstObject as? WorkoutExercise
+            let replacedSet = replacedExercise?.workoutSets?.firstObject as? WorkoutSet
+            try require(replacedSet?.weightValue == 105, "Replacement contains edited Hevy set")
+            try require(native.objectID == nativeID && other.objectID == otherID && !native.isDeleted && !other.isDeleted,
+                        "Native and other-source workouts survive replacement")
+            try require(native.comment == "Pending native edit" && context.hasChanges,
+                        "Background merge preserves unsaved native edit")
+            let failed = try HevyCSV.prepareImport([csv(exerciseTitle: "Unique Smoke Replacement Press")])
+            var rejectedSave = false
+            do {
+                _ = try HevyCSV.importData(failed, into: context, exerciseStore: store, bodyMetricsStore: measurements,
+                                          replacingImportedWorkouts: true, save: { throw CheckFailure(message: "Injected save failure") })
+            } catch { rejectedSave = true }
+            try require(rejectedSave, "Injected replacement save failure is reported")
+            try require(try HevyImportedWorkouts.fetch(in: context).map(\.objectID) == [replacedID],
+                        "Failed replacement restores original imported workout")
+            try require(try context.count(for: WorkoutSet.fetchRequest()) == 1,
+                        "Failed replacement restores set graph without orphan inserts")
+            try require(store.customExercises.isEmpty && !FileManager.default.fileExists(atPath: exerciseURL.path),
+                        "Failed replacement restores custom-exercise file and published store")
+            let customReplacement = try await controller.replace(csv(exerciseTitle: "Smoke Custom Press"),
+                                                                 into: context, exerciseStore: store).result.get()
+            let customExercise = store.customExercises.first { $0.title == "Smoke Custom Press" }
+            let customWorkoutExercise = try importedWorkout().workoutExercises?.firstObject as? WorkoutExercise
+            try require(customReplacement.createdExercises == 1 && customExercise != nil
+                        && customWorkoutExercise?.exerciseUuid == customExercise?.uuid,
+                        "Background replacement publishes custom exercise before reporting success")
+            let malformed = try HevyCSV.prepareImport([Data((String(decoding: csv(), as: UTF8.self) + "Broken,not-a-date,,Unknown,0,100,8\n").utf8)])
+            var rejectedMalformed = false
+            do {
+                _ = try HevyCSV.importData(malformed, into: context, exerciseStore: store,
+                                          bodyMetricsStore: measurements, replacingImportedWorkouts: true)
+            } catch { rejectedMalformed = true }
+            try require(rejectedMalformed && (try HevyImportedWorkouts.fetch(in: context).count) == 1,
+                        "Malformed replacement fails before deletion")
+            let removed = try await controller.remove(count: 1, from: context).result.get()
+            try require(removed.removedWorkouts == 1 && (try HevyImportedWorkouts.fetch(in: context).isEmpty),
+                        "Background removal deletes only Hevy workouts")
+            try require(try context.count(for: Workout.fetchRequest()) == 2, "Removal keeps native and JSON workouts")
+            try require(try context.count(for: WorkoutExercise.fetchRequest()) == 0 && context.count(for: WorkoutSet.fetchRequest()) == 0,
+                        "Removal cascades exercise and set graph")
+            try require(native.comment == "Pending native edit" && context.hasChanges, "Removal preserves pending native edit")
+            try require(measurements.entries == [measurement], "Measurements remain unchanged")
+            try require(controller.phase == nil, "Progress overlay clears after completion")
+        } catch {
+            failure = error.localizedDescription
+        }
+        var report: [String: Any] = ["passed": failure == nil, "checks": checks]
+        if let failure { report["error"] = failure }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("imported-data-smoke.json")
+        do { try JSONSerialization.data(withJSONObject: report, options: [.prettyPrinted, .sortedKeys]).write(to: url, options: .atomic) }
+        catch { print("Could not write imported-data smoke report: \(error.localizedDescription)") }
+    }
+}
+#endif

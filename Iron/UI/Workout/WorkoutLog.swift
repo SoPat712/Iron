@@ -33,7 +33,7 @@ struct WorkoutLog: View {
             }
             ForEach(self.workoutSets(workoutExercise: workoutExercise)) { workoutSet in
                 Text(workoutSet.logTitle(weightUnit: self.settingsStore.weightUnit))
-                    .font(Font.body.monospacedDigit())
+                    .font(.ironMetric(.body, weight: .semibold))
                     .foregroundColor(.secondary)
                     .lineLimit(nil)
             }

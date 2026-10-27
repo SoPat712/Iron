@@ -10,7 +10,7 @@ import XCTest
 import CoreData
 import Combine
 import UIKit
-import WorkoutDataKit
+@testable import WorkoutDataKit
 @testable import Iron
 
 class WorkoutDataTests: XCTestCase {
@@ -443,11 +443,48 @@ class WorkoutDataTests: XCTestCase {
     }
 }
 
+final class WorkoutLiveActivitySetProgressTests: XCTestCase {
+    func testLegacySnapshotDoesNotInferCompletedSetsFromOrdinal() throws {
+        let data = Data(#"{"setID":"set","exerciseName":"Bench Press","setNumber":4,"setCount":6,"result":"135 lb × 8"}"#.utf8)
+        let set = try JSONDecoder().decode(WorkoutActivityAttributes.SetSnapshot.self, from: data)
+        XCTAssertNil(set.completedSetCount)
+        XCTAssertNil(set.completedSetProgress)
+    }
+
+    func testCompletedCountRoundTripsIndependentlyOfCurrentSetNumber() throws {
+        let set = WorkoutActivityAttributes.SetSnapshot(
+            setID: "set", exerciseName: "Bench Press", setNumber: 4, setCount: 6,
+            result: "135 lb × 8", completedSetCount: 2
+        )
+        let data = try JSONEncoder().encode(set)
+        let decoded = try JSONDecoder().decode(WorkoutActivityAttributes.SetSnapshot.self, from: data)
+        XCTAssertEqual(decoded, set)
+        XCTAssertEqual(try XCTUnwrap(decoded.completedSetProgress), 1.0 / 3.0, accuracy: 0.0001)
+        XCTAssertLessThan(data.count, 512)
+    }
+
+    func testProgressClampsInvalidCountsAndHandlesEmptyExercise() {
+        var set = WorkoutActivityAttributes.SetSnapshot(
+            setID: "set", exerciseName: "Bench Press", setNumber: 1, setCount: 4,
+            result: "—", completedSetCount: -3
+        )
+        XCTAssertEqual(set.completedSetProgress, 0)
+        set.completedSetCount = 99
+        XCTAssertEqual(set.completedSetProgress, 1)
+        let empty = WorkoutActivityAttributes.SetSnapshot(
+            setID: nil, exerciseName: "Bench Press", setNumber: 0, setCount: 0,
+            result: "—", completedSetCount: 0
+        )
+        XCTAssertNil(empty.completedSetProgress)
+    }
+}
+
 final class WorkoutLiveActivityArtworkTests: XCTestCase {
     func testLegacySetSnapshotDecodesWithoutArtwork() throws {
         let data = Data(#"{"setID":"set","exerciseName":"Bench Press","setNumber":1,"setCount":4,"result":"135 lb × 8"}"#.utf8)
         let snapshot = try JSONDecoder().decode(WorkoutActivityAttributes.SetSnapshot.self, from: data)
         XCTAssertNil(snapshot.artworkFileName)
+        XCTAssertNil(snapshot.completedSetCount)
         XCTAssertEqual(snapshot.setNumber, 1)
     }
 
@@ -458,7 +495,8 @@ final class WorkoutLiveActivityArtworkTests: XCTestCase {
             setNumber: 1,
             setCount: 4,
             result: "135 lb × 8",
-            artworkFileName: "exercise.gif.png"
+            artworkFileName: "exercise.gif.png",
+            completedSetCount: 2
         )
         let state = WorkoutActivityAttributes.ContentState(
             phase: .currentSet, displaySet: set, nextSet: set,
@@ -468,6 +506,7 @@ final class WorkoutLiveActivityArtworkTests: XCTestCase {
         let data = try JSONEncoder().encode(state)
         let decoded = try JSONDecoder().decode(WorkoutActivityAttributes.ContentState.self, from: data)
         XCTAssertEqual(decoded.displaySet?.artworkFileName, "exercise.gif.png")
+        XCTAssertEqual(decoded.displaySet?.completedSetCount, 2)
         XCTAssertEqual(decoded, state)
         XCTAssertLessThan(data.count, 2_048, "Leave room for ActivityKit attributes and longer exercise labels")
     }
@@ -521,7 +560,7 @@ final class WorkoutLiveActivityStateTests: XCTestCase {
         result: "135 lb × 5 reps"
     )
 
-    func testCompletionAdvancesToRestThenNextSet() {
+    func testCompletionWithRunningRestPublishesRestImmediately() {
         let now = Date(timeIntervalSinceReferenceDate: 10_000)
         let state = WorkoutActivityAttributes.ContentState(
             phase: .setCompleted,
@@ -534,8 +573,8 @@ final class WorkoutLiveActivityStateTests: XCTestCase {
             totalSets: 4
         )
 
-        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(9.9)), .setCompleted)
-        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(9.9)), completedSet)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(9.9)), .resting)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(9.9)), nextSet)
         XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .resting)
         XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(10)), nextSet)
         XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(69.9)), .resting)
@@ -754,6 +793,30 @@ final class WorkoutLiveActivityReconciliationTests: XCTestCase {
         XCTAssertEqual(first.nextSet?.setID, setID(sets[2]))
         XCTAssertEqual(second.displaySet?.setID, setID(sets[0]))
         XCTAssertEqual(second.nextSet?.setID, setID(sets[2]))
+    }
+
+    func testSupersetActivityUsesTheSameNextSetAsTheFocusedEditor() {
+        let context = persistentContainer.viewContext
+        let group = UUID()
+        exercise.supersetUuid = group
+        let partner = WorkoutExercise.create(context: context)
+        partner.workout = workout
+        partner.supersetUuid = group
+        let partnerSets = (0..<2).map { _ -> WorkoutSet in
+            let set = WorkoutSet.create(context: context)
+            set.workoutExercise = partner
+            return set
+        }
+        partner.workoutSets = NSOrderedSet(array: partnerSets)
+        workout.workoutExercises = NSOrderedSet(array: [exercise!, partner])
+
+        let first = reconcile(prior: priorState(phase: .resting, confirmationUntil: nil))
+        XCTAssertEqual(first.nextSet?.setID, setID(partnerSets[0]))
+        XCTAssertEqual(WorkoutSetFocus.next(in: workout)?.setID, partnerSets[0].objectID)
+        partnerSets[0].isCompleted = true
+        let second = reconcile(prior: first)
+        XCTAssertEqual(second.nextSet?.setID, setID(sets[1]))
+        XCTAssertEqual(WorkoutSetFocus.next(in: workout)?.setID, sets[1].objectID)
     }
 
     func testReconciliationFinishesWithoutReopeningCompletedSets() {
@@ -1091,9 +1154,9 @@ final class WorkoutPausedLiveActivityTests: XCTestCase {
         XCTAssertEqual(paused.pausedRestRemaining, 45)
     }
 
-    func testCompletionTransitionsToPausedRestRatherThanCurrentSet() {
+    func testCompletionWithPausedRestPublishesRestImmediately() {
         let paused = state(phase: .setCompleted)
-        XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 1_005)), .setCompleted)
+        XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 1_005)), .resting)
         XCTAssertEqual(paused.resolvedPhase(at: Date(timeIntervalSince1970: 1_020)), .resting)
     }
 
@@ -1462,6 +1525,85 @@ final class SavedWorkoutEditorPersistenceTests: XCTestCase {
         XCTAssertEqual(routine.title, "Push")
         XCTAssertNil(routine.comment)
         XCTAssertFalse(context.hasChanges)
+    }
+
+    func testCreateFromCompletedWorkoutCopiesEditableGraphAndCancelIsIsolated() throws {
+        let source = Workout.create(context: context)
+        source.title = "Completed Push"
+        source.comment = "Keep this note"
+        source.importSource = "hevy"
+        source.start = Date(timeIntervalSince1970: 1_000)
+        source.end = Date(timeIntervalSince1970: 2_000)
+
+        let exercise = WorkoutExercise.create(context: context)
+        exercise.exerciseUuid = UUID()
+        exercise.comment = "Bench setup"
+        exercise.restTimerDurationValue = 90
+        let sourceSupersetID = UUID()
+        exercise.supersetUuid = sourceSupersetID
+        source.addToWorkoutExercises(exercise)
+
+        let set = WorkoutSet.create(context: context)
+        set.isCompleted = true
+        set.weightValue = 100
+        set.repetitionsValue = 8
+        set.minTargetRepetitionsValue = 5
+        set.maxTargetRepetitionsValue = 8
+        set.tagValue = .dropSet
+        set.comment = "Controlled"
+        exercise.addToWorkoutSets(set)
+        try context.save()
+
+        let route = WorkoutPlanEditorRoute(
+            kind: .createFromWorkout(workoutID: source.objectID, containerID: nil)
+        )
+        let session = try WorkoutPlanEditorSession(parentContext: context, route: route)
+        let draftExercise = try XCTUnwrap(
+            session.routine.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise
+        )
+        let draftSet = try XCTUnwrap(
+            draftExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet
+        )
+
+        XCTAssertEqual(session.routine.title, source.title)
+        XCTAssertEqual(session.routine.comment, source.comment)
+        XCTAssertEqual(draftExercise.exerciseUuid, exercise.exerciseUuid)
+        XCTAssertEqual(draftExercise.comment, exercise.comment)
+        XCTAssertEqual(draftExercise.restTimerDurationValue, 90)
+        XCTAssertNotEqual(draftExercise.supersetUuid, sourceSupersetID)
+        XCTAssertEqual(draftSet.minRepetitionsValue, 5)
+        XCTAssertEqual(draftSet.maxRepetitionsValue, 8)
+        XCTAssertEqual(draftSet.weightValue, 100)
+        XCTAssertEqual(draftSet.tagValue, .dropSet)
+        XCTAssertEqual(draftSet.comment, "Controlled")
+        XCTAssertTrue(set.isCompleted)
+
+        session.cancel()
+        XCTAssertEqual(try context.count(for: WorkoutPlan.fetchRequest()), 0)
+        XCTAssertEqual(try context.count(for: WorkoutRoutine.fetchRequest()), 0)
+        XCTAssertEqual(source.title, "Completed Push")
+        XCTAssertEqual(source.importSource, "hevy")
+        XCTAssertTrue(set.isCompleted)
+        XCTAssertFalse(context.hasChanges)
+
+        let committedSession = try WorkoutPlanEditorSession(parentContext: context, route: route)
+        try committedSession.commit()
+        let saved = try XCTUnwrap(context.fetch(WorkoutRoutine.fetchRequest()).first)
+        let savedExercise = try XCTUnwrap(
+            saved.workoutRoutineExercises?.firstObject as? WorkoutRoutineExercise
+        )
+        let savedSet = try XCTUnwrap(
+            savedExercise.workoutRoutineSets?.firstObject as? WorkoutRoutineSet
+        )
+        XCTAssertEqual(saved.title, "Completed Push")
+        XCTAssertEqual(saved.comment, "Keep this note")
+        XCTAssertEqual(savedExercise.restTimerDurationValue, 90)
+        XCTAssertEqual(savedSet.minRepetitionsValue, 5)
+        XCTAssertEqual(savedSet.maxRepetitionsValue, 8)
+        XCTAssertEqual(savedSet.weightValue, 100)
+        XCTAssertEqual(savedSet.tagValue, .dropSet)
+        XCTAssertTrue(set.isCompleted)
+        XCTAssertEqual(source.importSource, "hevy")
     }
 }
 
@@ -2406,5 +2548,615 @@ final class ExerciseRecencyTests: XCTestCase {
             context.delete(imported)
             try context.save()
         }
+    }
+}
+
+@available(iOS 17.0, *)
+final class WorkoutLiveActivityTimingRegressionTests: XCTestCase {
+    private let completedSet = WorkoutActivityAttributes.SetSnapshot(
+        setID: "completed-set",
+        exerciseName: "Deadlift (Barbell)",
+        setNumber: 1,
+        setCount: 2,
+        result: "135 lb × 5 reps"
+    )
+    private let nextSet = WorkoutActivityAttributes.SetSnapshot(
+        setID: "next-set",
+        exerciseName: "Deadlift (Barbell)",
+        setNumber: 2,
+        setCount: 2,
+        result: "135 lb × 5 reps"
+    )
+
+    private let now = Date(timeIntervalSinceReferenceDate: 50_000)
+
+    private func state(
+        confirmationUntil: Date? = nil,
+        restTimerStart: Date? = nil,
+        restTimerEnd: Date? = nil,
+        pausedRestRemaining: TimeInterval? = nil,
+        hasNextSet: Bool = true
+    ) -> WorkoutActivityAttributes.ContentState {
+        WorkoutActivityAttributes.ContentState(
+            phase: .setCompleted,
+            displaySet: completedSet,
+            nextSet: hasNextSet ? nextSet : nil,
+            confirmationUntil: confirmationUntil,
+            restTimerStart: restTimerStart,
+            restTimerEnd: restTimerEnd,
+            completedSets: hasNextSet ? 1 : 2,
+            totalSets: 2,
+            pausedRestRemaining: pausedRestRemaining
+        )
+    }
+
+    func testRunningRestImmediatelyWinsOverCompletionConfirmation() {
+        let state = state(
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(60)
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(1)), .resting)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(1)), nextSet)
+    }
+
+    func testPausedRestImmediatelyWinsOverCompletionConfirmation() {
+        let state = state(
+            confirmationUntil: now.addingTimeInterval(10),
+            pausedRestRemaining: 45
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(1)), .resting)
+        XCTAssertEqual(state.visibleSet(at: now.addingTimeInterval(1)), nextSet)
+    }
+
+    func testNoRestKeepsCompletionConfirmationUntilItsDeadline() {
+        let state = state(confirmationUntil: now.addingTimeInterval(10))
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(9)), .setCompleted)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .currentSet)
+    }
+
+    func testExpiredRestDoesNotSuppressCompletionConfirmationOrReopenRest() {
+        let state = state(
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: now.addingTimeInterval(-60),
+            restTimerEnd: now.addingTimeInterval(-1)
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now), .setCompleted)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .currentSet)
+    }
+
+    func testFinalSetKeepsConfirmationAndThenFinishesWithoutRest() {
+        let state = state(
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: now,
+            restTimerEnd: now.addingTimeInterval(60),
+            hasNextSet: false
+        )
+
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(1)), .setCompleted)
+        XCTAssertEqual(state.resolvedPhase(at: now.addingTimeInterval(10)), .finished)
+    }
+
+    private var persistentContainer: NSPersistentContainer!
+    private var workout: Workout!
+    private var exercise: WorkoutExercise!
+    private var completed: WorkoutSet!
+    private var next: WorkoutSet!
+
+    override func setUp() {
+        super.setUp()
+        persistentContainer = setUpInMemoryNSPersistentContainer()
+        let context = persistentContainer.viewContext
+        workout = Workout.create(context: context)
+        workout.isCurrentWorkout = true
+        exercise = WorkoutExercise.create(context: context)
+        exercise.workout = workout
+        completed = WorkoutSet.create(context: context)
+        completed.isCompleted = true
+        completed.workoutExercise = exercise
+        next = WorkoutSet.create(context: context)
+        next.isCompleted = false
+        next.workoutExercise = exercise
+        workout.workoutExercises = NSOrderedSet(array: [exercise])
+        exercise.workoutSets = NSOrderedSet(array: [completed, next])
+    }
+
+    override func tearDown() {
+        persistentContainer.viewContext.reset()
+        persistentContainer = nil
+        workout = nil
+        exercise = nil
+        completed = nil
+        next = nil
+        super.tearDown()
+    }
+
+    private func setID(_ set: WorkoutSet) -> String {
+        set.uuid?.uuidString ?? set.objectID.uriRepresentation().absoluteString
+    }
+
+    private func snapshot(for set: WorkoutSet, number: Int) -> WorkoutActivityAttributes.SetSnapshot {
+        WorkoutActivityAttributes.SetSnapshot(
+            setID: setID(set),
+            exerciseName: "Deadlift (Barbell)",
+            setNumber: number,
+            setCount: 2,
+            result: "135 lb × 5 reps"
+        )
+    }
+
+    private func priorState() -> WorkoutActivityAttributes.ContentState {
+        WorkoutActivityAttributes.ContentState(
+            phase: .setCompleted,
+            displaySet: snapshot(for: completed, number: 1),
+            nextSet: snapshot(for: next, number: 2),
+            confirmationUntil: now.addingTimeInterval(10),
+            restTimerStart: nil,
+            restTimerEnd: nil,
+            completedSets: 1,
+            totalSets: 2
+        )
+    }
+
+    func testReconciliationPromotesRunningRestAndClearsStaleConfirmation() {
+        let state = WorkoutLiveActivityManager.shared.reconciledState(
+            for: workout,
+            priorState: priorState(),
+            now: now,
+            restTimerStart: now.addingTimeInterval(-5),
+            restTimerEnd: now.addingTimeInterval(55)
+        )
+
+        XCTAssertEqual(state.phase, .resting)
+        XCTAssertNil(state.confirmationUntil)
+        XCTAssertEqual(state.displaySet?.setID, setID(completed))
+        XCTAssertEqual(state.nextSet?.setID, setID(next))
+    }
+
+    func testReconciliationPromotesPausedRestAndClearsStaleConfirmation() {
+        let state = WorkoutLiveActivityManager.shared.reconciledState(
+            for: workout,
+            priorState: priorState(),
+            now: now,
+            restTimerStart: nil,
+            restTimerEnd: nil,
+            pausedRestRemaining: 30
+        )
+
+        XCTAssertEqual(state.phase, .resting)
+        XCTAssertNil(state.confirmationUntil)
+        XCTAssertEqual(state.pausedRestRemaining, 30)
+    }
+
+    func testReconciliationRetainsConfirmationWhenNoRestIsActive() {
+        let state = WorkoutLiveActivityManager.shared.reconciledState(
+            for: workout,
+            priorState: priorState(),
+            now: now,
+            restTimerStart: nil,
+            restTimerEnd: nil
+        )
+
+        XCTAssertEqual(state.phase, .setCompleted)
+        XCTAssertEqual(state.confirmationUntil, now.addingTimeInterval(10))
+    }
+}
+
+final class WorkoutSetFocusTests: XCTestCase {
+    private struct ExerciseSpec {
+        let supersetID: UUID?
+        let completed: [Bool]
+
+        init(completed: [Bool], supersetID: UUID? = nil) {
+            self.supersetID = supersetID
+            self.completed = completed
+        }
+    }
+
+    private var container: NSPersistentContainer!
+    private var context: NSManagedObjectContext { container.viewContext }
+
+    override func setUp() {
+        super.setUp()
+        container = setUpInMemoryNSPersistentContainer()
+    }
+
+    override func tearDown() {
+        container.viewContext.reset()
+        container = nil
+        super.tearDown()
+    }
+
+    private func makeWorkout(
+        current: Bool = true,
+        specs: [ExerciseSpec]
+    ) -> (workout: Workout, exercises: [WorkoutExercise], sets: [[WorkoutSet]]) {
+        let workout = Workout.create(context: context)
+        workout.start = Date(timeIntervalSince1970: 1_000)
+        workout.isCurrentWorkout = current
+        if !current { workout.end = Date(timeIntervalSince1970: 2_000) }
+
+        var exercises: [WorkoutExercise] = []
+        var setsByExercise: [[WorkoutSet]] = []
+
+        for spec in specs {
+            let exercise = WorkoutExercise.create(context: context)
+            exercise.supersetUuid = spec.supersetID
+            exercise.workout = workout
+
+            let sets = spec.completed.map { completed -> WorkoutSet in
+                let set = WorkoutSet.create(context: context)
+                set.isCompleted = completed
+                set.workoutExercise = exercise
+                return set
+            }
+            exercise.workoutSets = NSOrderedSet(array: sets)
+            exercises.append(exercise)
+            setsByExercise.append(sets)
+        }
+
+        workout.workoutExercises = NSOrderedSet(array: exercises)
+        return (workout, exercises, setsByExercise)
+    }
+
+    private func assertFocus(
+        _ focus: WorkoutSetFocus?,
+        exercise: WorkoutExercise,
+        set: WorkoutSet,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(
+            focus,
+            WorkoutSetFocus(exerciseID: exercise.objectID, setID: set.objectID),
+            file: file,
+            line: line
+        )
+    }
+
+    func testNormalSupersetProgressionAlternatesRounds() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false, false], supersetID: group),
+            ExerciseSpec(completed: [false, false], supersetID: group)
+        ])
+        let expected = [(0, 0), (1, 0), (0, 1), (1, 1)]
+
+        for (exerciseIndex, setIndex) in expected {
+            assertFocus(
+                WorkoutSetFocus.next(in: graph.workout),
+                exercise: graph.exercises[exerciseIndex],
+                set: graph.sets[exerciseIndex][setIndex]
+            )
+            graph.sets[exerciseIndex][setIndex].isCompleted = true
+        }
+
+        XCTAssertNil(WorkoutSetFocus.next(in: graph.workout))
+    }
+
+    func testThreeWaySupersetFinishesUnevenMembersBeforeNextUnit() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false, false, false], supersetID: group),
+            ExerciseSpec(completed: [false], supersetID: group),
+            ExerciseSpec(completed: [false, false], supersetID: group),
+            ExerciseSpec(completed: [false])
+        ])
+        let expected = [(0, 0), (1, 0), (2, 0), (0, 1), (2, 1), (0, 2), (3, 0)]
+
+        for (exerciseIndex, setIndex) in expected {
+            assertFocus(
+                WorkoutSetFocus.next(in: graph.workout),
+                exercise: graph.exercises[exerciseIndex],
+                set: graph.sets[exerciseIndex][setIndex]
+            )
+            graph.sets[exerciseIndex][setIndex].isCompleted = true
+        }
+
+        XCTAssertNil(WorkoutSetFocus.next(in: graph.workout))
+    }
+
+    func testEmptyAndCompletedSupersetMembersAreSkipped() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [], supersetID: group),
+            ExerciseSpec(completed: [true], supersetID: group),
+            ExerciseSpec(completed: [false], supersetID: group),
+            ExerciseSpec(completed: [false])
+        ])
+
+        assertFocus(
+            WorkoutSetFocus.next(in: graph.workout),
+            exercise: graph.exercises[2],
+            set: graph.sets[2][0]
+        )
+        graph.sets[2][0].isCompleted = true
+        assertFocus(
+            WorkoutSetFocus.next(in: graph.workout),
+            exercise: graph.exercises[3],
+            set: graph.sets[3][0]
+        )
+    }
+
+    func testNonAdjacentSupersetMembersRemainOneUnit() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false, false], supersetID: group),
+            ExerciseSpec(completed: [false]),
+            ExerciseSpec(completed: [false, false], supersetID: group),
+            ExerciseSpec(completed: [false])
+        ])
+        let expected = [(0, 0), (2, 0), (0, 1), (2, 1), (1, 0), (3, 0)]
+
+        for (exerciseIndex, setIndex) in expected {
+            assertFocus(
+                WorkoutSetFocus.next(in: graph.workout),
+                exercise: graph.exercises[exerciseIndex],
+                set: graph.sets[exerciseIndex][setIndex]
+            )
+            graph.sets[exerciseIndex][setIndex].isCompleted = true
+        }
+    }
+
+    func testOutOfOrderHolesUseFirstIncompleteSetAndStableTieBreak() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [true, false, false], supersetID: group),
+            ExerciseSpec(completed: [false, true, false], supersetID: group)
+        ])
+        let expected = [(1, 0), (0, 1), (0, 2), (1, 2)]
+
+        for (exerciseIndex, setIndex) in expected {
+            assertFocus(
+                WorkoutSetFocus.next(in: graph.workout),
+                exercise: graph.exercises[exerciseIndex],
+                set: graph.sets[exerciseIndex][setIndex]
+            )
+            graph.sets[exerciseIndex][setIndex].isCompleted = true
+        }
+        XCTAssertNil(WorkoutSetFocus.next(in: graph.workout))
+    }
+
+    func testNonCurrentAndAllCompletedWorkoutsHaveNoFocus() {
+        let nonCurrent = makeWorkout(
+            current: false,
+            specs: [ExerciseSpec(completed: [false])]
+        )
+        XCTAssertNil(WorkoutSetFocus.next(in: nonCurrent.workout))
+
+        let allCompleted = makeWorkout(
+            specs: [ExerciseSpec(completed: [true]), ExerciseSpec(completed: [])]
+        )
+        XCTAssertNil(WorkoutSetFocus.next(in: allCompleted.workout))
+    }
+
+    func testOrdinaryExercisesFinishInWorkoutOrderWithOnlyOneFocus() {
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false, false]),
+            ExerciseSpec(completed: [false, false])
+        ])
+        for (exerciseIndex, setIndex) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            let focus = WorkoutSetFocus.next(in: graph.workout)
+            assertFocus(focus, exercise: graph.exercises[exerciseIndex], set: graph.sets[exerciseIndex][setIndex])
+            XCTAssertEqual(graph.sets.flatMap { $0 }.filter { $0.objectID == focus?.setID }.count, 1)
+            graph.sets[exerciseIndex][setIndex].isCompleted = true
+        }
+    }
+
+    func testUndoReorderAndDeletionRecomputeFromCurrentModel() {
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false, false]),
+            ExerciseSpec(completed: [false])
+        ])
+        graph.sets[0][0].isCompleted = true
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[0], set: graph.sets[0][1])
+        graph.sets[0][0].isCompleted = false
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[0], set: graph.sets[0][0])
+        graph.workout.workoutExercises = NSOrderedSet(array: graph.exercises.reversed())
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[1], set: graph.sets[1][0])
+        graph.exercises[1].removeFromWorkoutSets(graph.sets[1][0])
+        context.delete(graph.sets[1][0])
+        context.processPendingChanges()
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[0], set: graph.sets[0][0])
+    }
+
+    func testPendingSetDeletionIsSkippedBeforeRelationshipCleanup() {
+        let graph = makeWorkout(specs: [ExerciseSpec(completed: [false, false])])
+        try! context.save()
+        context.delete(graph.sets[0][0])
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[0], set: graph.sets[0][1])
+    }
+
+    func testPendingExerciseDeletionIsSkippedBeforeRelationshipCleanup() {
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [false]),
+            ExerciseSpec(completed: [false])
+        ])
+        try! context.save()
+        context.delete(graph.exercises[0])
+        assertFocus(WorkoutSetFocus.next(in: graph.workout), exercise: graph.exercises[1], set: graph.sets[1][0])
+    }
+
+    func testFindingFocusDoesNotMutateOrderedGraph() {
+        let group = UUID()
+        let graph = makeWorkout(specs: [
+            ExerciseSpec(completed: [true, false], supersetID: group),
+            ExerciseSpec(completed: [false], supersetID: group),
+            ExerciseSpec(completed: [false])
+        ])
+        let exerciseIDs = graph.workout.workoutExercises?.array.compactMap { ($0 as? WorkoutExercise)?.objectID }
+        let setIDs = graph.sets.map { $0.map(\.objectID) }
+        let completion = graph.sets.map { $0.map(\.isCompleted) }
+        let supersetIDs = graph.exercises.map(\.supersetUuid)
+        let insertedCount = context.insertedObjects.count
+
+        _ = WorkoutSetFocus.next(in: graph.workout)
+
+        XCTAssertEqual(
+            graph.workout.workoutExercises?.array.compactMap { ($0 as? WorkoutExercise)?.objectID },
+            exerciseIDs
+        )
+        XCTAssertEqual(graph.sets.map { $0.map(\.objectID) }, setIDs)
+        XCTAssertEqual(graph.sets.map { $0.map(\.isCompleted) }, completion)
+        XCTAssertEqual(graph.exercises.map(\.supersetUuid), supersetIDs)
+        XCTAssertEqual(context.insertedObjects.count, insertedCount)
+    }
+}
+
+final class WorkoutOrganizationTests: XCTestCase {
+    private var container: NSPersistentContainer!
+    private var context: NSManagedObjectContext { container.viewContext }
+    private var workout: Workout!
+    private var exercises: [WorkoutExercise]!
+    private var sets: [WorkoutSet]!
+
+    override func setUp() {
+        super.setUp()
+        container = setUpInMemoryNSPersistentContainer()
+        workout = Workout.create(context: context)
+        workout.isCurrentWorkout = true
+        workout.start = Date()
+        exercises = (0..<6).map { index in
+            let exercise = WorkoutExercise.create(context: context)
+            exercise.workout = workout
+            exercise.comment = "Notes \(index)"
+            return exercise
+        }
+        sets = exercises.enumerated().map { index, exercise in
+            let set = WorkoutSet.create(context: context)
+            set.workoutExercise = exercise
+            set.weightValue = Double(20 + index)
+            set.repetitionsValue = 5
+            set.isCompleted = index % 2 == 0
+            exercise.workoutSets = NSOrderedSet(array: [set])
+            return set
+        }
+        workout.workoutExercises = NSOrderedSet(array: exercises)
+    }
+
+    override func tearDown() {
+        context.reset()
+        container = nil
+        workout = nil
+        exercises = nil
+        sets = nil
+        super.tearDown()
+    }
+
+    private var order: [NSManagedObjectID] {
+        (workout.workoutExercises?.array as? [WorkoutExercise] ?? []).map(\.objectID)
+    }
+    private var groups: [UUID?] { exercises.map(\.supersetUuid) }
+
+    func testCreatesOnlySelectedPairWithoutChangingSetsOrOrder() throws {
+        let originalOrder = order
+        let originalSetIDs = sets.map(\.objectID)
+        let originalWeights = sets.map(\.weightValue)
+        try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[1].objectID])
+        XCTAssertNotNil(exercises[0].supersetUuid)
+        XCTAssertEqual(exercises[0].supersetUuid, exercises[1].supersetUuid)
+        XCTAssertTrue(exercises.dropFirst(2).allSatisfy { $0.supersetUuid == nil })
+        XCTAssertEqual(order, originalOrder)
+        XCTAssertEqual(sets.map(\.objectID), originalSetIDs)
+        XCTAssertEqual(sets.map(\.weightValue), originalWeights)
+    }
+
+    func testChoosingExistingGroupIncludesEveryMember() throws {
+        let first = UUID(), second = UUID(), untouched = UUID()
+        for index in [0, 1] { exercises[index].supersetUuid = first }
+        for index in [2, 3] { exercises[index].supersetUuid = second }
+        for index in [4, 5] { exercises[index].supersetUuid = untouched }
+        try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[1].objectID, exercises[2].objectID])
+        XCTAssertEqual(Set(exercises.prefix(4).compactMap(\.supersetUuid)).count, 1)
+        XCTAssertEqual(exercises[4].supersetUuid, untouched)
+        XCTAssertEqual(exercises[5].supersetUuid, untouched)
+    }
+
+    func testEditingLeavesTwoUnselectedFormerPartnersLinked() throws {
+        let former = UUID(), chosen = UUID()
+        for index in [0, 1, 2] { exercises[index].supersetUuid = former }
+        for index in [3, 4] { exercises[index].supersetUuid = chosen }
+        try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[3].objectID])
+        XCTAssertEqual(exercises[0].supersetUuid, chosen)
+        XCTAssertEqual(exercises[4].supersetUuid, chosen)
+        XCTAssertEqual(exercises[1].supersetUuid, former)
+        XCTAssertEqual(exercises[2].supersetUuid, former)
+    }
+
+    func testEditingClearsOrphanedFormerPartner() throws {
+        let former = UUID()
+        exercises[0].supersetUuid = former
+        exercises[1].supersetUuid = former
+        try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[2].objectID])
+        XCTAssertNil(exercises[1].supersetUuid)
+        XCTAssertEqual(exercises[0].supersetUuid, exercises[2].supersetUuid)
+    }
+
+    func testInvalidPartnerSelectionDoesNotMutateTheGroup() throws {
+        try context.save()
+        let originalGroups = groups
+        let outsider = WorkoutExercise.create(context: context)
+        XCTAssertThrowsError(try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [outsider.objectID]))
+        XCTAssertThrowsError(try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: []))
+        XCTAssertThrowsError(try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[0].objectID]))
+        XCTAssertEqual(groups, originalGroups)
+    }
+
+    func testReorderPreservesSupersetAndSetIdentities() throws {
+        let group = UUID()
+        exercises[0].supersetUuid = group
+        exercises[1].supersetUuid = group
+        let originalSetIDs = sets.map(\.objectID)
+        let originalGroups = groups
+        let reversed = Array(order.reversed())
+        try WorkoutOrganization.reorder(reversed, in: workout)
+        XCTAssertEqual(order, reversed)
+        XCTAssertEqual(groups, originalGroups)
+        XCTAssertEqual(sets.map(\.objectID), originalSetIDs)
+        XCTAssertEqual(exercises.map(\.comment), (0..<6).map { "Notes \($0)" })
+    }
+
+    func testStaleOrDuplicateReorderIsRejectedBeforeMutation() throws {
+        let original = order
+        XCTAssertThrowsError(try WorkoutOrganization.reorder(Array(original.dropLast()), in: workout))
+        var duplicate = original
+        duplicate[0] = duplicate[1]
+        XCTAssertThrowsError(try WorkoutOrganization.reorder(duplicate, in: workout))
+        let outsider = WorkoutExercise.create(context: context)
+        var foreign = original
+        foreign[0] = outsider.objectID
+        XCTAssertThrowsError(try WorkoutOrganization.reorder(foreign, in: workout))
+        XCTAssertEqual(order, original)
+    }
+
+    func testFailedSaveRestoresOrderAndGroupsButKeepsPendingTitle() throws {
+        enum SaveFailure: Error { case expected }
+        try context.save()
+        let original = order
+        workout.title = "Pending title"
+        let originalGroups = groups
+        var saveAttempts = 0
+        XCTAssertThrowsError(try context.persistMutation(save: { saveAttempts += 1; throw SaveFailure.expected }) {
+            try WorkoutOrganization.setSuperset(in: self.workout, source: self.exercises[0], partnerIDs: [self.exercises[1].objectID])
+            try WorkoutOrganization.reorder(Array(original.reversed()), in: self.workout)
+        })
+        XCTAssertEqual(saveAttempts, 1)
+        XCTAssertEqual(order, original)
+        XCTAssertEqual(groups, originalGroups)
+        XCTAssertEqual(workout.title, "Pending title")
+        XCTAssertTrue(context.hasChanges)
+    }
+
+    func testInactiveWorkoutIsNeverEdited() throws {
+        workout.isCurrentWorkout = false
+        let original = order
+        XCTAssertThrowsError(try WorkoutOrganization.reorder(Array(original.reversed()), in: workout))
+        XCTAssertThrowsError(try WorkoutOrganization.setSuperset(in: workout, source: exercises[0], partnerIDs: [exercises[1].objectID]))
+        XCTAssertEqual(order, original)
+        XCTAssertTrue(groups.allSatisfy { $0 == nil })
     }
 }

@@ -15,34 +15,26 @@ struct AboutView: View {
                 appSummary
             }
 
-            Section("Iron") {
+            Section("Light") {
                 aboutLinkRow(
                     AboutLink(
                         title: "Source code",
                         subtitle: "View the project on GitHub",
                         systemImage: "chevron.left.forwardslash.chevron.right",
-                        url: URL(string: "https://github.com/karimknaebel/Iron")!
+                        url: URL(string: "https://github.com/SoPat712/Iron")!
                     )
                 )
                 aboutLinkRow(
                     AboutLink(
-                        title: "Website",
-                        subtitle: "Product information and support",
+                        title: "Built on Iron",
+                        subtitle: "Original app by Karim Abou Zeid · GPL v3",
                         systemImage: "globe",
-                        url: URL(string: "https://ka.codes")!
+                        url: URL(string: "https://github.com/karimknaebel/Iron")!
                     )
                 )
             }
 
             Section("Privacy") {
-                aboutLinkRow(
-                    AboutLink(
-                        title: "Privacy policy",
-                        subtitle: "How Iron handles your information",
-                        systemImage: "hand.raised.fill",
-                        url: URL(string: "https://iron.ka.codes/privacy.html")!
-                    )
-                )
                 privacySummary
             }
         }
@@ -50,7 +42,7 @@ struct AboutView: View {
         .safeAreaInset(edge: .bottom) {
             Color.clear.frame(height: IronTheme.floatingWorkoutBottomClearance - 36)
         }
-        .navigationTitle("About Iron")
+        .navigationTitle("About Light")
         .navigationBarTitleDisplayMode(.inline)
         .ironScreen()
     }
@@ -64,7 +56,7 @@ struct AboutView: View {
                 .clipShape(RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Iron")
+                Text("Light")
                     .font(.title2.weight(.semibold))
                     .foregroundColor(IronTheme.primaryText)
                 Text("Private strength training")
@@ -117,7 +109,7 @@ struct AboutView: View {
                 Text("Private by design")
                     .font(.body)
                     .foregroundColor(IronTheme.primaryText)
-                Text("Iron has no social feed or public profile. Your workout and body data remain under your control.")
+                Text("Light has no social feed or public profile. Your workout and body data remain under your control.")
                     .font(.caption)
                     .foregroundColor(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)

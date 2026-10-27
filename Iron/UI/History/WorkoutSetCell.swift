@@ -76,6 +76,7 @@ struct WorkoutSetCell: View {
                             }
                             
                             Text("\(interval)")
+                                .font(.ironMetric(.body, weight: .semibold))
                         }
                         .foregroundColor(Color(.tertiaryLabel))
                     }

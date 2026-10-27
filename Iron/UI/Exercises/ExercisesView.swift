@@ -95,19 +95,30 @@ struct ExerciseDiagramThumbnail: View {
                     // keeps wide poses inside the circle at every row size.
                     .padding(size * 0.14)
         } else {
-            VStack(spacing: 2) {
-                Exercise.imageFor(muscleGroup: exercise.muscleGroup)
-                    .font(.system(size: 22, weight: .bold))
-                Text(exercise.muscleGroup.prefix(1).uppercased())
-                    .font(.system(size: 9, weight: .black, design: .rounded))
-            }
-            .foregroundColor(Exercise.colorFor(muscleGroup: exercise.muscleGroup))
+            Image(systemName: "figure.strengthtraining.traditional")
+            .font(.title2.weight(.semibold))
+            .foregroundStyle(IronTheme.secondaryText)
         }
+    }
+}
+
+struct ExerciseLibraryTag: View {
+    let title: String
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(IronTheme.secondaryText)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(IronTheme.field, in: Capsule())
+            .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 struct ExerciseLibraryRow: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var exerciseStore: ExerciseStore
 
     let exercise: Exercise
 
@@ -115,42 +126,47 @@ struct ExerciseLibraryRow: View {
         exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
     }
 
+    private var lastPerformed: Date? {
+        exerciseStore.lastPerformedDates[exercise.uuid]
+    }
+
     var body: some View {
         HStack(spacing: 12) {
             ExerciseDiagramThumbnail(exercise: exercise, size: 52)
             VStack(alignment: .leading, spacing: 5) {
                 Text(exercise.title)
-                    .font(.body)
-                    .foregroundStyle(.primary)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
                     .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                 Group {
                     if dynamicTypeSize.isAccessibilitySize {
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(muscleTitle)
+                            ExerciseLibraryTag(title: muscleTitle)
                             if let equipment = exercise.equipment.first {
-                                Text(equipment.capitalized)
+                                ExerciseLibraryTag(title: equipment.capitalized)
                             }
                         }
                         .fixedSize(horizontal: false, vertical: true)
                     } else {
                         HStack(spacing: 6) {
-                            Text(muscleTitle)
+                            ExerciseLibraryTag(title: muscleTitle)
                             if let equipment = exercise.equipment.first {
-                                Text("•")
-                                Text(equipment.capitalized)
+                                ExerciseLibraryTag(title: equipment.capitalized)
                             }
                         }
                         .lineLimit(1)
                     }
                 }
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
             }
             Spacer()
+            if let lastPerformed, !dynamicTypeSize.isAccessibilitySize {
+                ExerciseRecencyCaption(date: lastPerformed)
+            }
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(accessibilityTitle)
+        .accessibilityValue(lastPerformed.map { "Last performed \(ExerciseRecencyCaption.title(for: $0))" } ?? "")
     }
 
     private var accessibilityTitle: String {
@@ -160,6 +176,32 @@ struct ExerciseLibraryRow: View {
             return "\(exercise.title), \(muscle)"
         }
         return "\(exercise.title), \(muscle), \(equipment.capitalized)"
+    }
+}
+
+/// A single formatter keeps relative ages consistent across the library and picker.
+struct ExerciseRecencyCaption: View {
+    let date: Date
+
+    private static let formatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.dateTimeStyle = .named
+        formatter.unitsStyle = .full
+        return formatter
+    }()
+
+    static func title(for date: Date) -> String {
+        if Calendar.current.isDateInToday(date) { return "Today" }
+        if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+        return formatter.localizedString(for: date, relativeTo: Date())
+    }
+
+    var body: some View {
+        Text(Self.title(for: date))
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(IronTheme.secondaryText)
+            .fixedSize()
+            .accessibilityLabel("Last performed \(Self.title(for: date))")
     }
 }
 

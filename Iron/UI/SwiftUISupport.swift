@@ -7,11 +7,48 @@
 //
 
 import SwiftUI
+import Charts
 import UIKit
 import MuscleMap
 
-// Palette, metric typography, and motion tokens live in Shared/UI/SwiftUI/IronStyle.swift
-// so the app and widget extension use the same visual roles.
+// Palette and motion live in IronStyle; metric fonts live in IronMetricFont.
+
+/// The same number/unit hierarchy for summary columns, data rows and chart headlines.
+/// A single Text keeps the unit baseline aligned and lets it wrap at accessibility sizes.
+struct IronMetricValue: View {
+    let value: String
+    var unit: String? = nil
+    var style: Font.TextStyle = .title2
+    var weight: Font.Weight = .bold
+    var unitStyle: Font.TextStyle = .footnote
+    var tint: Color = IronTheme.primaryText
+
+    var body: some View {
+        (Text(value).font(.ironMetric(style, weight: weight)).foregroundColor(tint)
+         + Text(unit.map { " " + $0 } ?? "")
+            .font(.system(unitStyle).weight(.semibold)).foregroundColor(IronTheme.secondaryText))
+    }
+}
+
+/// Shared inline summary for the same workout wherever it appears in a list.
+struct IronWorkoutMetricLine: View {
+    let duration: String
+    let sets: Int
+    let volume: String
+    let unit: String
+
+    var body: some View {
+        (Text(duration).foregroundColor(IronTheme.metricTime)
+         + Text(" · ").foregroundColor(IronTheme.secondaryText)
+         + Text("\(sets)").foregroundColor(IronTheme.metricSets)
+         + Text(" sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
+         + Text(" · ").foregroundColor(IronTheme.secondaryText)
+         + Text(volume).foregroundColor(IronTheme.metricVolume)
+         + Text(" \(unit)").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
 
 private struct IronLiquidGlassPillModifier: ViewModifier {
     let tint: Color
@@ -491,7 +528,7 @@ struct IronDateTimePickerSheet: View {
                             .font(.headline.weight(.semibold))
                             .multilineTextAlignment(.center)
                         Text(selection.formatted(date: .omitted, time: .shortened))
-                            .font(.title2.weight(.semibold).monospacedDigit())
+                            .font(.ironMetric(.title2, weight: .semibold))
                             .foregroundStyle(.secondary)
                         Text(subtitle)
                             .font(.caption)
@@ -1073,5 +1110,64 @@ func ironMapMuscle(_ rawName: String) -> Muscle? {
     case "ankles", "ankle stabilizers": return .ankles
     case "feet": return .feet
     default: return nil
+    }
+}
+
+
+extension View {
+    /// Scrub horizontally, leaving vertical pans to the enclosing List.
+    func ironHorizontalChartScrubbing(onEnded: @escaping () -> Void) -> some View {
+        chartGesture { _ in SpatialTapGesture() }
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    if let plotFrame = proxy.plotFrame {
+                        let frame = geometry[plotFrame]
+                        IronChartScrubber(
+                            onChanged: { x in proxy.selectXValue(at: min(max(x, 0), frame.width)) },
+                            onEnded: onEnded
+                        )
+                        .frame(width: frame.width, height: frame.height)
+                        .position(x: frame.midX, y: frame.midY)
+                        .accessibilityHidden(true)
+                    }
+                }
+            }
+    }
+}
+
+private struct IronChartScrubber: UIViewRepresentable {
+    let onChanged: (CGFloat) -> Void
+    let onEnded: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panChanged(_:)))
+        pan.delegate = context.coordinator
+        view.addGestureRecognizer(pan)
+        return view
+    }
+
+    func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
+
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var parent: IronChartScrubber
+        init(parent: IronChartScrubber) { self.parent = parent }
+
+        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
+            let velocity = pan.velocity(in: pan.view)
+            return abs(velocity.x) > abs(velocity.y)
+        }
+
+        @objc func panChanged(_ pan: UIPanGestureRecognizer) {
+            switch pan.state {
+            case .began, .changed: parent.onChanged(pan.location(in: pan.view).x)
+            case .ended, .cancelled, .failed: parent.onEnded()
+            default: break
+            }
+        }
     }
 }

@@ -23,7 +23,20 @@ That metadata and text are distributed under the MIT License:
 > DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 > OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
-See `reference-material/opengym/NOTICE.md` for the upstream provenance discussion.
+Source: https://github.com/hasaneyldrm/exercises-dataset
+
+### OpenGym catalogue updates
+
+Iron also includes the current OpenGym exercise names, muscles, descriptions and instructions,
+adapted from revision `042c9ee42282756ab0e6e86a1cd5c710efaecee6`.
+Copyright (C) 2026 Duarte Santos and contributors. OpenGym-authored text and corrections are
+licensed under GNU AGPL version 3; the original ExerciseDB text retains the MIT notice above.
+
+The converted JSON, source-ID map and converter ship in Iron's source tree. The full AGPL,
+upstream text notice and pinned source/hash manifest are bundled under
+`WorkoutDataKit/everkinetic-data/Licenses/`. No OpenGym exercise media is included.
+
+Source: https://github.com/DuarteSantos8/openGym/tree/main/catalogue
 
 ## Exercise images and animations
 
@@ -41,10 +54,16 @@ resolved by runtime loading. Product distribution may therefore require written 
 the relevant rights holder. Iron retains its original bundled diagrams as an offline fallback
 where available.
 
+Iron saves the first frame of its existing provider's GIFs as a persistent PNG for list
+thumbnails, preserving the original animation for demonstrations. This does not increase the
+source resolution. OpenGym's separately licensed stills and clips are not copied into Iron;
+its media notice limits the non-commercial exception to forks of OpenGym.
+
 ## Muscle maps
 
-Iron imports `MuscleMap` 1.6.4 from its original repository at build time and uses it to render
-front/back muscle highlighting. The package is separate from openGym and is licensed under MIT:
+Iron vendors `MuscleMap` 1.6.4 in `Packages/MuscleMap`, retaining its license and adding a public
+hit-test facade for hold-and-scrub. It renders front/back muscle highlighting. The package is
+separate from OpenGym and is licensed under MIT:
 
 > Copyright (c) 2026 Melih Colpan
 >

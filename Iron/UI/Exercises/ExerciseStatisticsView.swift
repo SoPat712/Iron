@@ -83,13 +83,16 @@ struct ExerciseStatisticsView: View {
                     ContentUnavailableView {
                         Label("No Progress Yet", systemImage: "chart.line.flattrend.xyaxis")
                     } description: {
-                        Text("Complete a set of this exercise and Iron will chart strength, volume, sets, and reps here.")
+                        Text("Complete a set of this exercise and Light will chart strength, volume, sets, and reps here.")
                     } actions: {
                         if selectedTimeFrame != .all {
                             Button("Show All History") {
                                 setTimeFrame(.all)
                             }
                             .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .listRowBackground(Color.clear)
@@ -197,6 +200,8 @@ struct ExerciseInlineProgressView: View {
     @State private var selectedPoint: ExerciseProgressPoint?
 
     let exercise: Exercise
+    let onOpenWorkout: (Workout) -> Void
+    let onShowAllHistory: () -> Void
 
     private enum Selection: String, CaseIterable {
         case oneRM = "1RM", weight = "Weight", volume = "Volume", history = "History"
@@ -211,8 +216,14 @@ struct ExerciseInlineProgressView: View {
         }
     }
 
-    init(exercise: Exercise) {
+    init(
+        exercise: Exercise,
+        onOpenWorkout: @escaping (Workout) -> Void,
+        onShowAllHistory: @escaping () -> Void
+    ) {
         self.exercise = exercise
+        self.onOpenWorkout = onOpenWorkout
+        self.onShowAllHistory = onShowAllHistory
         _history = FetchRequest(fetchRequest: WorkoutExercise.historyFetchRequest(of: exercise.uuid))
     }
 
@@ -347,18 +358,14 @@ struct ExerciseInlineProgressView: View {
             Text(selectedPoint == nil ? metric.inlineTitle : ExerciseSessionDate.string(from: point.date, relative: false))
                 .font(.footnote)
                 .foregroundStyle(IronTheme.secondaryText)
-            HStack(alignment: .firstTextBaseline, spacing: 4) {
-                Text(progress.valueParts(point.value, for: metric).number)
-                    .font(.ironMetric(.largeTitle))
-                    .foregroundStyle(metric.color)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.6)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                Text(settingsStore.weightUnit.unit.symbol)
-                    .font(.headline.weight(.semibold))
-                    .foregroundStyle(IronTheme.secondaryText)
-                    .fixedSize()
-            }
+            IronMetricValue(
+                value: progress.valueParts(point.value, for: metric).number,
+                unit: settingsStore.weightUnit.unit.symbol,
+                style: .largeTitle, tint: metric.color
+            )
+            .lineLimit(1)
+            .minimumScaleFactor(0.6)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
             .accessibilityElement(children: .combine)
         }
     }
@@ -429,15 +436,18 @@ struct ExerciseInlineProgressView: View {
             .foregroundStyle(IronTheme.secondaryText)
             ForEach(Array(sessions.enumerated()), id: \.element.id) { index, session in
                 let point = points.first { $0.id == ExerciseProgressData.identifier(for: session) }
-                ExerciseHistorySessionRow(session: session, bestOneRM: point?.value, isRecord: point?.isRecord ?? false)
+                ExerciseHistorySessionRow(
+                    session: session,
+                    bestOneRM: point?.value,
+                    isRecord: point?.isRecord ?? false,
+                    onOpenWorkout: onOpenWorkout
+                )
                 if index < sessions.count - 1 {
                     Rectangle().fill(IronTheme.outline).frame(height: 0.5).accessibilityHidden(true)
                 }
             }
-            NavigationLink {
-                ExerciseHistoryView(exercise: exercise)
-                    .navigationTitle("History")
-                    .navigationBarTitleDisplayMode(.inline)
+            Button {
+                onShowAllHistory()
             } label: {
                 HStack(spacing: 6) {
                     Text("Show all \(completedHistory.count) sessions")
@@ -792,7 +802,9 @@ struct ExerciseProgressChart: View {
                 let opacity = selectedPoint == nil || selectedPoint?.id == point.id ? 1.0 : 0.45
                 let value = usesBars && !hasAppeared && !reduceMotion ? 0 : point.value
                 if usesBars {
-                    BarMark(x: .value("Date", point.date), y: .value("Value", value), width: .ratio(0.65))
+                    // A continuous Date axis has no categorical band for ratio
+                    // widths. Keep sessions visible without coarsening timestamps.
+                    BarMark(x: .value("Date", point.date), y: .value("Value", value), width: .fixed(8))
                         .cornerRadius(4)
                         .foregroundStyle(color.opacity(opacity))
                 } else {
@@ -836,7 +848,7 @@ struct ExerciseProgressChart: View {
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
                         Text(raw, format: .number.notation(.compactName).precision(.fractionLength(0...1)))
-                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .font(.ironMetric(.footnote, weight: .semibold))
                             .foregroundStyle(IronTheme.secondaryText)
                     }
                 }
@@ -847,7 +859,7 @@ struct ExerciseProgressChart: View {
                 AxisValueLabel(verticalSpacing: 0) {
                     if let date = value.as(Date.self) {
                         Text(date, format: usesDayLabels ? .dateTime.day() : .dateTime.month(.abbreviated))
-                            .font(usesDayLabels ? .ironMetric(.caption2, weight: .semibold) : .caption2)
+                            .font(usesDayLabels ? .ironMetric(.footnote, weight: .semibold) : .footnote)
                             .foregroundStyle(IronTheme.secondaryText)
                             .frame(minHeight: 14)
                     }
@@ -860,23 +872,7 @@ struct ExerciseProgressChart: View {
             }
         }
         .chartXSelection(value: $selectedDate)
-        // Replace Charts' unrestricted drag. The overlay drives chartXSelection
-        // through ChartProxy and refuses vertical pans before they can begin.
-        .chartGesture { _ in SpatialTapGesture() }
-        .chartOverlay { proxy in
-            GeometryReader { geometry in
-                if let plotFrame = proxy.plotFrame {
-                    let frame = geometry[plotFrame]
-                    ExerciseChartScrubber(
-                        onChanged: { x in proxy.selectXValue(at: min(max(x, 0), frame.width)) },
-                        onEnded: { selectedDate = nil }
-                    )
-                    .frame(width: frame.width, height: frame.height)
-                    .position(x: frame.midX, y: frame.midY)
-                    .accessibilityHidden(true)
-                }
-            }
-        }
+        .ironHorizontalChartScrubbing { selectedDate = nil }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Progress chart with \(points.count) sessions")
         .accessibilityValue(accessibilityValue)
@@ -900,42 +896,7 @@ struct ExerciseProgressChart: View {
 
 /// UIKit's shouldBegin rejects vertical intent before recognition, including on
 /// iOS 17. A vertical pan therefore stays with the enclosing List's scroll view.
-private struct ExerciseChartScrubber: UIViewRepresentable {
-    let onChanged: (CGFloat) -> Void
-    let onEnded: () -> Void
 
-    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        let pan = UIPanGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.panChanged(_:)))
-        pan.delegate = context.coordinator
-        view.addGestureRecognizer(pan)
-        return view
-    }
-
-    func updateUIView(_ view: UIView, context: Context) { context.coordinator.parent = self }
-
-    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
-        var parent: ExerciseChartScrubber
-        init(parent: ExerciseChartScrubber) { self.parent = parent }
-
-        func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
-            guard let pan = gestureRecognizer as? UIPanGestureRecognizer else { return false }
-            let velocity = pan.velocity(in: pan.view)
-            return abs(velocity.x) > abs(velocity.y)
-        }
-
-        @objc func panChanged(_ pan: UIPanGestureRecognizer) {
-            switch pan.state {
-            case .began, .changed: parent.onChanged(pan.location(in: pan.view).x)
-            case .ended, .cancelled, .failed: parent.onEnded()
-            default: break
-            }
-        }
-    }
-}
 
 enum ExerciseProgressMetric: Hashable {
     case oneRM

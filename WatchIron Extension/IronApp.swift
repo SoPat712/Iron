@@ -11,11 +11,28 @@ import SwiftUI
 struct IronApp: App {
     @WKApplicationDelegateAdaptor private var appDelegate: AppDelegate
     
+    init() {
+        #if DEBUG && targetEnvironment(simulator)
+        WatchFocusDemo.seedIfRequested()
+        #endif
+    }
+
     @SceneBuilder var body: some Scene {
         WindowGroup {
-            NavigationView {
-                ContentView()
-            }
+            ContentView()
+                #if DEBUG && targetEnvironment(simulator)
+                .transformEnvironment(\.dynamicTypeSize) { size in
+                    if ProcessInfo.processInfo.arguments.contains("--large-watch-text") { size = .accessibility3 }
+                }
+                .transformEnvironment(\.isLuminanceReduced) { value in
+                    if ProcessInfo.processInfo.arguments.contains("--watch-aod-demo") { value = true }
+                }
+                .transformEnvironment(\.redactionReasons) { reasons in
+                    if ProcessInfo.processInfo.arguments.contains("--watch-aod-demo") { reasons.insert(.privacy) }
+                }
+                #endif
+                .preferredColorScheme(.dark)
+                .tint(IronTheme.accent)
         }
     }
 }
@@ -31,6 +48,12 @@ class AppDelegate: NSObject, WKApplicationDelegate {
         Self.logger.log("Checking whether active workout session can be recovered")
         handleActiveWorkoutRecovery() // somehow this isn't automatically called by the system?! last checked watchOS 8
         _ = NotificationManager.shared
+    }
+
+    func handle(_ userActivity: NSUserActivity) {
+        DispatchQueue.main.async {
+            NotificationCenter.default.post(name: .lightOpenWorkout, object: nil)
+        }
     }
 
     func handle(_ backgroundTasks: Set<WKRefreshBackgroundTask>) {
@@ -78,6 +101,7 @@ class AppDelegate: NSObject, WKApplicationDelegate {
         Self.logger.log("Recovering active workout session")
         WorkoutSessionManager.healthStore.recoverActiveWorkoutSession { workoutSession, error in
             guard let workoutSession = workoutSession else {
+                WorkoutSessionManagerStore.shared.finishRecordingRecovery()
                 if let error = error {
                     Self.logger.error("Could not recover active workout session: \(error.localizedDescription)")
                 } else {
@@ -97,4 +121,48 @@ class AppDelegate: NSObject, WKApplicationDelegate {
     func handle(_ workoutConfiguration: HKWorkoutConfiguration) {
         PhoneConnectionManager.shared.handlePrepareWorkoutSession(workoutConfiguration)
     }
+}
+
+#if DEBUG && targetEnvironment(simulator)
+/// Disposable simulator fixtures. Never present in a device or Release build.
+private enum WatchFocusDemo {
+    static func seedIfRequested() {
+        let args = ProcessInfo.processInfo.arguments
+        guard let flag = args.firstIndex(of: "--light-watch-demo"), args.indices.contains(flag + 1) else { return }
+        let mode = args[flag + 1]
+        let catalog = WatchBundledLibrary.load().exercises
+        let group = UUID()
+        func exercise(_ name: String, index: Int) -> WatchWorkoutExercise {
+            let pick = catalog.first { $0.name.localizedCaseInsensitiveContains(name) }
+            return WatchWorkoutExercise(order: index, name: pick?.name ?? name,
+                sets: (1...3).map { WatchWorkoutSet(order: $0, weight: 135, reps: 8,
+                    previousWeight: 130, previousReps: 8, completed: index == 1 && $0 == 1) },
+                restTimerDuration: 90, muscleGroup: pick?.muscle, exerciseUuid: pick?.id, imageURL: pick?.imageURL,
+                supersetID: group, comment: "Controlled tempo")
+        }
+        let exercises = [exercise("Barbell Bench Press", index: 1), exercise("Dumbbell Row", index: 2)]
+        var snapshot = WatchWorkoutSnapshot(workoutID: UUID(), title: "Upper Body", startDate: Date().addingTimeInterval(-240),
+            exercises: exercises, restTimerEnd: mode == "rest" ? Date().addingTimeInterval(90) : nil, weightUnit: .pound)
+        snapshot.selectedSetID = WatchWorkoutEditing.nextSet(in: snapshot)
+        if mode == "empty" { snapshot.exercises = [] }
+        if mode == "complete" {
+            for e in snapshot.exercises.indices { for s in snapshot.exercises[e].sets.indices { snapshot.exercises[e].sets[s].completed = true } }
+        }
+        var history = snapshot
+        history.workoutID = UUID(); history.startDate = Date().addingTimeInterval(-90_000)
+        history.endDate = history.startDate.addingTimeInterval(2_400); history.isFinished = true
+        let saved = WatchSavedWorkout(id: UUID(), title: "Upper Body", exercises: exercises, weightUnit: .pound,
+            comment: "Saved workout", updatedAt: Date())
+        do {
+            try WatchWorkoutStore.shared.clear()
+            try WatchWorkoutStore.shared.replaceLibrary(WatchWorkoutLibrary(generatedAt: Date(), exercises: catalog,
+                savedWorkouts: [saved], history: [history], weightUnit: .pound))
+            if mode != "home" { try WatchWorkoutStore.shared.replaceSnapshot(snapshot) }
+        } catch { assertionFailure("Could not prepare Watch fixture: \(error)") }
+    }
+}
+#endif
+
+extension Notification.Name {
+    static let lightOpenWorkout = Notification.Name("Light.openWorkout")
 }

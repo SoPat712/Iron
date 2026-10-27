@@ -10,6 +10,7 @@ import SwiftUI
 
 struct NumericKeyboard: View {
     @Environment(\.locale) var locale
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     
     @Binding var value: Double?
     @Binding var alwaysShowDecimalSeparator: Bool
@@ -17,6 +18,18 @@ struct NumericKeyboard: View {
     var maximumFractionDigits: Int
     
     static var HEIGHT: CGFloat = 210
+    // Also compiled into Siri UI, where app-only theme types are unavailable.
+    static let controlHeight: CGFloat = 44
+
+    static func height(for dynamicTypeSize: DynamicTypeSize) -> CGFloat {
+        dynamicTypeSize.isAccessibilitySize
+            ? (Self.controlHeight + 4) * 4 + 16
+            : HEIGHT
+    }
+
+    private var keyMinimumHeight: CGFloat {
+        dynamicTypeSize.isAccessibilitySize ? Self.controlHeight + 4 : Self.controlHeight
+    }
     
     private var allowsFloats: Bool {
         maximumFractionDigits > 0
@@ -75,7 +88,7 @@ struct NumericKeyboard: View {
     }
     
     private func textKeyboardButton(label: Text, value: String, width: CGFloat) -> some View {
-        Self.textActionKeyboardButton(label: label, width: width) {
+        Self.textActionKeyboardButton(label: label, width: width, minHeight: keyMinimumHeight) {
             self.prepareNumberFormatter()
             guard !self.allowsFloats || self.minimumFractionDigits < self.maximumFractionDigits else { return } // otherwise we might get a bug with rounding
             guard let string = self.getValueString() else { return }
@@ -90,28 +103,35 @@ struct NumericKeyboard: View {
         IronSoundPlayer.shared.play(.tick)
     }
     
-    static func textActionKeyboardButton(label: Text, width: CGFloat, action: @escaping () -> Void) -> some View {
+    static func textActionKeyboardButton(
+        label: Text,
+        width: CGFloat,
+        minHeight: CGFloat = NumericKeyboard.controlHeight,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: { playButtonSound(); action() }) {
             label
-                .foregroundColor(.primary)
-                .padding()
+                .font(.ironMetric(.title3, weight: .semibold))
+                .foregroundStyle(.primary)
                 .frame(width: width)
-                .background(Color.clear)
+                .frame(minHeight: minHeight)
+                .contentShape(Rectangle())
         }
     }
     
-    static func imageActionKeyboardButton(label: Image, width: CGFloat, action: @escaping () -> Void) -> some View {
+    static func imageActionKeyboardButton(
+        label: Image,
+        width: CGFloat,
+        minHeight: CGFloat = NumericKeyboard.controlHeight,
+        action: @escaping () -> Void
+    ) -> some View {
         Button(action: { playButtonSound(); action() }) {
-            ZStack {
-                Text("0") // only used so this button is the same height as the other buttons
-                    .padding()
-                    .foregroundColor(.clear)
-                label
-                    .foregroundColor(.primary)
-                    .padding()
-                    .frame(width: width)
-            }
-            .background(Color.clear)
+            label
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.primary)
+                .frame(width: width)
+                .frame(minHeight: minHeight)
+                .contentShape(Rectangle())
         }
     }
     
@@ -123,7 +143,11 @@ struct NumericKeyboard: View {
                     self.textKeyboardButton(label: Text("4"), value: "4", width: geometry.size.width / 3)
                     self.textKeyboardButton(label: Text("7"), value: "7", width: geometry.size.width / 3)
                     
-                    Self.textActionKeyboardButton(label: Text(self.allowsFloats ? (locale.decimalSeparator ?? ".") : " "), width: geometry.size.width / 3) {
+                    Self.textActionKeyboardButton(
+                        label: Text(self.allowsFloats ? (locale.decimalSeparator ?? ".") : " "),
+                        width: geometry.size.width / 3,
+                        minHeight: keyMinimumHeight
+                    ) {
                         guard self.allowsFloats else { return }
                         if self.value == nil {
                             self.prepareNumberFormatter()
@@ -159,9 +183,9 @@ struct NumericKeyboard: View {
                     }
                 }
             }
-            .fixedSize()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .frame(height: Self.HEIGHT) // TODO: only temporary because this doesn't support dynamic type size
+        .frame(height: Self.height(for: dynamicTypeSize))
     }
 }
 

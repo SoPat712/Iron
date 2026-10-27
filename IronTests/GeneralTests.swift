@@ -1031,3 +1031,226 @@ final class HealthSampleReconciliationTests: XCTestCase {
         XCTAssertFalse(completed)
     }
 }
+
+final class TrainingHistorySnapshotTests: XCTestCase {
+    func testSnapshotCountsCompletedSetsGroupsDaysAndDeduplicatesExerciseSessions() throws {
+        let container = setUpInMemoryNSPersistentContainer()
+        let context = container.viewContext
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let date = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 9))!
+        let id = UUID()
+        func session(_ start: Date, current: Bool = false) -> Workout {
+            let workout = Workout.create(context: context)
+            workout.start = start; workout.end = start.addingTimeInterval(3600)
+            workout.isCurrentWorkout = current
+            let exercises = (0..<2).map { _ -> WorkoutExercise in
+                let exercise = WorkoutExercise.create(context: context)
+                exercise.exerciseUuid = id
+                let sets = (0..<2).map { index -> WorkoutSet in
+                    let set = WorkoutSet.create(context: context)
+                    set.weightValue = 20; set.repetitionsValue = 5
+                    set.isCompleted = index == 0
+                    return set
+                }
+                exercise.workoutSets = NSOrderedSet(array: sets)
+                return exercise
+            }
+            workout.workoutExercises = NSOrderedSet(array: exercises)
+            return workout
+        }
+        let morning = session(date)
+        let evening = session(date.addingTimeInterval(8 * 3600))
+        let active = session(date, current: true)
+        try context.save()
+        let snapshot = TrainingHistorySnapshot.build(from: [morning, evening, active], calendar: calendar)
+        XCTAssertEqual(snapshot.sessions.count, 2)
+        XCTAssertEqual(snapshot.byDay[calendar.startOfDay(for: date)]?.count, 2)
+        XCTAssertEqual(snapshot.sessions.reduce(0) { $0 + $1.setCount }, 4)
+        XCTAssertEqual(snapshot.sessions.reduce(0) { $0 + $1.volume }, 400)
+        XCTAssertEqual(snapshot.sessions.reduce(0) { $0 + $1.duration }, 7200)
+        XCTAssertEqual(snapshot.exerciseTotals[id]?.sessions, 2)
+        XCTAssertEqual(snapshot.exerciseTotals[id]?.sets, 4)
+        XCTAssertFalse(context.hasChanges)
+    }
+
+    func testStreakAllowsCurrentRestWeekAndStopsAtFirstMissingPastWeek() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.firstWeekday = 2
+        calendar.timeZone = TimeZone(identifier: "America/New_York")!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 10, day: 26, hour: 9))!
+        let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)!.start
+        let lastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: thisWeek)!
+        let twoWeeks = calendar.date(byAdding: .weekOfYear, value: -2, to: thisWeek)!
+        let fourWeeks = calendar.date(byAdding: .weekOfYear, value: -4, to: thisWeek)!
+        var snapshot = TrainingHistorySnapshot()
+        snapshot.trainedWeeks = [lastWeek, twoWeeks, fourWeeks]
+        XCTAssertEqual(snapshot.streak(now: now, calendar: calendar), 2)
+        snapshot.trainedWeeks.insert(thisWeek)
+        XCTAssertEqual(snapshot.streak(now: now, calendar: calendar), 3)
+    }
+}
+
+final class RestLengthRulerScaleTests: XCTestCase {
+    private let scale = RestLengthRulerScale(range: 30...300, step: 15)
+
+    func testPointerTracksContinuouslyWhileDurationSnaps() {
+        let first = scale.duration(at: 114, width: 328)
+        let second = scale.duration(at: 115, width: 328)
+        XCTAssertGreaterThan(second, first)
+        XCTAssertEqual(scale.snapped(first), scale.snapped(second))
+        XCTAssertEqual(scale.position(for: first, width: 328), 114, accuracy: 0.001)
+        XCTAssertEqual(scale.position(for: second, width: 328), 115, accuracy: 0.001)
+    }
+
+    func testScrubbingAndSnappingClampAtBothEnds() {
+        XCTAssertEqual(scale.duration(at: -100, width: 328), 30)
+        XCTAssertEqual(scale.duration(at: 600, width: 328), 300)
+        XCTAssertEqual(scale.snapped(-10), 30)
+        XCTAssertEqual(scale.snapped(500), 300)
+        XCTAssertEqual(scale.snapped(97), 90)
+        XCTAssertEqual(scale.snapped(98), 105)
+    }
+
+    func testGeometryRoundTripsAcrossWidths() {
+        for width: CGFloat in [240, 328, 600] {
+            for duration in stride(from: 30.0, through: 300.0, by: 1.0) {
+                XCTAssertEqual(scale.duration(at: scale.position(for: duration, width: width), width: width), duration, accuracy: 0.001)
+            }
+        }
+    }
+
+    func testCustomRangeSnapsRelativeToItsLowerBound() {
+        let custom = RestLengthRulerScale(range: 20...80, step: 15)
+        XCTAssertEqual(custom.snapped(27), 20)
+        XCTAssertEqual(custom.snapped(28), 35)
+        XCTAssertEqual(custom.snapped(100), 80)
+    }
+}
+
+final class WatchWorkoutMetricsTests: XCTestCase {
+    private let workoutID = UUID()
+    private let now = Date(timeIntervalSince1970: 10_000)
+
+    private func packet(date: Date? = nil, state: WatchWorkoutMetrics.SessionState = .running,
+                        heartRate: Double? = 112, heartDate: Date? = nil,
+                        energy: Double? = 84) -> WatchWorkoutMetrics {
+        WatchWorkoutMetrics(workoutID: workoutID, date: date ?? now, state: state,
+                            heartRate: heartRate, heartRateDate: heartDate ?? now,
+                            activeEnergyKilocalories: energy)
+    }
+
+    func testWireRoundTripRetainsSubsecondOrderingAndUnits() throws {
+        let value = packet(date: now.addingTimeInterval(0.125))
+        let data = try XCTUnwrap(WatchWorkoutWire.encode(value))
+        let decoded = try XCTUnwrap(WatchWorkoutWire.decode(WatchWorkoutMetrics.self, from: data))
+        XCTAssertEqual(decoded, value)
+        XCTAssertEqual(decoded.currentHeartRate(at: now), 112)
+        XCTAssertEqual(decoded.currentActiveEnergy(at: now), 84)
+        XCTAssertLessThan(data.count, 512)
+    }
+
+    func testMissingAndInvalidReadingsAreNeverReplacedWithZero() {
+        let missing = packet(heartRate: nil, energy: nil)
+        XCTAssertNil(missing.currentHeartRate(at: now))
+        XCTAssertNil(missing.currentActiveEnergy(at: now))
+        for invalid in [-1.0, .nan, .infinity] {
+            let value = packet(heartRate: invalid, energy: invalid)
+            XCTAssertNil(value.currentHeartRate(at: now))
+            XCTAssertNil(value.currentActiveEnergy(at: now))
+        }
+        XCTAssertNil(packet(heartRate: 0).currentHeartRate(at: now))
+        XCTAssertEqual(packet(energy: 0).currentActiveEnergy(at: now), 0)
+    }
+
+    func testStaleSampleIsHiddenEvenWhenPacketIsFresh() {
+        let value = packet(heartDate: now.addingTimeInterval(-31))
+        XCTAssertNil(value.currentHeartRate(at: now))
+        XCTAssertEqual(value.currentActiveEnergy(at: now), 84)
+        XCTAssertNil(packet(heartDate: now.addingTimeInterval(6)).currentHeartRate(at: now))
+    }
+
+    func testLostConnectionExpiresBothReadings() {
+        let value = packet()
+        XCTAssertNotNil(value.currentHeartRate(at: now.addingTimeInterval(30)))
+        XCTAssertNil(value.currentHeartRate(at: now.addingTimeInterval(31)))
+        XCTAssertNil(value.currentActiveEnergy(at: now.addingTimeInterval(31)))
+    }
+
+    func testOnlyCurrentWorkoutAndNewerPacketsAreAccepted() {
+        let first = packet()
+        let newer = packet(date: now.addingTimeInterval(0.125))
+        XCTAssertTrue(newer.accepts(after: first, for: workoutID, at: now))
+        XCTAssertFalse(first.accepts(after: newer, for: workoutID, at: now))
+        XCTAssertFalse(first.accepts(after: first, for: workoutID, at: now))
+        XCTAssertFalse(first.accepts(after: nil, for: UUID(), at: now))
+        XCTAssertFalse(packet(date: now.addingTimeInterval(-31)).accepts(after: nil, for: workoutID, at: now))
+        XCTAssertFalse(packet(date: now.addingTimeInterval(6)).accepts(after: nil, for: workoutID, at: now))
+    }
+
+    func testPausedAndEndedSessionsNeverShowLiveHeartRate() {
+        let paused = packet(state: .paused)
+        XCTAssertNil(paused.currentHeartRate(at: now))
+        XCTAssertEqual(paused.currentActiveEnergy(at: now), 84)
+        let ended = packet(state: .ended)
+        XCTAssertNil(ended.currentHeartRate(at: now))
+        XCTAssertNil(ended.currentActiveEnergy(at: now))
+    }
+
+    func testDecodedNegativeReadingsCannotBypassValidation() throws {
+        let source = #"{"workoutID":"WORKOUT","sentAt":10000,"state":"running","heartRate":-5,"heartRateDate":"1970-01-01T02:46:40Z","activeEnergyKilocalories":-20}"#
+            .replacingOccurrences(of: "WORKOUT", with: workoutID.uuidString)
+        let decoded = try XCTUnwrap(WatchWorkoutWire.decode(WatchWorkoutMetrics.self, from: Data(source.utf8)))
+        XCTAssertNil(decoded.currentHeartRate(at: now))
+        XCTAssertNil(decoded.currentActiveEnergy(at: now))
+    }
+}
+
+final class WatchSupersetEditingTests: XCTestCase {
+    private func exercise(order: Int, group: UUID?) -> WatchWorkoutExercise {
+        WatchWorkoutExercise(order: order, name: "Exercise \(order)",
+                             sets: [WatchWorkoutSet(order: 1)], supersetID: group)
+    }
+
+    func testEditingSupersetExcludesDeselectedPartner() throws {
+        let group = UUID()
+        var snapshot = WatchWorkoutSnapshot(workoutID: UUID(), exercises: (1...3).map {
+            exercise(order: $0, group: group)
+        })
+        let ids = snapshot.exercises.map(\.id)
+        WatchWorkoutEditing.replaceSuperset(exerciseIDs: [ids[0], ids[2]], anchorID: ids[0], in: &snapshot)
+        let replacement = try XCTUnwrap(snapshot.exercises[0].supersetID)
+        XCTAssertEqual(snapshot.exercises[2].supersetID, replacement)
+        XCTAssertNil(snapshot.exercises[1].supersetID)
+        XCTAssertEqual(snapshot.exercises.map(\.id), ids)
+    }
+
+    func testMovingPartnerKeepsUnselectedGroupMembersTogether() throws {
+        let first = UUID(), second = UUID()
+        var snapshot = WatchWorkoutSnapshot(workoutID: UUID(), exercises: (1...5).map {
+            exercise(order: $0, group: $0 <= 2 ? first : second)
+        })
+        let ids = snapshot.exercises.map(\.id)
+        let selectedSet = snapshot.exercises[2].sets[0].id
+        snapshot.selectedSetID = selectedSet
+        WatchWorkoutEditing.replaceSuperset(exerciseIDs: [ids[0], ids[2]], anchorID: ids[0], in: &snapshot)
+        XCTAssertEqual(snapshot.exercises[0].supersetID, snapshot.exercises[2].supersetID)
+        XCTAssertNotNil(snapshot.exercises[0].supersetID)
+        XCTAssertNil(snapshot.exercises[1].supersetID)
+        XCTAssertEqual(snapshot.exercises[3].supersetID, second)
+        XCTAssertEqual(snapshot.exercises[4].supersetID, second)
+        XCTAssertEqual(snapshot.selectedSetID, selectedSet)
+    }
+
+    func testRemovingGroupDoesNotAffectAnotherSuperset() {
+        let first = UUID(), second = UUID()
+        var snapshot = WatchWorkoutSnapshot(workoutID: UUID(), exercises: (1...4).map {
+            exercise(order: $0, group: $0 <= 2 ? first : second)
+        })
+        WatchWorkoutEditing.replaceSuperset(exerciseIDs: [], anchorID: snapshot.exercises[0].id, in: &snapshot)
+        XCTAssertNil(snapshot.exercises[0].supersetID)
+        XCTAssertNil(snapshot.exercises[1].supersetID)
+        XCTAssertEqual(snapshot.exercises[2].supersetID, second)
+        XCTAssertEqual(snapshot.exercises[3].supersetID, second)
+    }
+}

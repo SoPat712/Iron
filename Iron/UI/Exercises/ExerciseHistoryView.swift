@@ -218,6 +218,7 @@ struct ExerciseHistorySessionRow: View {
     @ObservedObject var session: WorkoutExercise
     let bestOneRM: Double?
     let isRecord: Bool
+    let onOpenWorkout: (Workout) -> Void
 
     private var sets: [WorkoutSet] {
         (session.workoutSets?.array as? [WorkoutSet] ?? []).filter(\.isCompleted)
@@ -233,8 +234,8 @@ struct ExerciseHistorySessionRow: View {
 
     var body: some View {
         if let workout = session.workout {
-            NavigationLink {
-                WorkoutDetailView(workout: workout)
+            Button {
+                onOpenWorkout(workout)
             } label: {
                 VStack(alignment: .leading, spacing: 8) {
                     let layout = dynamicTypeSize.isAccessibilitySize
@@ -290,7 +291,7 @@ struct ExerciseHistorySessionRow: View {
         .foregroundStyle(color)
         .padding(.horizontal, 8)
         .frame(minHeight: 24)
-        .background(fill, in: Capsule())
+        .background(fill, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
     }
 
     private func chipTitle(_ set: WorkoutSet) -> String {

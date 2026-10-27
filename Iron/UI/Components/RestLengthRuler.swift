@@ -9,12 +9,23 @@ struct RestLengthRuler: View {
     let onCommit: (TimeInterval) -> Void
 
     @State private var scrubbedValue: TimeInterval?
+    @State private var scrubbedPosition: TimeInterval?
     @State private var stepFeedback = 0
     @State private var rulerWidth: CGFloat = 1
     private let presets: [TimeInterval] = [60, 90, 120, 150, 180]
     private let labels: [TimeInterval] = [30, 60, 120, 180, 240, 300]
 
     private var displayedValue: TimeInterval { scrubbedValue ?? value }
+    private var pointerValue: TimeInterval { scrubbedPosition ?? displayedValue }
+    private var scale: RestLengthRulerScale { .init(range: range, step: step) }
+
+    // These are the default ruler's 19 values, reused by captions and presets.
+    // Finger updates must not repeatedly invoke DateComponentsFormatter.
+    private static let durationTitles: [TimeInterval: String] = Dictionary(uniqueKeysWithValues:
+        stride(from: 30.0, through: 300.0, by: 15.0).map {
+            ($0, restTimerDurationFormatter.string(from: $0) ?? "0:00")
+        }
+    )
     private var ticks: [TimeInterval] {
         Array(stride(from: range.lowerBound, through: range.upperBound, by: max(step, 1)))
     }
@@ -45,7 +56,7 @@ struct RestLengthRuler: View {
                         Capsule()
                             .fill(IronTheme.metricTime)
                             .frame(width: 4, height: 32)
-                            .position(x: xPosition(displayedValue, width: proxy.size.width), y: 16)
+                            .position(x: xPosition(pointerValue, width: proxy.size.width), y: 16)
 
                         ForEach(labels.filter { range.contains($0) }, id: \.self) { label in
                             Text(timeTitle(label))
@@ -72,8 +83,10 @@ struct RestLengthRuler: View {
             HStack(spacing: 4) {
                 ForEach(presets.filter { range.contains($0) }, id: \.self) { preset in
                     Button {
-                        scrub(to: preset)
-                        commit(preset)
+                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                            scrub(to: preset)
+                            commit(preset)
+                        }
                     } label: {
                         Text(timeTitle(preset))
                             .font(.ironMetric(.footnote, weight: .bold))
@@ -98,7 +111,6 @@ struct RestLengthRuler: View {
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
         .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: displayedValue)
         .sensoryFeedback(.selection, trigger: stepFeedback)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Rest length")
@@ -114,18 +126,23 @@ struct RestLengthRuler: View {
     }
 
     private func xPosition(_ duration: TimeInterval, width: CGFloat) -> CGFloat {
-        let fraction = min(max((duration - range.lowerBound) / max(range.upperBound - range.lowerBound, 1), 0), 1)
-        return 14 + fraction * max(width - 28, 0)
+        scale.position(for: duration, width: width)
     }
 
     private func scrub(at x: CGFloat) {
-        let fraction = min(max((x - 14) / max(rulerWidth - 28, 1), 0), 1)
-        scrub(to: range.lowerBound + fraction * (range.upperBound - range.lowerBound))
+        let proposed = scale.duration(at: x, width: rulerWidth)
+        // The marker follows the touch, without a spring chasing every event.
+        // The chosen duration and feedback still advance in 15-second steps.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) {
+            scrubbedPosition = proposed
+            scrub(to: proposed)
+        }
     }
 
     private func scrub(to proposed: TimeInterval) {
-        let snapped = range.lowerBound + ((proposed - range.lowerBound) / max(step, 1)).rounded() * max(step, 1)
-        let next = min(max(snapped, range.lowerBound), range.upperBound)
+        let next = scale.snapped(proposed)
         if next != displayedValue {
             stepFeedback += 1
             IronSoundPlayer.shared.play(.tick)
@@ -134,13 +151,17 @@ struct RestLengthRuler: View {
     }
 
     private func commit(_ duration: TimeInterval) {
-        value = duration
-        onCommit(duration)
-        scrubbedValue = nil
+        let selected = scale.snapped(duration)
+        value = selected
+        onCommit(selected)
+        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+            scrubbedValue = nil
+            scrubbedPosition = nil
+        }
     }
 
     private func timeTitle(_ duration: TimeInterval) -> String {
-        restTimerDurationFormatter.string(from: max(0, duration)) ?? "0:00"
+        Self.durationTitles[duration] ?? restTimerDurationFormatter.string(from: max(0, duration)) ?? "0:00"
     }
 
     private var spokenDuration: String {
@@ -148,5 +169,31 @@ struct RestLengthRuler: View {
         let minutes = seconds / 60
         let remainder = seconds % 60
         return "\(minutes) \(minutes == 1 ? "minute" : "minutes") \(remainder) \(remainder == 1 ? "second" : "seconds")"
+    }
+}
+
+/// Geometry and snapping are independent: a continuous pointer can track a touch
+/// while the selected timer value remains discrete and is committed on release.
+struct RestLengthRulerScale {
+    let range: ClosedRange<TimeInterval>
+    let step: TimeInterval
+    private let inset: CGFloat = 14
+
+    private var span: TimeInterval { max(range.upperBound - range.lowerBound, 1) }
+    private var increment: TimeInterval { step.isFinite ? max(step, 1) : 1 }
+
+    func duration(at x: CGFloat, width: CGFloat) -> TimeInterval {
+        let fraction = min(max((x - inset) / max(width - 2 * inset, 1), 0), 1)
+        return min(range.upperBound, range.lowerBound + Double(fraction) * span)
+    }
+
+    func position(for duration: TimeInterval, width: CGFloat) -> CGFloat {
+        let fraction = min(max((duration - range.lowerBound) / span, 0), 1)
+        return inset + CGFloat(fraction) * max(width - 2 * inset, 0)
+    }
+
+    func snapped(_ duration: TimeInterval) -> TimeInterval {
+        let snapped = range.lowerBound + ((duration - range.lowerBound) / increment).rounded() * increment
+        return min(max(snapped, range.lowerBound), range.upperBound)
     }
 }

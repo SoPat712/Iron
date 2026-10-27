@@ -297,21 +297,35 @@ final class WorkoutLiveActivityManager {
         let completedSnapshot = snapshot(for: set, in: workoutExercise)
         let nextSnapshot = nextIncompleteSnapshot(after: set, in: workout)
         let now = Date()
-        let confirmationUntil = now.addingTimeInterval(confirmationDuration)
         let restTimerStart = RestTimerStore.shared.restTimerStart
         let restTimerEnd = RestTimerStore.shared.restTimerEnd
+        let pausedRemaining = self.pausedRestRemaining
+        let hasRunningRest = nextSnapshot != nil
+            && restTimerStart != nil
+            && restTimerEnd.map { $0 > now } == true
+        let hasPausedRest = nextSnapshot != nil
+            && pausedRemaining.map { $0.isFinite && $0 > 0 } == true
+        let hasActiveRest = hasRunningRest || hasPausedRest
+        let confirmationUntil: Date? = hasActiveRest ? nil : now.addingTimeInterval(confirmationDuration)
         let counts = setCounts(in: workout)
         let completedState = WorkoutActivityAttributes.ContentState(
-            phase: .setCompleted,
+            phase: hasActiveRest ? .resting : .setCompleted,
             displaySet: completedSnapshot,
             nextSet: nextSnapshot,
             confirmationUntil: confirmationUntil,
-            restTimerStart: restTimerStart,
-            restTimerEnd: restTimerEnd,
+            restTimerStart: hasRunningRest ? restTimerStart : nil,
+            restTimerEnd: hasRunningRest ? restTimerEnd : nil,
             completedSets: counts.completed,
             totalSets: counts.total,
-            pausedRestRemaining: pausedRestRemaining
+            pausedRestRemaining: hasPausedRest ? pausedRemaining : nil
         )
+
+        guard !hasActiveRest else {
+            cancelPendingConfirmationTransition(for: attributes.workoutID)
+            publish(attributes: attributes, state: completedState)
+            return
+        }
+        guard let confirmationUntil else { return }
 
         let transitionToken = replacePendingConfirmationTransition(
             for: attributes.workoutID,
@@ -325,7 +339,7 @@ final class WorkoutLiveActivityManager {
         )
     }
 
-    /// Preserve the 10-second confirmation phase while a timer is adjusted or arrives from Watch.
+    /// Reconcile timer changes immediately, including adjustments and Watch updates.
     func refreshRestTimer(for workout: Workout) {
         startOrUpdate(for: workout, preservingTransition: true)
     }
@@ -422,7 +436,9 @@ final class WorkoutLiveActivityManager {
         }()
 
         let next: (exercise: WorkoutExercise, set: WorkoutSet)?
-        if let anchor,
+        if let focused = supersetFocus(in: workout, among: flattened) {
+            next = focused
+        } else if let anchor,
            let anchorIndex = flattened.firstIndex(where: { $0.set.objectID == anchor.set.objectID }) {
             let after = flattened.dropFirst(anchorIndex + 1).first { !$0.set.isCompleted }
             next = after ?? flattened.first { !$0.set.isCompleted }
@@ -439,16 +455,18 @@ final class WorkoutLiveActivityManager {
         let pausedRemaining = pausedRestRemaining.flatMap {
             nextSnapshot != nil && $0.isFinite && $0 > 0 ? $0 : nil
         }
+        let hasActiveRest = hasRunningTimer || pausedRemaining != nil
+        let effectiveConfirmationUntil = hasActiveRest ? nil : confirmationUntil
 
         let phase: WorkoutActivityAttributes.Phase
-        if confirmationUntil != nil {
+        if hasActiveRest {
+            phase = .resting
+        } else if effectiveConfirmationUntil != nil {
             phase = .setCompleted
         } else if flattened.isEmpty {
             phase = .currentSet
         } else if nextSnapshot == nil {
             phase = .finished
-        } else if hasRunningTimer || pausedRemaining != nil {
-            phase = .resting
         } else {
             phase = .currentSet
         }
@@ -460,7 +478,7 @@ final class WorkoutLiveActivityManager {
             // the stable basis for finding the next set again after edits.
             displaySet: anchorSnapshot ?? nextSnapshot ?? fallbackSnapshot,
             nextSet: nextSnapshot,
-            confirmationUntil: confirmationUntil,
+            confirmationUntil: effectiveConfirmationUntil,
             restTimerStart: hasRunningTimer ? restTimerStart : nil,
             restTimerEnd: hasRunningTimer ? restTimerEnd : nil,
             completedSets: counts.completed,
@@ -497,15 +515,22 @@ final class WorkoutLiveActivityManager {
             staleDate: staleDate(for: state),
             relevanceScore: 100
         )
+        let artworkFileNames = [
+            state.displaySet?.artworkFileName,
+            state.nextSet?.artworkFileName
+        ].compactMap { $0 }
 
         enqueueActivityOperation {
-            await ExerciseMediaStore.shared.prepareLiveActivityArtwork(
-                fileNames: [state.displaySet?.artworkFileName, state.nextSet?.artworkFileName].compactMap { $0 }
-            )
             if let activity = self.activity(for: attributes.workoutID) {
                 await activity.update(content)
+                // Artwork must not serialize the next timer tap behind the IO queue.
+                Task(priority: .utility) {
+                    await ExerciseMediaStore.shared.prepareLiveActivityArtwork(fileNames: artworkFileNames)
+                }
                 return
             }
+
+            await ExerciseMediaStore.shared.prepareLiveActivityArtwork(fileNames: artworkFileNames)
 
             guard ActivityAuthorizationInfo().areActivitiesEnabled else { return }
             let canCreateActivity = await MainActor.run {
@@ -783,6 +808,17 @@ final class WorkoutLiveActivityManager {
 
     /// ActivityKit requests, updates, and endings must retain call order. In particular,
     /// a workout can be cancelled before the asynchronous initial request has returned.
+    /// Interactive intents return only after their timer state has reached ActivityKit.
+    func waitForPendingUpdate() async {
+        await pendingActivityOperation()?.value
+    }
+
+    private func pendingActivityOperation() -> Task<Void, Never>? {
+        activityOperationLock.lock()
+        defer { activityOperationLock.unlock() }
+        return activityOperation
+    }
+
     private func enqueueActivityOperation(
         _ operation: @escaping () async -> Void
     ) {
@@ -837,7 +873,8 @@ final class WorkoutLiveActivityManager {
             setNumber: setIndex + 1,
             setCount: max(sets.count, 1),
             result: set.resultTitle(weightUnit: SettingsStore.shared.weightUnit),
-            artworkFileName: artworkFileName
+            artworkFileName: artworkFileName,
+            completedSetCount: sets.filter(\.isCompleted).count
         )
     }
 
@@ -846,6 +883,9 @@ final class WorkoutLiveActivityManager {
         in workout: Workout
     ) -> WorkoutActivityAttributes.SetSnapshot? {
         let flattened = flattenedSets(in: workout)
+        if let focused = supersetFocus(in: workout, among: flattened) {
+            return snapshot(for: focused.set, in: focused.exercise)
+        }
         guard let completedIndex = flattened.firstIndex(where: { $0.set.objectID == set.objectID }) else {
             return flattened.first(where: { !$0.set.isCompleted }).map {
                 snapshot(for: $0.set, in: $0.exercise)
@@ -855,6 +895,17 @@ final class WorkoutLiveActivityManager {
         let after = flattened.dropFirst(completedIndex + 1).first(where: { !$0.set.isCompleted })
         let next = after ?? flattened.first(where: { !$0.set.isCompleted })
         return next.map { snapshot(for: $0.set, in: $0.exercise) }
+    }
+
+    /// Superset rounds must name the same next set in the logger and activity.
+    /// Ordinary workouts retain their existing completed-anchor reconciliation.
+    private func supersetFocus(
+        in workout: Workout,
+        among sets: [(exercise: WorkoutExercise, set: WorkoutSet)]
+    ) -> (exercise: WorkoutExercise, set: WorkoutSet)? {
+        guard sets.contains(where: { $0.exercise.supersetUuid != nil }),
+              let focus = WorkoutSetFocus.next(in: workout) else { return nil }
+        return sets.first { $0.set.objectID == focus.setID }
     }
 
     private func flattenedSets(
@@ -881,7 +932,7 @@ final class WorkoutLiveActivityManager {
 @available(iOS 17.0, *)
 @MainActor
 enum WorkoutLiveActivityIntentHandler {
-    static func completeSet(workoutID: String, setID: String) {
+    static func completeSet(workoutID: String, setID: String) async {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID),
               let (workoutExercise, set) = matchingSet(setID: setID, in: workout),
               !set.isCompleted,
@@ -910,6 +961,7 @@ enum WorkoutLiveActivityIntentHandler {
             in: workoutExercise,
             workout: workout
         )
+        await WorkoutLiveActivityManager.shared.waitForPendingUpdate()
     }
 
     /// Mutates and saves only the fields owned by the completion action. A
@@ -939,23 +991,26 @@ enum WorkoutLiveActivityIntentHandler {
         }
     }
 
-    static func adjustRestTimer(workoutID: String, by interval: TimeInterval) {
+    static func adjustRestTimer(workoutID: String, by interval: TimeInterval) async {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID) else { return }
         RestTimerStore.shared.adjust(by: interval)
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+        await WorkoutLiveActivityManager.shared.waitForPendingUpdate()
     }
 
-    static func skipRestTimer(workoutID: String) {
+    static func skipRestTimer(workoutID: String) async {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID) else { return }
         RestTimerStore.shared.cancel()
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+        await WorkoutLiveActivityManager.shared.waitForPendingUpdate()
     }
 
-    static func resumeRestTimer(workoutID: String) {
+    static func resumeRestTimer(workoutID: String) async {
         guard let workout = matchingCurrentWorkout(workoutID: workoutID),
               RestTimerStore.shared.isPaused else { return }
         RestTimerStore.shared.resume()
         WorkoutLiveActivityManager.shared.refreshRestTimer(for: workout)
+        await WorkoutLiveActivityManager.shared.waitForPendingUpdate()
     }
 
     private static func matchingSet(

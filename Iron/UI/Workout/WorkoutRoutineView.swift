@@ -181,6 +181,9 @@ struct WorkoutRoutineView: View {
                     } actions: {
                         Button("Add Exercise") { showExerciseSelector = true }
                             .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .listRowBackground(Color.clear)
                 }
@@ -273,6 +276,7 @@ struct WorkoutRoutineView: View {
 
 private struct WorkoutRoutineExerciseSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
 
     @ObservedObject var routineExercise: WorkoutRoutineExercise
@@ -344,10 +348,12 @@ private struct WorkoutRoutineExerciseSection: View {
                         ExerciseDiagramThumbnail(exercise: exercise, size: 40)
                         VStack(alignment: .leading, spacing: 2) {
                             Text(exercise.title)
-                                .lineLimit(2)
+                                .font(.headline)
+                                .foregroundStyle(IronTheme.primaryText)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
                             Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                                .font(.subheadline)
+                                .foregroundStyle(IronTheme.secondaryText)
                         }
                     }
                 }
@@ -447,6 +453,7 @@ private struct WorkoutRoutineExerciseSection: View {
 
 private struct WorkoutRoutineSetRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
 
     @ObservedObject var routineSet: WorkoutRoutineSet
@@ -606,69 +613,134 @@ private struct WorkoutRoutineSetRow: View {
         }
     }
 
-    var body: some View {
-        HStack(spacing: 12) {
-            Text(setLabel)
-                .font(.ironMetric(.subheadline, weight: .semibold))
-                .foregroundStyle(IronTheme.metricSets)
-                .lineLimit(1)
+    private var usesAccessibilityLayout: Bool {
+        dynamicTypeSize.isAccessibilitySize
+    }
 
-            Spacer(minLength: 8)
+    private var setLabelView: some View {
+        Text(setLabel)
+            .font(.ironMetric(.subheadline, weight: .semibold))
+            .foregroundStyle(IronTheme.metricSets)
+            .lineLimit(1)
+    }
 
-            if usesDuration {
-                Button {
-                    showingDurationPicker = true
-                } label: {
-                    Text(restTimerDurationFormatter.string(from: routineSet.durationValue ?? 60) ?? "1:00")
-                        .font(.ironMetric(.body, weight: .semibold))
-                        .foregroundStyle(IronTheme.metricTime)
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: routineSet.durationValue)
-                }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.capsule)
-                .controlSize(.small)
-                .accessibilityLabel("Set duration")
+    private var weightField: some View {
+        TextField("—", text: weightText, onEditingChanged: { isEditing in
+            if isEditing {
+                weightInput = displayedWeightTitle
             } else {
-                TextField("—", text: weightText, onEditingChanged: { isEditing in
-                    if isEditing {
-                        weightInput = displayedWeightTitle
-                    } else {
-                        weightInput = nil
-                        onSave()
-                    }
-                })
+                weightInput = nil
+                onSave()
+            }
+        })
+        .font(.ironMetric(.body, weight: .semibold))
+        .foregroundStyle(IronTheme.metricVolume)
+        .keyboardType(.decimalPad)
+        .focused($focusedField, equals: .weight)
+        .multilineTextAlignment(.trailing)
+        .frame(width: usesAccessibilityLayout ? nil : 62)
+        .frame(maxWidth: usesAccessibilityLayout ? .infinity : nil)
+        .frame(minHeight: IronTheme.controlHeight)
+        .accessibilityLabel("Weight")
+    }
+
+    private var repetitionsField: some View {
+        TextField("—", text: repetitionsText, onEditingChanged: { isEditing in
+            if isEditing {
+                repetitionsInput = repetitionsTitle
+            } else {
+                repetitionsInput = nil
+                onSave()
+            }
+        })
+        .font(.ironMetric(.body, weight: .semibold))
+        .foregroundStyle(IronTheme.metricSets)
+        .keyboardType(.numberPad)
+        .focused($focusedField, equals: .repetitions)
+        .multilineTextAlignment(.trailing)
+        .frame(width: usesAccessibilityLayout ? nil : 46)
+        .frame(maxWidth: usesAccessibilityLayout ? .infinity : nil)
+        .frame(minHeight: IronTheme.controlHeight)
+        .accessibilityLabel("Repetitions")
+    }
+
+    private var weightUnitLabel: some View {
+        Text(settingsStore.weightUnit.unit.symbol)
+            .font(.caption)
+            .foregroundStyle(IronTheme.secondaryText)
+    }
+
+    private var repetitionsUnitLabel: some View {
+        Text("reps")
+            .font(.caption)
+            .foregroundStyle(IronTheme.secondaryText)
+    }
+
+    private var durationControl: some View {
+        Button {
+            showingDurationPicker = true
+        } label: {
+            Text(restTimerDurationFormatter.string(from: routineSet.durationValue ?? 60) ?? "1:00")
                 .font(.ironMetric(.body, weight: .semibold))
-                .foregroundStyle(IronTheme.metricVolume)
-                .keyboardType(.decimalPad)
-                .focused($focusedField, equals: .weight)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 62)
+                .foregroundStyle(IronTheme.metricTime)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: routineSet.durationValue)
+        }
+        .buttonStyle(.bordered)
+        .buttonBorderShape(.capsule)
+        .controlSize(.small)
+        .frame(minHeight: IronTheme.controlHeight)
+        .accessibilityLabel("Set duration")
+    }
 
-                Text(settingsStore.weightUnit.unit.symbol)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-
-                TextField("—", text: repetitionsText, onEditingChanged: { isEditing in
-                    if isEditing {
-                        repetitionsInput = repetitionsTitle
-                    } else {
-                        repetitionsInput = nil
-                        onSave()
+    @ViewBuilder
+    private var setValueControls: some View {
+        if usesDuration {
+            durationControl
+        } else if usesAccessibilityLayout {
+            VStack(alignment: .leading, spacing: 8) {
+                LabeledContent("Weight") {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        weightField
+                        weightUnitLabel
                     }
-                })
-                .font(.ironMetric(.body, weight: .semibold))
-                .foregroundStyle(IronTheme.metricSets)
-                .keyboardType(.numberPad)
-                .focused($focusedField, equals: .repetitions)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 46)
-
-                Text("reps")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+                LabeledContent("Repetitions") {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        repetitionsField
+                        repetitionsUnitLabel
+                    }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                }
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            HStack(spacing: 6) {
+                weightField
+                weightUnitLabel
+                repetitionsField
+                repetitionsUnitLabel
             }
         }
+    }
+
+    var body: some View {
+        Group {
+            if usesAccessibilityLayout {
+                VStack(alignment: .leading, spacing: 8) {
+                    setLabelView
+                    setValueControls
+                }
+            } else {
+                HStack(spacing: 12) {
+                    setLabelView
+                    Spacer(minLength: 8)
+                    setValueControls
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .contextMenu {
             Picker("Set Type", selection: Binding(
                 get: { routineSet.tagValue },

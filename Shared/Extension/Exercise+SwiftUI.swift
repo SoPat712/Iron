@@ -62,7 +62,7 @@ extension Exercise {
         case "cardio":
             return Image(systemName: "heart.circle.fill")
         default:
-            return Image(systemName: "o.circle.fill")
+            return Image(systemName: "dumbbell.fill")
         }
     }
 }

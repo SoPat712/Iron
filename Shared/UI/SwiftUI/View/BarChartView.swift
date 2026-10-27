@@ -42,7 +42,7 @@ struct BarChartView: View {
                 if showGrid {
                     Text(String(maxValue))
                         .padding(2)
-                        .font(.caption)
+                        .font(.ironMetric(.caption))
                         .foregroundColor(.secondary)
                 }
             }

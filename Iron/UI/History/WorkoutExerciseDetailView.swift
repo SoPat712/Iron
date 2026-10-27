@@ -206,8 +206,12 @@ struct WorkoutExerciseDetailView: View {
                 }
             }
 
-            LabeledContent("Sets", value: "\(workoutExercise.numberOfCompletedSets ?? 0) of \(workoutSets.count)")
-            LabeledContent(sessionWorkLabel.capitalized, value: sessionWorkValue)
+            LabeledContent("Sets") {
+                Text("\(workoutExercise.numberOfCompletedSets ?? 0) of \(workoutSets.count)").font(.ironMetric(.body, weight: .semibold))
+            }
+            LabeledContent(sessionWorkLabel.capitalized) {
+                Text(sessionWorkValue).font(.ironMetric(.body, weight: .semibold))
+            }
         } header: {
             Text("Overview")
         } footer: {
@@ -337,15 +341,13 @@ struct WorkoutExerciseDetailView: View {
                 }
                 Spacer(minLength: 4)
                 Text(previousSessionResult(session))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .monospacedDigit()
+                    .font(.ironMetric(.caption, weight: .semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
             }
 
             Text(sets.isEmpty ? "No sets" : summary)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .monospacedDigit()
+                .font(.ironMetric(.caption, weight: .semibold))
+                .foregroundStyle(IronTheme.secondaryText)
                 .lineLimit(2)
 
             if let comment = session.comment, !comment.isEmpty {

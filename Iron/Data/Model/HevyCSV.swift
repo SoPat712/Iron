@@ -45,15 +45,20 @@ struct HevyCSVImportResult: Identifiable {
     let skippedDuplicateWorkouts: Int
     let skippedDuplicateMeasurements: Int
     let skippedRows: Int
+    var removedWorkouts: Int = 0
 
     var title: String {
-        importedWorkouts > 0 || importedMeasurements > 0 || updatedMeasurements > 0
+        if removedWorkouts > 0 && importedWorkouts == 0 { return "Imported Workouts Removed" }
+        return importedWorkouts > 0 || importedMeasurements > 0 || updatedMeasurements > 0
             ? "Import Complete"
             : "Nothing New to Import"
     }
 
     var detail: String {
         var lines = [String]()
+        if removedWorkouts > 0 {
+            lines.append("\(removedWorkouts) imported workout\(removedWorkouts == 1 ? "" : "s") removed")
+        }
         if importedWorkouts > 0 || importedSets > 0 || skippedDuplicateWorkouts > 0 {
             lines.append("\(importedWorkouts) workout\(importedWorkouts == 1 ? "" : "s") imported")
             lines.append("\(importedSets) set\(importedSets == 1 ? "" : "s") imported")
@@ -88,7 +93,8 @@ struct HevyCSVImportResult: Identifiable {
             createdExercises: createdExercises + other.createdExercises,
             skippedDuplicateWorkouts: skippedDuplicateWorkouts + other.skippedDuplicateWorkouts,
             skippedDuplicateMeasurements: skippedDuplicateMeasurements + other.skippedDuplicateMeasurements,
-            skippedRows: skippedRows + other.skippedRows
+            skippedRows: skippedRows + other.skippedRows,
+            removedWorkouts: removedWorkouts + other.removedWorkouts
         )
     }
 }
@@ -96,6 +102,7 @@ struct HevyCSVImportResult: Identifiable {
 struct HevyCSVImportOutcome: Identifiable {
     let id = UUID()
     let result: Result<HevyCSVImportResult, Error>
+    var isRemoval = false
 }
 
 enum HevyCSVError: LocalizedError {
@@ -105,11 +112,15 @@ enum HevyCSVError: LocalizedError {
     case noWorkoutRows
     case couldNotCreateExercise(String)
     case couldNotSaveMeasurements
+    case replacementRequiresWorkouts
+    case replacementHasInvalidRows
+    case operationInProgress
+    case storageUnavailable
 
     var errorDescription: String? {
         switch self {
         case .unreadableText:
-            return "Iron could not read this file as UTF-8 CSV."
+            return "Light could not read this file as UTF-8 CSV."
         case .malformedCSV:
             return "The CSV contains an unfinished quoted field."
         case .missingColumns(let columns):
@@ -117,9 +128,17 @@ enum HevyCSVError: LocalizedError {
         case .noWorkoutRows:
             return "The Hevy CSV does not contain any valid workout rows."
         case .couldNotCreateExercise(let title):
-            return "Iron could not create the missing exercise “\(title)”."
+            return "Light could not create the missing exercise “\(title)”."
         case .couldNotSaveMeasurements:
-            return "Iron could not save the imported measurements."
+            return "Light could not save the imported measurements."
+        case .replacementRequiresWorkouts:
+            return "Choose one Hevy workout CSV to replace imported workouts. Measurements and Light workouts are kept."
+        case .replacementHasInvalidRows:
+            return "The selected export contains invalid workout rows. Your existing imported workouts have not been changed. Choose a complete, valid Hevy workout export."
+        case .operationInProgress:
+            return "Another imported-data operation is still running."
+        case .storageUnavailable:
+            return "Light could not open the workout store. Your imported workouts have not been changed."
         }
     }
 }
@@ -131,12 +150,53 @@ struct HevyCSVImportTransactionError: LocalizedError {
     var errorDescription: String? {
         guard !rollbackErrors.isEmpty else { return primaryError.localizedDescription }
         return "The import failed: \(primaryError.localizedDescription) "
-            + "Iron also could not fully restore its prior data: "
+            + "Light also could not fully restore its prior data: "
             + rollbackErrors.map(\.localizedDescription).joined(separator: "; ")
     }
 }
 
+/// A deliberately narrow allowlist. Direct Core Data deletion has no Health side
+/// effect: these workouts were never eligible for export, and no Health delete is called.
+enum HevyImportedWorkouts {
+    static var predicate: NSPredicate { NSPredicate(format: "importSource == %@", "hevy") }
+
+    static func fetch(in context: NSManagedObjectContext) throws -> [Workout] {
+        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
+        request.predicate = predicate
+        return try context.fetch(request)
+    }
+
+    static func delete(_ workouts: [Workout], in context: NSManagedObjectContext) {
+        for workout in workouts {
+            precondition(workout.importSource == "hevy")
+            assert(workout.healthExportEligibility == .imported)
+            context.delete(workout)
+        }
+    }
+
+    static func remove(in context: NSManagedObjectContext, save: (() throws -> Void)? = nil) throws -> Int {
+        try context.performAndWait { context in
+            let workouts = try fetch(in: context)
+            return try context.persistMutation(save: { try save?() ?? context.save() }) {
+                delete(workouts, in: context)
+                return workouts.count
+            }
+        }
+    }
+}
+
 enum HevyCSV {
+    /// A background import hands its committed publication back to the main
+    /// actor before success is shown. Access is sequential across the await.
+    final class Publication: @unchecked Sendable {
+        fileprivate var action: (() -> Void)?
+
+        @MainActor func publish() {
+            action?()
+            action = nil
+        }
+    }
+
     private static let requiredColumns = ["title", "start_time", "exercise_title", "set_index"]
     private static let inputDateFormatters: [DateFormatter] = {
         ["d MMM yyyy, HH:mm:ss", "dd MMM yyyy, HH:mm:ss", "d MMM yyyy, HH:mm", "dd MMM yyyy, HH:mm"].map { format in
@@ -161,6 +221,15 @@ enum HevyCSV {
     private struct WorkoutKey: Hashable {
         let startSecond: TimeInterval
         let normalizedTitle: String
+    }
+
+    private struct ImportedWorkoutKey: Hashable {
+        struct ExerciseFingerprint: Hashable {
+            let identity: String
+            let sets: [String]
+        }
+        let startSecond: TimeInterval
+        let exercises: [ExerciseFingerprint]
     }
 
     private struct WorkoutGroup {
@@ -198,8 +267,17 @@ enum HevyCSV {
         private var tokens: [[String]: Exercise] = [:]
 
         init(_ exercises: [Exercise]) {
+            // An existing imported custom title owns its identity. A new catalog
+            // alias must not redirect future imports away from that history UUID.
+            let titlePriority = exercises.filter(\.isCustom) + exercises.filter { !$0.isCustom }
+            for exercise in titlePriority {
+                let normalized = HevyCSV.normalizedName(exercise.title)
+                if exact[normalized] == nil { exact[normalized] = exercise }
+                let nameTokens = HevyCSV.normalizedTokens(exercise.title)
+                if tokens[nameTokens] == nil { tokens[nameTokens] = exercise }
+            }
             for exercise in exercises {
-                for name in [exercise.title] + exercise.alias {
+                for name in exercise.alias {
                     let normalized = HevyCSV.normalizedName(name)
                     if exact[normalized] == nil { exact[normalized] = exercise }
                     let nameTokens = HevyCSV.normalizedTokens(name)
@@ -303,9 +381,17 @@ enum HevyCSV {
         into context: NSManagedObjectContext,
         exerciseStore: ExerciseStore,
         bodyMetricsStore: BodyMetricsStore = .shared,
+        replacingImportedWorkouts: Bool = false,
+        publication: Publication? = nil,
         save: (() throws -> Void)? = nil
     ) throws -> HevyCSVImportResult {
         let documents = prepared.documents
+        if replacingImportedWorkouts {
+            guard documents.count == 1, case .workouts(let document) = documents[0], prepared.workoutCount > 0 else {
+                throw HevyCSVError.replacementRequiresWorkouts
+            }
+            guard document.skippedRows == 0 else { throw HevyCSVError.replacementHasInvalidRows }
+        }
         let allGroups = documents.flatMap { document -> [WorkoutGroup] in
             guard case .workouts(let workoutDocument) = document else { return [] }
             return workoutGroups(from: workoutDocument.records)
@@ -330,23 +416,30 @@ enum HevyCSV {
         return try context.performAndWait { context in
             let request: NSFetchRequest<Workout> = Workout.fetchRequest()
             request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(value: true))
-            let existingWorkouts = try context.fetch(request)
+            let workoutsToReplace = replacingImportedWorkouts ? try HevyImportedWorkouts.fetch(in: context) : []
+            let replacedIDs = Set(workoutsToReplace.map(\.objectID))
+            let existingWorkouts = try context.fetch(request).filter { !replacedIDs.contains($0.objectID) }
+            let existingMatcher = ExerciseMatcher(exerciseStore.exercises)
             var knownKeys = Set(existingWorkouts.map {
                 workoutKey(start: $0.safeStart, title: $0.displayTitle(in: exerciseStore.exercises))
+            })
+            var importedKeys = Set(existingWorkouts.filter { $0.importSource == "hevy" }.compactMap {
+                importedWorkoutKey($0)
             })
             var acceptedGroups = [WorkoutGroup]()
             var skippedDuplicates = 0
             for group in allGroups {
-                guard !knownKeys.contains(group.key) else {
+                let fingerprint = importedWorkoutKey(group, matcher: existingMatcher)
+                guard !knownKeys.contains(group.key), !importedKeys.contains(fingerprint) else {
                     skippedDuplicates += 1
                     continue
                 }
                 knownKeys.insert(group.key)
+                importedKeys.insert(fingerprint)
                 acceptedGroups.append(group)
             }
 
             // Resolve each distinct exercise title once, not once per set row.
-            let existingMatcher = ExerciseMatcher(exerciseStore.exercises)
             var missingDefinitions = [ExerciseStore.CustomExerciseDefinition]()
             var seenTitles = Set<String>()
             var plannedNames = Set<String>()
@@ -404,6 +497,7 @@ enum HevyCSV {
                         else if context.hasChanges { try context.save() }
                     },
                     mutation: {
+                        HevyImportedWorkouts.delete(workoutsToReplace, in: context)
                         for group in acceptedGroups {
                             guard let first = group.records.first else { continue }
                             let workout = Workout.create(context: context)
@@ -447,9 +541,14 @@ enum HevyCSV {
                     }
                 )
 
-                if let stagedExercises { exerciseStore.publish(stagedExercises) }
-                if let stagedMeasurements { bodyMetricsStore.publish(stagedMeasurements) }
-                return HevyCSVImportResult(
+                let publish = {
+                    if let stagedExercises { exerciseStore.publish(stagedExercises) }
+                    if let stagedMeasurements { bodyMetricsStore.publish(stagedMeasurements) }
+                }
+                if let publication { publication.action = publish }
+                else if Thread.isMainThread { publish() }
+                else { DispatchQueue.main.async(execute: publish) }
+                var result = HevyCSVImportResult(
                     importedWorkouts: acceptedGroups.count,
                     importedSets: importedSets,
                     importedMeasurements: measurementPlan?.inserted ?? 0,
@@ -459,6 +558,8 @@ enum HevyCSV {
                     skippedDuplicateMeasurements: measurementPlan?.duplicates ?? 0,
                     skippedRows: skippedRows
                 )
+                result.removedWorkouts = workoutsToReplace.count
+                return result
             } catch {
                 if measurementsWereWritten, let stagedMeasurements {
                     bodyMetricsStore.rollback(stagedMeasurements)
@@ -910,6 +1011,48 @@ enum HevyCSV {
         )
     }
 
+    /// Title and notes are intentionally absent: renaming an imported session
+    /// must not make a second copy. Keep the start second so identical sessions
+    /// on different days still import independently.
+    private static func importedWorkoutKey(_ group: WorkoutGroup, matcher: ExerciseMatcher) -> ImportedWorkoutKey {
+        let exercises = splitExerciseRuns(group.records).map { run in
+            let title = run.records[0].exerciseTitle
+            return ImportedWorkoutKey.ExerciseFingerprint(
+                identity: matcher.match(title)?.uuid.uuidString ?? normalizedTokens(title).joined(separator: " "),
+                sets: run.records.sorted(by: setOrder).map {
+                    setFingerprint(weight: max($0.weightKilograms ?? 0, 0),
+                                   reps: Int16(clamping: $0.repetitions), duration: $0.durationSeconds,
+                                   distance: $0.distanceMeters, rpe: $0.rpe, tag: workoutSetTag(for: $0.setType))
+                }
+            )
+        }
+        return ImportedWorkoutKey(startSecond: group.key.startSecond, exercises: exercises)
+    }
+
+    private static func importedWorkoutKey(_ workout: Workout) -> ImportedWorkoutKey? {
+        let exercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
+        guard !exercises.isEmpty else { return nil }
+        var fingerprints = [ImportedWorkoutKey.ExerciseFingerprint]()
+        for exercise in exercises {
+            guard let identity = exercise.exerciseUuid else { return nil }
+            let sets = exercise.workoutSets?.array as? [WorkoutSet] ?? []
+            guard !sets.isEmpty, sets.allSatisfy(\.isCompleted) else { return nil }
+            fingerprints.append(.init(identity: identity.uuidString, sets: sets.map {
+                setFingerprint(weight: $0.weightValue, reps: $0.repetitionsValue, duration: $0.durationValue,
+                               distance: $0.distanceValue, rpe: $0.rpeValue, tag: $0.tagValue)
+            }))
+        }
+        return ImportedWorkoutKey(startSecond: workout.safeStart.timeIntervalSince1970.rounded(), exercises: fingerprints)
+    }
+
+    private static func setFingerprint(
+        weight: Double, reps: Int16, duration: TimeInterval?, distance: Double?, rpe: Double?, tag: WorkoutSetTag?
+    ) -> String {
+        let effort = rpe.flatMap { RPE.allowedValues.contains($0) ? $0 : nil } ?? 0
+        return [formatNumber(weight), String(reps), formatNumber(max(duration ?? 0, 0)),
+                formatNumber(max(distance ?? 0, 0)), formatNumber(effort), tag?.rawValue ?? "normal"].joined(separator: "|")
+    }
+
     private static func normalizedName(_ value: String) -> String {
         value
             .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
@@ -1032,7 +1175,7 @@ struct HevyCSVImportResultSheet: View {
 
     var body: some View {
         IronStatusSheet(
-            headerTitle: "CSV Import",
+            headerTitle: outcome.isRemoval ? "Imported Data" : "CSV Import",
             title: title,
             message: detail,
             systemImage: isSuccess ? "checkmark.circle.fill" : "exclamationmark.triangle.fill",
@@ -1048,7 +1191,7 @@ struct HevyCSVImportResultSheet: View {
     private var title: String {
         switch outcome.result {
         case .success(let result): return result.title
-        case .failure: return "Import Failed"
+        case .failure: return outcome.isRemoval ? "Removal Failed" : "Import Failed"
         }
     }
 
@@ -1067,6 +1210,8 @@ final class HevyImportController: ObservableObject {
     enum Phase: Equatable {
         case reading(files: Int)
         case saving(workouts: Int)
+        case removing(workouts: Int)
+        case replacing(workouts: Int)
     }
 
     static let shared = HevyImportController()
@@ -1078,6 +1223,7 @@ final class HevyImportController: ObservableObject {
         into context: NSManagedObjectContext,
         exerciseStore: ExerciseStore
     ) async -> HevyCSVImportOutcome {
+        guard phase == nil else { return .init(result: .failure(HevyCSVError.operationInProgress)) }
         phase = .reading(files: documents.count)
         defer { phase = nil }
         do {
@@ -1093,6 +1239,76 @@ final class HevyImportController: ObservableObject {
             return HevyCSVImportOutcome(result: .failure(error))
         }
     }
+
+    func replace(_ document: Data, into context: NSManagedObjectContext, exerciseStore: ExerciseStore) async -> HevyCSVImportOutcome {
+        guard phase == nil else { return .init(result: .failure(HevyCSVError.operationInProgress)) }
+        phase = .reading(files: 1)
+        defer { phase = nil }
+        do {
+            let prepared = try await Task.detached(priority: .userInitiated) {
+                try HevyCSV.prepareImport([document])
+            }.value
+            phase = .replacing(workouts: prepared.workoutCount)
+            let publication = HevyCSV.Publication()
+            let result = try await backgroundOperation(into: context) { background, save in
+                try HevyCSV.importData(prepared, into: background, exerciseStore: exerciseStore,
+                                       replacingImportedWorkouts: true, publication: publication, save: save)
+            }
+            publication.publish()
+            return .init(result: .success(result))
+        } catch {
+            return .init(result: .failure(error))
+        }
+    }
+
+    func remove(count: Int, from context: NSManagedObjectContext) async -> HevyCSVImportOutcome {
+        guard phase == nil else { return .init(result: .failure(HevyCSVError.operationInProgress), isRemoval: true) }
+        phase = .removing(workouts: count)
+        defer { phase = nil }
+        do {
+            let result = try await backgroundOperation(into: context) { background, save in
+                let removed = try HevyImportedWorkouts.remove(in: background, save: save)
+                return HevyCSVImportResult(importedWorkouts: 0, importedSets: 0, importedMeasurements: 0,
+                                           updatedMeasurements: 0, createdExercises: 0, skippedDuplicateWorkouts: 0,
+                                           skippedDuplicateMeasurements: 0, skippedRows: 0, removedWorkouts: removed)
+            }
+            return .init(result: .success(result), isRemoval: true)
+        } catch {
+            return .init(result: .failure(error), isRemoval: true)
+        }
+    }
+
+    /// Work on a sibling context, then merge IDs into the caller's context. A
+    /// failed save never reaches the UI, and unrelated pending edits stay intact.
+    private func backgroundOperation(
+        into context: NSManagedObjectContext,
+        operation: @escaping (NSManagedObjectContext, @escaping () throws -> Void) throws -> HevyCSVImportResult
+    ) async throws -> HevyCSVImportResult {
+        guard let coordinator = context.persistentStoreCoordinator else { throw HevyCSVError.storageUnavailable }
+        let background = NSManagedObjectContext(concurrencyType: .privateQueueConcurrencyType)
+        background.persistentStoreCoordinator = coordinator
+        let (result, changes) = try await background.perform {
+            var changes = [AnyHashable: Any]()
+            do {
+                let result = try operation(background) {
+                    background.processPendingChanges()
+                    try background.obtainPermanentIDs(for: Array(background.insertedObjects))
+                    changes = [NSInsertedObjectsKey: background.insertedObjects.map(\.objectID),
+                               NSUpdatedObjectsKey: background.updatedObjects.map(\.objectID),
+                               NSDeletedObjectsKey: background.deletedObjects.map(\.objectID)]
+                    if background.hasChanges { try background.save() }
+                }
+                return (result, changes)
+            } catch {
+                background.rollback()
+                throw error
+            }
+        }
+        await context.perform {
+            NSManagedObjectContext.mergeChanges(fromRemoteContextSave: changes, into: [context])
+        }
+        return result
+    }
 }
 
 /// Full-screen progress card shown while an import runs; it also blocks touches
@@ -1106,6 +1322,10 @@ struct HevyImportProgressOverlay: View {
             return "Reading \(files) file\(files == 1 ? "" : "s")…"
         case .saving(let workouts):
             return "Saving \(workouts.formatted()) workout\(workouts == 1 ? "" : "s")…"
+        case .removing(let workouts):
+            return "Removing \(workouts.formatted()) imported workout\(workouts == 1 ? "" : "s")…"
+        case .replacing(let workouts):
+            return "Replacing imported history with \(workouts.formatted()) workout\(workouts == 1 ? "" : "s")…"
         }
     }
 
@@ -1117,13 +1337,13 @@ struct HevyImportProgressOverlay: View {
             VStack(spacing: 12) {
                 ProgressView()
                     .controlSize(.large)
-                Text("Importing from Hevy")
+                Text(title)
                     .font(.headline)
                 Text(detail)
                     .font(.subheadline)
                     .foregroundStyle(IronTheme.secondaryText)
                     .contentTransition(.opacity)
-                Text("Keep Iron open until this finishes.")
+                Text("Keep Light open until this finishes.")
                     .font(.footnote)
                     .foregroundStyle(IronTheme.secondaryText)
             }
@@ -1134,5 +1354,13 @@ struct HevyImportProgressOverlay: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.updatesFrequently)
+    }
+
+    private var title: String {
+        switch phase {
+        case .removing: return "Removing Imported Workouts"
+        case .replacing: return "Replacing Hevy Workouts"
+        case .reading, .saving: return "Importing from Hevy"
+        }
     }
 }

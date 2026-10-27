@@ -187,7 +187,7 @@ struct WorkoutDetailView: View {
         } message: {
             Text(workout.healthExportEligibility != .eligible
                 ? "This removes the workout and every logged set from Iron."
-                : "This removes the workout, every logged set, and Iron's matching Apple Health workout.")
+                : "This removes the workout, every logged set, and Light's matching Apple Health workout.")
         }
         .sheet(isPresented: $showingRepeatBlocked) {
             WorkoutRepeatBlockedSheet()
@@ -214,12 +214,13 @@ struct WorkoutDetailView: View {
         Section {
             LabeledContent {
                 Text(Workout.durationFormatter.string(from: workout.safeDuration) ?? "—")
-                    .font(.ironMetric(.body))
+                    .font(.ironMetric(.body, weight: .semibold))
+                    .foregroundStyle(IronTheme.metricTime)
             } label: {
                 Text("Duration")
-                    .fontWeight(.semibold)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
             }
-            .foregroundStyle(IronTheme.metricTime)
             .ironStaggeredEntrance(index: 0)
 
             LabeledContent {
@@ -227,28 +228,28 @@ struct WorkoutDetailView: View {
                     weight: workout.totalCompletedWeight ?? 0,
                     from: .metric, to: settingsStore.weightUnit
                 )
-                HStack(alignment: .firstTextBaseline, spacing: 3) {
-                    Text(settingsStore.weightUnit.displayNumberFormatter.string(from: volume as NSNumber) ?? "—")
-                        .font(.ironMetric(.body))
-                    Text(settingsStore.weightUnit.unit.symbol)
-                        .font(.caption)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
+                IronMetricValue(
+                    value: settingsStore.weightUnit.displayNumberFormatter.string(from: volume as NSNumber) ?? "—",
+                    unit: settingsStore.weightUnit.unit.symbol,
+                    style: .body, weight: .semibold, unitStyle: .caption,
+                    tint: IronTheme.metricVolume
+                )
             } label: {
                 Text("Volume")
-                    .fontWeight(.semibold)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
             }
-            .foregroundStyle(IronTheme.metricVolume)
             .ironStaggeredEntrance(index: 1)
 
             LabeledContent {
                 Text("\(workout.numberOfCompletedSets ?? 0)")
-                    .font(.ironMetric(.body))
+                    .font(.ironMetric(.body, weight: .semibold))
+                    .foregroundStyle(IronTheme.metricSets)
             } label: {
                 Text("Sets")
-                    .fontWeight(.semibold)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
             }
-            .foregroundStyle(IronTheme.metricSets)
             .ironStaggeredEntrance(index: 2)
         } header: {
             Text("Summary")
@@ -265,16 +266,17 @@ struct WorkoutDetailView: View {
             } label: {
                 LabeledContent {
                     if let effort = workout.sessionEffortValue, effort > 0 {
-                        (Text("\(Int(effort))/10").font(.ironMetric(.body))
-                         + Text(" · \(effortLabel(for: effort))"))
-                            .foregroundStyle(IronTheme.metricEffort)
+                        (Text("\(Int(effort))/10").font(.ironMetric(.body, weight: .semibold))
+                            .foregroundColor(IronTheme.metricEffort)
+                         + Text(" · \(effortLabel(for: effort))")
+                            .font(.subheadline).foregroundColor(IronTheme.secondaryText))
                     } else {
                         Text("Not Rated").foregroundStyle(IronTheme.secondaryText)
                     }
                 } label: {
                     Text("Effort")
-                        .fontWeight(.semibold)
-                        .foregroundStyle(IronTheme.metricEffort)
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
                 }
             }
 

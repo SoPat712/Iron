@@ -1,5 +1,10 @@
 # Iron Design Backlog: build specs
 
+**Latest owner decision (2026-10-26):** stop Watch development and preserve the current work.
+The iPhone app is the priority. Watch build 43 is a checkpoint requiring further design and
+on-device validation, not an accepted final result. Earlier Watch approvals below are
+superseded by this decision. See HANDOFF.md's owner checkpoint before resuming any Watch work.
+
 Approved design work that is not built yet, written so a coding agent can build each item
 **without asking questions**. Read [`DESIGN_SYSTEM.md`](DESIGN_SYSTEM.md) first. Every token,
 pattern and rule referenced here (§n) is defined there.
@@ -29,7 +34,7 @@ adds files to the Xcode project.
 
 ### 0.2 Rules for every agent
 
-- **Do not** commit, push, stash, reset or checkout. The orchestrator commits.
+- **Do not** commit, push, stash, reset or checkout without an explicit owner request.
 - **Do not** touch `reference-material/`.
 - **Apple Health:** never export imported workouts (`Workout.importSource != nil`). Only workouts
   completed in Iron are exported. Do not change `HealthManager` behavior.
@@ -65,7 +70,7 @@ xcodebuild -project Iron.xcodeproj -scheme Iron -configuration Debug \
 xcrun devicectl device install app --device 00008150-001914903E69401C \
   /tmp/iron-device-dd/Build/Products/Debug-iphoneos/Iron.app
 xcrun devicectl device process launch --device 00008150-001914903E69401C \
-  --terminate-existing com.joshpatra.IronDev
+  com.joshpatra.IronDev
 ```
 
 Ask the owner before booting a simulator, because other apps on the Mac may be using the CPU.
@@ -77,6 +82,7 @@ Ask the owner before booting a simulator, because other apps on the Mac may be u
 | Recency ordering of exercises (lists, search, pickers, Watch) | **Built**: `ExerciseStore.lastPerformedDates`, `orderedByRecency`, `ExerciseRecency` |
 | Exercise detail first pass (inline progress plus target map, tap-only tooltip) | **Built as a first pass**; B6 revises it to match the boards |
 | Logger B focused current-set editor | **Built** (`showsFocusedEditor` in `InlineWorkoutSetRow`) |
+| 2026-10-25 follow-up working tree | T1 intrinsic empty-state actions; T3 local MuscleMap hit tester + hold/scrub; T4b imported-data tools; B7 captions; B10 native zoom; audio-session setup off main. Final verification is tracked in `HANDOFF.md`. |
 
 ---
 
@@ -139,16 +145,18 @@ remains even above the liquid glass time duration thingy when I collapse."
 4. Fill: within each segment, completed sets fill left to right in **accent**. Completed warm-up
    sets fill in `metricSets` at 0.7 opacity; drop and failure sets use their B4 badge colors at
    0.7. Animate widths with `IronMotion.snappy`.
-5. The segment of the exercise that holds the current set has a 1 pt accent inner stroke at 0.5
-   opacity. The others have none.
+5. Segments use fill only, with no inner stroke. The active exercise is communicated by the
+   focused editor and accessibility summary. The strip shares the unified toolbar surface.
 6. Tapping a segment scrolls to that exercise, through the existing `scrollTarget` and
    `scrollTo(anchor: .top)`, with a selection haptic.
 7. Accessibility: one element, label "Workout progress", value "6 of 14 sets complete, current
    exercise Bench Press", with an adjustable action that moves between exercises (scroll).
 8. Do **not** change the session header contents (watch-sync banner, Duration / Volume / Sets,
-   live muscle map), the collapse thresholds or the collapsed pill content. Recheck that
-   `collapsedSummaryClearance` (66) still clears the pill. The bar sits above the scroll view, so
-   the clearance math should not change; if the pill moves, adjust.
+   live muscle map) or the collapsed pill content. Collapse/expand is manual only; scroll
+   position must never select a mode. Recheck that
+   `collapsedSummaryClearance` still clears the pill. At default size it is 66 pt; at
+   accessibility sizes use the measured pill height plus its 8 pt top inset and 12 pt gap.
+   The pill floats inside the viewport, over content that can scroll behind its glass.
 9. Hide the bar when the workout has no exercises.
 
 **Acceptance:** the bar is visible at the scroll top and when collapsed; the collapsed pill
@@ -200,8 +208,9 @@ Create `Iron/UI/Components/RestLengthRuler.swift` and register it in the Iron ta
 - Range **0:30–5:00 in 15 s steps** (19 ticks), evenly spaced. Each tick is 2 pt wide with a
   1 pt radius. Full-minute ticks are 26 pt tall, the others 14 pt, bottom-aligned in a 26 pt
   band. Ticks at or below the value are `metricTime`; ticks above it are `tertiaryFill`.
-- Indicator: a 4 × 32 pt `metricTime` capsule centered on the value's x position, animated with
-  `IronMotion.snappy`.
+- Indicator: a 4 × 32 pt `metricTime` capsule. During a drag it tracks the touch continuously
+  without a chasing spring; the duration and notch feedback still snap to 15 s. On release
+  it settles to the chosen tick with `IronMotion.snappy` (respect Reduce Motion).
 - Labels 0:30, 1:00, 2:00, 3:00, 4:00 and 5:00, positioned under their ticks.
 - Interaction: a horizontal drag anywhere on the ruler sets the value to the nearest step, and a
   tap jumps to it. Each step change plays a `.selection` haptic and `IronSoundPlayer.tick`. Only
@@ -396,6 +405,13 @@ Same card style. Contents, top to bottom:
      on an overlay that maps the location to a muscle with the package's hit-testing. If no
      public hit-test API exists, use tap plus long-press only (no drag scrub), state that in the
      report, and do not hand-roll path data.
+   - **2026-10-25 approved implementation update:** MuscleMap 1.6.4 is vendored under
+     `Packages/MuscleMap` with its MIT license. The public `MuscleHitTester` facade wraps the
+     existing renderer. An app-owned UIKit long press (0.25 s, 10 pt pre-hold tolerance)
+     reports stationary hold onset and scrub locations; lift/cancel/failure clears selection.
+     A tap waits for long-press failure and shows the tooltip for 2 s. No pan recognizer is
+     attached, so pre-hold vertical drags remain available to List. This supersedes the
+     tap-only fallback above.
 4. A legend row: on the left, "Primary" and "Secondary" with 8 pt dots (accent and accent @
    0.42), in `.caption` `secondaryText`; on the right, equipment chips (capsule 24 pt,
    `tertiaryFill`, `.caption.weight(.semibold)`, primary text).
@@ -531,3 +547,188 @@ and metric colors.
 | 2026-10-22 | Keep the −15/+15 rest strip; rest chip at the top right of the exercise; ruler replaces the dial modal |
 | 2026-10-22 | Set-type fills, softer; session bar under the top bar, persistent above the collapsed pill; keep the current summary |
 | 2026-10-22 | Workout tab gets Recent Workouts with Repeat; finish the Home redesign; remake the RPE picker; fix the swipe overlap |
+| 2026-10-25 | Approved the native Imported Data section after Import, with Hevy count/date range, replacement picker then confirmation, destructive removal confirmation, progress overlay, and no measurement removal |
+| 2026-10-25 | Approved local vendoring of pinned MIT MuscleMap 1.6.4 and a small public hit-test facade for hold-and-scrub |
+| 2026-10-25 | Approved simulator QA, including one additional Iron simulator; subsequently authorized direct coordination and trading the simulator/build slot with the Overland chat |
+
+### Owner follow-up, 2026-10-25 morning
+
+- Remove the blue haze from Home's greeting/week card: use an opaque neutral surface.
+- Apply Iron styling to the exercise library: headline names, neutral metadata capsules.
+- Exercise detail: one title in the page header, and custom cards aligned with native sections.
+- Collapsed logger summary must own space above the scroll viewport, with a 12 pt bottom gap.
+- Approved Previous-result capsules and 10 pt outlined compact input fields; keep completed blue fills.
+- Extend SF Pro metric typography through remaining numeric controls, history/calendar rows and editors.
+- Live Activity must show active rest immediately and keep ±15 countdown updates steady.
+
+### Owner cohesion correction, 2026-10-25 afternoon
+
+The owner rejected the partial font pass, explicitly including Home. The follow-up compares
+full pages at matching size/appearance, not only the top of each screen. Apply the existing
+type hierarchy across Home's lower sections, History, Workout, library/picker and logger:
+headline data-row titles; shared number/unit readouts; subheadline inline summaries;
+secondary smaller units. Keep native form/chrome typography. Home and Quick Start use native
+prominent list buttons; exercise tags share one neutral capsule component. Logger input
+values use bold, compact values title3, and nested corners use IronTheme tokens.
+
+### Owner catalog direction, 2026-10-25
+
+The owner stopped the V2 image comparison, chose to keep Iron and requested the current
+OpenGym dataset plus matching of imported Hevy names (not account/API sync). Update the main
+library with OpenGym text and preserve all existing UUIDs, original Hevy custom names and
+workout relationships. Keep legacy entries absent upstream. Use persisted still thumbnails
+from Iron's current provider and retain animations for demonstrations. OpenGym's restricted
+artwork was not integrated; its non-commercial media exception is for OpenGym forks.
+
+### Owner polish and performance requests, 2026-10-26
+
+- Stop the OpenGym-fork direction. Keep working on Iron's native UI and Watch app.
+- Restore native exercise-filter toolbar spacing; remove the extra label frames.
+- Recent Workouts: full-width summary/disclosure, bold text Repeat button, and Save as
+  Workout in the ellipsis menu. Saving opens a prefilled, cancellable draft.
+- Keep History focused on Workouts and Insights; retain Exercise Progress in its options menu.
+- Cache history aggregates off-main and use UUID lookup dictionaries. Home/History filter
+  changes must not enumerate Core Data relationships or repeatedly scan the full catalog.
+- Keep each chart and its controls in one grouped surface. Remove the transparent segmented
+  rows that split the History, measurement and saved-workout chart sections.
+- All active calendar dates open a Daily Recap before workout detail. Include totals, all
+  sessions on that day, muscle focus and available measurements; rest days remain navigable.
+- Complete the native type/control pass in Settings and deeper saved-workout editors. Numeric
+  controls expose VoiceOver adjustments and accommodate accessibility text sizes. Preserve
+  the existing meaningful chart, number, completion and navigation motion with Reduce Motion.
+
+### 2026-10-26 logger focus, glass and high-refresh correction
+
+- Restore the floating summary's glass: reserve top content clearance, then allow content to
+  scroll behind the pill. The previous fixed strip above a clipped viewport hid refraction.
+- Exactly one large next-set editor for the active workout. Supersets alternate in rounds;
+  the progress marker, auto-scroll and Live Activity agree with the editor.
+- Enable the iPhone high-refresh opt-in. Ruler touch position is continuous; only the chosen
+  duration is discrete. Commit persistence/Watch synchronization on release. Clock ticks
+  refresh duration labels, without rebuilding volume/set aggregates and muscle-map paths.
+
+### 2026-10-26 owner correction: shape consistency and manual summary choice
+
+- Previous results use the same continuous 10 pt corners as compact weight, reps and duration
+  fields. Apply that set-data shape to the exercise-history result chips too.
+- Expanded summary is the default for a new workout. Only the user's header-chevron/glass
+  taps change it; remove both modern and legacy scroll-offset observers. Remember the mode
+  per workout in `SceneState`, including minimize/reopen. Expanding keeps the scroll position.
+- Preserve the floating glass, measured content clearance, motion and large-text reflow.
+
+### 2026-10-26 header correction and approved organization flows
+
+- Remove the gray summary-panel fill, all header divider rules and the progress-segment
+  selection outline. Toolbar, progress and expanded summary share one `.bar` surface.
+- Reserve separate duration/volume/set/map columns with 12 pt gutters. Use compact elapsed
+  time (`m:ss` / `h:mm:ss`) and align captions when a long volume number scales down.
+- Owner approved: native Superset sheet with exercise thumbnails, source and partner
+  selection, set-order preview and explicit Save/Cancel. Existing external groups select
+  together; former partners retain their own group when two or more remain.
+- Owner approved: compact native Arrange Exercises sheet with handles and Done/Cancel, opened
+  from a held exercise header or its Reorder menu action. Stage the order locally; preserve
+  all set data and superset identities. The logger stays expanded while arranging in the sheet.
+- Both mutations use the existing isolated persist/save boundary. Reject stale memberships or
+  incomplete order snapshots before mutation; failed saves restore the prior graph.
+
+
+### 2026-10-26 approved Light name and Set tile Live Activities
+
+- Owner selected Set tile from the visual comparison and authorized implementation. Compact
+  iPhone/Mac shows artwork plus blue per-exercise set cells; minimal shows the tile. Remove
+  compact stopwatches. Watch uses a black card with exercise/name, set position, tile, and
+  secondary rest/Skip. Expanded iPhone keeps its contents below the sensor in one inset region.
+- Count actual completed sets rather than inferring from the current ordinal. Keep old payloads
+  decodable and cap tile density at twelve cells with proportional fills above that.
+- Owner reported compact clipping. Use 20 pt tile, 24 pt slot and 6 pt trailing clearance;
+  require native visual verification before claiming the corner issue fully verified.
+- Rename displayed app to Light and update README/About with current features and original Iron
+  credit. Preserve installed-data identifiers and current icon; the owner will supply new art.
+- Owner wants the Ultra 4 installation repaired and confirmed Developer Mode is on. Preserve
+  device pairings/data. They explicitly prefer IPv6 stay Off; do not change network settings.
+
+### Watch app Focus redesign — approved 2026-10-26
+
+Scope is the **entire Watch app**. Owner explicitly says the phone is now solid; preserve its
+visual design. Reviewable prototype: `light-watch-redesign.html` in this chat's visualization
+directory. Owner selected Focus (one current set with paired fields) over the alternative
+Set list (denser rows). Its original navigation is superseded by the approved exercise-first
+flow below; shared visual tokens, native controls and recording requirements still apply.
+
+1. **Navigation and foundation.** Replace nested NavigationView/NavigationStack ownership with
+   one stack. One title at a time; reserve the system clock and navigation safe area. Use SF
+   Pro and shared metric weight/digits, blue actions/completed fills, semantic metric colors,
+   10 pt data fields, native watchOS sheets/menus. Liquid Glass belongs to floating navigation
+   and controls; the OLED content canvas stays black. Remove legacy rounded typography.
+2. **Current-set logger.** Open active workout entries at the next set, with exercise artwork,
+   wrapping name, explicit set type/position and set-progress cells. Weight/reps (plus time or
+   distance where relevant) open Crown-adjustable editors with accessible steppers. Keep a
+   quiet previous result, RPE and one primary Log Set action. Use the same superset target as
+   the phone: A1 → B1 → A2 → B2. No duplicate workout-title header over the exercise title.
+3. **Rest.** Secondary cyan rest state with stable countdown, −15/pause/+15 and Start Next Set.
+   Preview the next exercise. Completion fill, rest insertion and next-set navigation explain
+   the transition; Reduce Motion uses a short fade. No decorative looping motion or beeps.
+4. **Exercise management.** A compact overview with thumbnails, linked-group identity, completed
+   counts and blue fills. Preserve Add/Replace/Delete Exercise, Add/Delete Set and all set
+   types. Native lists scroll with the Crown; secondary actions stay in the relevant context.
+   Edit drafts support Cancel; deletion confirms scope. Existing durable outbox and identities
+   remain unchanged. Prototype catalogue choices are illustrative, not a new data source.
+5. **Finish and edge states.** Effort bars and a concise recap: duration, sets, volume, estimated
+   active calories and Health save state. Preserve save failure/retry and offline queued edits.
+   Include ready, reconnecting, missing sensor/permission, no exercises and completed states.
+   Distinguish edit sync from active HealthKit recording; when recovery finds no session, offer
+   an explicit Record on Watch action that starts sensor collection now. Never invent earlier
+   readings/calories. Watch-local readings continue when the phone is disconnected.
+   Never report missing heart rate/calories as measured zero. Retain all existing accessibility.
+6. **Acceptance.** Test on the actual Ultra 4 and a smaller Watch layout, default/large text,
+   long exercise names, both weight units, zero/bodyweight/duration sets, unequal supersets,
+   Watch disconnected, denied Health permission and crash recovery. Verify local Live Activity
+   tap opens the current Watch workout, no title/control clipping, no overlapping hit regions,
+   and no duplicate Health workout. Build/test/install only after owner approves the layout.
+
+Independent correctness update delivered before the redesign: live heart rate/estimated active
+calories in the phone connection row, best-effort UUID-scoped telemetry, native Watch Live
+Activity launch declaration, and HealthKit stop/collect/save/end sequencing. Time edits remain
+in Light; the Watch's HealthKit sample retains its recorded sensor window and associations.
+
+
+### Focus implementation and Watch-only expansion (2026-10-26)
+
+- Owner selected Focus and authorized every Watch screen and deep menu. One root NavigationStack;
+  use a native top-leading options control. `primaryAction` did not render on Watch during QA,
+  so New Workout is an explicit saved-library row. Saved draft sheets have Cancel/Save and no
+  crowded navigation title. Body owns the focused exercise name.
+- Primary Log Set precedes secondary RPE/previous controls; this keeps the action visible at
+  default Ultra size. Smaller and accessibility layouts scroll. Weight/reps stack at large text.
+- Watch-only: Start Workout; bundled exercise search; add/replace/remove/reorder exercises;
+  add/edit/delete any set; type/RPE/notes/rest/duration/distance; linked superset rounds;
+  pause/resume; effort/finish/discard; save/create/edit/delete saved workouts; history/repeat.
+  Saved routine fields match the existing phone model (weight/repetition targets/duration);
+  current/history set distance stays canonical meters. Import/export/body tools remain on phone.
+- Library/history sync uses a separately cached immutable file. Durable edits serialize to ACK;
+  conflicting phone and Watch current UUIDs never displace one another. Imported Health rule
+  unchanged. Missing sensors are dashes; recording status/retry is separate from edit sync.
+
+
+### Exercise-first Watch redesign (2026-10-26, approved and installed)
+
+Owner replaces Focus as the default navigation. Workout → exercise list (red HR top left,
+orange active kcal top right) → exercise sets/context → set values. Remove global ellipsis.
+Home: New Workout, Saved Workouts, History; larger rows and useful exercise/set/muscle counts.
+Live sync includes automatic Health recording/recovery whenever a native workout is active,
+plus bidirectional edits and cached routines/history. Recording is not a normal opt-in.
+Interactive proposal: light-watch-exercise-first.html. Owner approved implementation and
+installation. 88 browser checks passed including narrow width/larger text. Native build 43
+implements Home → exercise list → exercise sets → set editor throughout the Watch app.
+
+- Pin red BPM/orange active kcal above scrolling content on every active-workout route,
+  including deep set Settings, extra measurements, plate calculator and Crown sheets. Keep
+  vitals unredacted in Always On; stack them for large text.
+- No global ellipsis. Secondary set actions are behind Settings at the bottom of the set.
+- Larger saved/history rows show exercise/set totals, primary muscles and history date/time.
+  Preserve routine drafts, contextual superset editing, ordering and read-only history detail.
+- Automatic recovery/start is the normal path. Keep paused/finalizing sessions intact; failed
+  automatic attempts do not loop. Never create duplicate Health workouts or export imports.
+- Signed phone/Watch builds and full iOS test-bundle compilation pass. Real Ultra 4 launch
+  shows live heart rate and increasing active energy in the pinned header. Detailed layout,
+  regression and install evidence is recorded in QA_2026-10-26.md.

@@ -54,7 +54,7 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         var errorDescription: String? {
             switch self {
             case .accessDenied(let name):
-                return "Iron could not access \(name). Try sharing the file again from Files."
+                return "Light could not access \(name). Try sharing the file again from Files."
             }
         }
     }
@@ -253,6 +253,9 @@ class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 class SceneState: ObservableObject {
     @Published var selectedTab: Tab = .workout
     @Published var isCurrentWorkoutExpanded = true
+    /// Manual summary choice survives logger presentation changes in this scene.
+    /// An unseen workout has no entry and therefore starts expanded.
+    @Published var collapsedWorkoutSummaries: Set<String> = []
 
     enum Tab: Int, Hashable {
         case home = 0

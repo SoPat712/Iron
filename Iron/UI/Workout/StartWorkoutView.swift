@@ -14,6 +14,7 @@ import WorkoutDataKit
 struct WorkoutPlanEditorRoute: Identifiable {
     enum Kind {
         case create(containerID: NSManagedObjectID?)
+        case createFromWorkout(workoutID: NSManagedObjectID, containerID: NSManagedObjectID?)
         case edit(planID: NSManagedObjectID)
         case duplicate(planID: NSManagedObjectID)
     }
@@ -100,6 +101,25 @@ final class WorkoutPlanEditorSession: ObservableObject {
             self.routine = routine
             self.isNew = true
 
+        case .createFromWorkout(let workoutID, let containerID):
+            let source = try load(workoutID, as: Workout.self)
+            let container: WorkoutPlan
+            if let containerID {
+                container = try load(containerID, as: WorkoutPlan.self)
+            } else {
+                container = WorkoutPlan.create(context: context)
+            }
+
+            let routine = WorkoutRoutine.create(context: context)
+            routine.workoutPlan = container
+            routine.title = source.title ?? "Saved Workout"
+            routine.comment = source.comment
+            routine.workoutRoutineExercises = NSOrderedSet(
+                array: Self.routineExercises(from: source, in: context)
+            )
+            self.routine = routine
+            self.isNew = true
+
         case .edit(let planID):
             self.routine = try load(planID, as: WorkoutRoutine.self)
             self.isNew = false
@@ -108,6 +128,48 @@ final class WorkoutPlanEditorSession: ObservableObject {
             let source = try load(planID, as: WorkoutRoutine.self)
             self.routine = source.duplicate(context: context)
             self.isNew = true
+        }
+    }
+
+    /// Builds a new editable routine in the child context. The completed
+    /// session is read only; completion, dates, provenance and Health state
+    /// intentionally have no representation in a saved workout.
+    private static func routineExercises(
+        from workout: Workout,
+        in context: NSManagedObjectContext
+    ) -> [WorkoutRoutineExercise] {
+        let sourceExercises = workout.workoutExercises?.array
+            .compactMap { $0 as? WorkoutExercise } ?? []
+        var copiedSupersetIDs: [UUID: UUID] = [:]
+
+        return sourceExercises.map { source in
+            let copy = WorkoutRoutineExercise.create(context: context)
+            copy.exerciseUuid = source.exerciseUuid
+            copy.comment = source.comment
+            copy.restTimerDurationValue = source.restTimerDurationValue
+            if let sourceSupersetID = source.supersetUuid {
+                let copiedSupersetID = copiedSupersetIDs[sourceSupersetID] ?? UUID()
+                copiedSupersetIDs[sourceSupersetID] = copiedSupersetID
+                copy.supersetUuid = copiedSupersetID
+            }
+
+            let copiedSets = (source.workoutSets?.array
+                .compactMap { $0 as? WorkoutSet } ?? []).map { sourceSet in
+                    let set = WorkoutRoutineSet.create(context: context)
+                    let minRepetitions = sourceSet.minTargetRepetitionsValue
+                        ?? (sourceSet.repetitionsValue > 0 ? sourceSet.repetitionsValue : nil)
+                    let maxRepetitions = sourceSet.maxTargetRepetitionsValue
+                        ?? (sourceSet.repetitionsValue > 0 ? sourceSet.repetitionsValue : nil)
+                    set.minRepetitionsValue = minRepetitions
+                    set.maxRepetitionsValue = maxRepetitions
+                    set.weightValue = sourceSet.weightValue
+                    set.durationValue = sourceSet.durationValue
+                    set.tagValue = sourceSet.tagValue
+                    set.comment = sourceSet.comment
+                    return set
+                }
+            copy.workoutRoutineSets = NSOrderedSet(array: copiedSets)
+            return copy
         }
     }
 
@@ -124,6 +186,17 @@ final class WorkoutPlanEditorSession: ObservableObject {
                       !existing.isDeleted else { throw SavedWorkoutDraftError.missingWorkout }
                 target = existing
             case .create(let containerID):
+                let container: WorkoutPlan
+                if let containerID {
+                    guard let existing = try parentContext.existingObject(with: containerID) as? WorkoutPlan,
+                          !existing.isDeleted else { throw SavedWorkoutDraftError.missingWorkout }
+                    container = existing
+                } else {
+                    container = WorkoutPlan.create(context: parentContext)
+                }
+                target = WorkoutRoutine.create(context: parentContext)
+                target.workoutPlan = container
+            case .createFromWorkout(_, let containerID):
                 let container: WorkoutPlan
                 if let containerID {
                     guard let existing = try parentContext.existingObject(with: containerID) as? WorkoutPlan,
@@ -400,10 +473,17 @@ struct StartWorkoutView: View {
                         } description: {
                             Text("Save a workout for push/pull/legs, upper/lower, or any split you train.")
                         } actions: {
-                            Button("New Workout", systemImage: "plus", action: newPlan)
-                                .buttonStyle(.bordered)
-                                .frame(minHeight: IronTheme.controlHeight)
+                            Button(action: newPlan) {
+                                Label("New Workout", systemImage: "plus")
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                            .labelStyle(.titleAndIcon)
+                            .fixedSize(horizontal: false, vertical: true)
                         }
+                        .frame(maxWidth: .infinity)
+                        .listRowInsets(EdgeInsets(top: 24, leading: 16, bottom: 24, trailing: 16))
                     } else {
                         ForEach(Array(plans.enumerated()), id: \.element.objectID) { index, plan in
                             SavedWorkoutRow(
@@ -535,6 +615,7 @@ struct StartWorkoutView: View {
                     Text(currentWorkouts.first?.displayTitle(in: exerciseStore.exercises) ?? "Empty Workout")
                         .font(.headline)
                         .foregroundStyle(IronTheme.primaryText)
+                        .fixedSize(horizontal: false, vertical: true)
                     if let workout = currentWorkouts.first {
                         TimelineView(.periodic(from: .now, by: 1)) { timeline in
                             WorkoutPreviewMetricLine(workout: workout, now: timeline.date)
@@ -543,6 +624,7 @@ struct StartWorkoutView: View {
                         Text("Add exercises as you go")
                             .font(.subheadline)
                             .foregroundStyle(IronTheme.secondaryText)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -558,7 +640,7 @@ struct StartWorkoutView: View {
             }
             .controlSize(.large)
             .buttonBorderShape(.capsule)
-            .ironProminentGlassButtonStyle()
+            .buttonStyle(.borderedProminent)
             .frame(minHeight: 50)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -572,7 +654,8 @@ struct StartWorkoutView: View {
                     RecentWorkoutRow(
                         workout: workout,
                         onRepeat: { repeatWorkout(workout, blank: $0) },
-                        onViewDetails: { selectedRecentWorkout = workout }
+                        onViewDetails: { selectedRecentWorkout = workout },
+                        onSaveAsWorkout: { saveAsWorkout(workout) }
                     )
                     .ironStaggeredEntrance(index: index + 1)
                 }
@@ -622,6 +705,19 @@ struct StartWorkoutView: View {
     private func newPlan() {
         planEditorRoute = WorkoutPlanEditorRoute(
             kind: .create(containerID: workoutPlans.first?.objectID)
+        )
+    }
+
+    private func saveAsWorkout(_ workout: Workout) {
+        guard !workout.isDeleted else {
+            persistenceError = "This completed workout is no longer available."
+            return
+        }
+        planEditorRoute = WorkoutPlanEditorRoute(
+            kind: .createFromWorkout(
+                workoutID: workout.objectID,
+                containerID: workoutPlans.first?.objectID
+            )
         )
     }
 
@@ -693,7 +789,7 @@ struct StartWorkoutView: View {
         let sanitized = title.components(separatedBy: invalidCharacters)
             .joined(separator: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return sanitized.isEmpty ? "Iron Workout" : sanitized
+        return sanitized.isEmpty ? "Light Workout" : sanitized
     }
 
     private func temporaryFile(data: Data, name: String) throws -> URL {
@@ -709,7 +805,7 @@ enum SavedWorkoutImportError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .unsupportedVersion(let version):
-            return "This Iron workout file uses version \(version), which this build cannot import yet."
+            return "This Light workout file uses version \(version), which this build cannot import yet."
         }
     }
 }
@@ -758,6 +854,7 @@ private struct WorkoutPlanTrendPoint: Identifiable {
 
 private struct WorkoutPlanTrendChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var hasAppeared = false
     let points: [WorkoutPlanTrendPoint]
     let valueFormatter: (Double) -> String
@@ -863,7 +960,7 @@ private struct WorkoutPlanTrendChart: View {
         .onAppear { hasAppeared = true }
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: metricTitle)
         .chartYAxis {
-            AxisMarks(position: .leading) { value in
+            AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
                 AxisGridLine()
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
@@ -892,7 +989,8 @@ private struct WorkoutPlanTrendChart: View {
                 }?.id
             }
         ))
-        .frame(height: 150)
+        .ironHorizontalChartScrubbing { selectedPointID = nil }
+        .frame(height: dynamicTypeSize.isAccessibilitySize ? 260 : 150)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Training trend chart with \(points.count) sessions")
         .accessibilityValue(accessibilityValue)
@@ -999,7 +1097,6 @@ private struct WorkoutPlanDetailView: View {
                     volumeText(totalVolume).font(.ironMetric(.body))
                 }
             }
-            .monospacedDigit()
 
             trendSection
 
@@ -1047,7 +1144,14 @@ private struct WorkoutPlanDetailView: View {
                 )
                 .listRowBackground(Color.clear)
             } else {
-                VStack(alignment: .leading, spacing: 10) {
+                VStack(alignment: .leading, spacing: 12) {
+                    Picker("Metric", selection: $selectedMetric) {
+                        ForEach(WorkoutPlanTrendMetric.allCases) { metric in
+                            Text(metric.title).tag(metric)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+
                     metricValueText(latestWorkout.map(metricValue(for:)) ?? 0)
                         .font(.ironMetric(.title2))
                         .foregroundStyle(selectedMetric.color)
@@ -1065,14 +1169,6 @@ private struct WorkoutPlanDetailView: View {
                 }
                 .padding(.vertical, 6)
 
-                Picker("Metric", selection: $selectedMetric) {
-                    ForEach(WorkoutPlanTrendMetric.allCases) { metric in
-                        Text(metric.title).tag(metric)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .listRowBackground(Color.clear)
-                .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
             }
         } header: {
             Text("Training Trend")
@@ -1417,12 +1513,7 @@ private struct SavedWorkoutRow: View {
     }
 
     private func muscleTag(_ title: String) -> some View {
-        Text(title)
-            .font(.caption)
-            .foregroundStyle(IronTheme.secondaryText)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(IronTheme.field, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+        ExerciseLibraryTag(title: title)
     }
 
     private func start() {
@@ -1445,6 +1536,7 @@ private struct RecentWorkoutRow: View {
     @ObservedObject var workout: Workout
     let onRepeat: (Bool) -> Void
     let onViewDetails: () -> Void
+    let onSaveAsWorkout: () -> Void
 
     private var title: String { workout.displayTitle(in: exerciseStore.exercises) }
 
@@ -1458,40 +1550,67 @@ private struct RecentWorkoutRow: View {
     }
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
-            : AnyLayout(HStackLayout(spacing: 12))
-        layout {
-            NavigationLink {
-                WorkoutDetailView(workout: workout)
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(title)
-                        .font(.headline)
-                        .foregroundStyle(IronTheme.primaryText)
-                    Text(metadata)
-                        .font(.subheadline)
-                        .foregroundStyle(IronTheme.secondaryText)
-                    WorkoutPreviewMetricLine(workout: workout)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .accessibilityElement(children: .combine)
-            }
+        VStack(alignment: .leading, spacing: 10) {
+            Button(action: onViewDetails) {
+                HStack(spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(title)
+                            .font(.headline)
+                            .foregroundStyle(IronTheme.primaryText)
+                        Text(metadata)
+                            .font(.subheadline)
+                            .foregroundStyle(IronTheme.secondaryText)
+                        WorkoutPreviewMetricLine(workout: workout)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
 
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(IronTheme.secondaryText)
+                        .accessibilityHidden(true)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("View details for \(title)")
+
+            HStack(spacing: 12) {
             Button { onRepeat(false) } label: {
-                Image(systemName: "arrow.clockwise")
-                    .font(.subheadline.weight(.semibold))
+                Text("Repeat")
+                    .font(.subheadline.weight(.bold))
                     .foregroundStyle(IronTheme.accent)
             }
             .buttonStyle(.bordered)
-            .buttonBorderShape(.circle)
+            .buttonBorderShape(.roundedRectangle(radius: IronTheme.compactCornerRadius))
             .controlSize(.small)
-            .frame(width: 36, height: 36)
-            .padding(4)
+            .frame(minHeight: IronTheme.controlHeight)
             .contentShape(Rectangle())
             .accessibilityLabel("Repeat \(title)")
+
+            Spacer(minLength: 0)
+            Menu {
+                Button("Save as Workout…", systemImage: "plus") {
+                    onSaveAsWorkout()
+                }
+                Button("Repeat", systemImage: "arrow.clockwise") {
+                    onRepeat(false)
+                }
+                Button("Repeat with Blank Sets", systemImage: "doc") {
+                    onRepeat(true)
+                }
+                Button("View Details", systemImage: "info.circle", action: onViewDetails)
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("More actions for \(title)")
+            }
         }
         .contextMenu {
+            Button("Save as Workout…", systemImage: "plus", action: onSaveAsWorkout)
             Button("Repeat", systemImage: "arrow.clockwise") { onRepeat(false) }
             Button("Repeat with Blank Sets", systemImage: "doc") { onRepeat(true) }
             Button("View Details", systemImage: "info.circle", action: onViewDetails)
@@ -1518,15 +1637,10 @@ private struct WorkoutPreviewMetricLine: View {
     var body: some View {
         let value = WeightUnit.convert(weight: workout.totalCompletedWeight ?? 0, from: .metric, to: settingsStore.weightUnit)
         let volume = WorkoutPreviewFormatting.volume(value)
-        (Text(duration).foregroundColor(IronTheme.metricTime)
-         + Text(" · ").foregroundColor(IronTheme.secondaryText)
-         + Text("\(workout.numberOfCompletedSets ?? 0)").foregroundColor(IronTheme.metricSets)
-         + Text(" sets").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
-         + Text(" · ").foregroundColor(IronTheme.secondaryText)
-         + Text(volume).foregroundColor(IronTheme.metricVolume)
-         + Text(" \(settingsStore.weightUnit.unit.symbol)").font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
-            .font(.ironMetric(.subheadline, weight: .semibold))
-            .fixedSize(horizontal: false, vertical: true)
+        IronWorkoutMetricLine(
+            duration: duration, sets: workout.numberOfCompletedSets ?? 0,
+            volume: volume, unit: settingsStore.weightUnit.unit.symbol
+        )
             .contentTransition(reduceMotion ? .opacity : .numericText())
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: duration)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: volume)

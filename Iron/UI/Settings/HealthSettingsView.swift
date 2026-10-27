@@ -35,7 +35,7 @@ struct HealthSettingsView: View {
         case needsReview
 
         var errorDescription: String? {
-            "Some Health categories remain off. Review Iron's access in Apple Health to enable the categories you want to use."
+            "Some Health categories remain off. Review Light's access in Apple Health to enable the categories you want to use."
         }
     }
 
@@ -68,7 +68,7 @@ struct HealthSettingsView: View {
             IronStatusSheet(
                 headerTitle: "Apple Health",
                 title: "Health access requested",
-                message: "Iron can now sync strength workouts and exchange supported body measurements. You can adjust individual categories in the Health app.",
+                message: "Light can now sync strength workouts and exchange supported body measurements. You can adjust individual categories in the Health app.",
                 systemImage: "heart.circle.fill",
                 tint: IronTheme.success
             )
@@ -138,7 +138,7 @@ struct HealthSettingsView: View {
                 healthDataRow(
                     icon: "scalemass.fill",
                     title: "Body measurements",
-                    detail: "Iron can read and write weight, height, body fat, and waist circumference."
+                    detail: "Light can read and write weight, height, body fat, and waist circumference."
                 )
                 healthDataRow(
                     icon: "applewatch.radiowaves.left.and.right",
@@ -212,7 +212,7 @@ struct HealthSettingsView: View {
                 Text("Repair or backfill workout history")
                     .font(.body)
                     .foregroundColor(IronTheme.primaryText)
-                Text("Reconcile completed Iron sessions with Apple Health. Existing matches are updated instead of duplicated.")
+                Text("Reconcile completed Light sessions with Apple Health. Existing matches are updated instead of duplicated.")
                     .font(.caption)
                     .foregroundColor(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -252,7 +252,7 @@ struct HealthSettingsView: View {
                 Text("You stay in control")
                     .font(.body)
                     .foregroundColor(IronTheme.primaryText)
-                Text("Apple Health permissions can be changed at any time. Iron never shares your health data socially or with other Iron users.")
+                Text("Apple Health permissions can be changed at any time. Light never shares your health data socially or with other Light users.")
                     .font(.caption)
                     .foregroundColor(IronTheme.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
@@ -326,9 +326,9 @@ private extension HealthManager.AccessState {
     var detail: String {
         switch self {
         case .unavailable:
-            return "Apple Health is not available on this device. Iron will continue storing everything locally."
+            return "Apple Health is not available on this device. Light will continue storing everything locally."
         case .notDetermined:
-            return "Choose the workout and body-measurement categories Iron may exchange. Nothing leaves your device without permission."
+            return "Choose the workout and body-measurement categories Light may exchange. Nothing leaves your device without permission."
         case .needsReview:
             return "One or more write categories are unavailable. Review access to keep workouts and supported measurements aligned."
         case .ready:

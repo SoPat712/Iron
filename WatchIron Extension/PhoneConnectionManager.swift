@@ -38,6 +38,9 @@ class PhoneConnectionManager: NSObject, ObservableObject {
     private var pendingUserInfo: [[String: Any]] = []
     private var eventSendInFlight = Set<UUID>()
     private var eventTransferSent = Set<UUID>()
+    private var eventFiles: [URL: UUID] = [:]
+    private var fileEventRetries: [UUID: DispatchWorkItem] = [:]
+    private var fileRetryAttempts: [UUID: Int] = [:]
 
     override init() {
         cancellable = scheduleDiscardUnstartedWorkoutSessionSubject
@@ -78,29 +81,32 @@ extension PhoneConnectionManager: WCSessionDelegate {
             self.objectWillChange.send()
             self.flushPendingUserInfo()
             self.flushEventOutbox()
+            self.sendCurrentWorkoutMetrics()
+            self.requestLibrary()
+            self.requestCurrentSnapshotIfReady()
         }
     }
 
     func session(_ session: WCSession, didReceiveApplicationContext applicationContext: [String : Any]) {
-        print(#function + " \(applicationContext)")
+        print(#function)
         
         receive(message: applicationContext)
     }
     
     func session(_ session: WCSession, didReceiveUserInfo userInfo: [String : Any] = [:]) {
-        print(#function + " \(userInfo)")
+        print(#function)
         
         receive(message: userInfo)
     }
     
     func session(_ session: WCSession, didReceiveMessage message: [String : Any]) {
-        print(#function + " \(message)")
+        print(#function)
         
         receive(message: message)
     }
     
     func session(_ session: WCSession, didReceiveMessage message: [String : Any], replyHandler: @escaping ([String : Any]) -> Void) {
-        print(#function + " \(message)")
+        print(#function)
         
         receive(message: message)
     }
@@ -111,6 +117,40 @@ extension PhoneConnectionManager: WCSessionDelegate {
         DispatchQueue.main.async {
             self.objectWillChange.send()
             self.flushEventOutbox()
+            self.sendCurrentWorkoutMetrics()
+            self.requestLibrary()
+            self.requestCurrentSnapshotIfReady()
+        }
+    }
+
+    func session(_ session: WCSession, didReceive file: WCSessionFile) {
+        let isLibrary = file.metadata?["ironWorkoutLibrary"] as? Bool == true
+        let isSnapshot = file.metadata?["ironWorkoutSnapshot"] as? Bool == true
+        guard isLibrary || isSnapshot else { return }
+        do {
+            // WCSession owns the temporary URL only for this callback.
+            let data = try Data(contentsOf: file.fileURL)
+            DispatchQueue.global(qos: .utility).async {
+                if isLibrary, let library = WatchWorkoutWire.decode(WatchWorkoutLibrary.self, from: data) {
+                    WorkoutSessionManagerStore.shared.applyLibrary(library)
+                } else if isSnapshot, let snapshot = WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: data) {
+                    WorkoutSessionManagerStore.shared.applyWorkoutSnapshot(snapshot)
+                } else {
+                    WorkoutSessionManagerStore.shared.reportPersistenceFailure(WatchWorkoutPersistenceError.encodingFailed)
+                }
+            }
+        } catch { WorkoutSessionManagerStore.shared.reportPersistenceFailure(error) }
+    }
+}
+
+extension PhoneConnectionManager {
+    func session(_ session: WCSession, didFinish fileTransfer: WCSessionFileTransfer, error: Error?) {
+        let file = fileTransfer.file
+        guard file.metadata?["ironWorkoutEvent"] as? Bool == true else { return }
+        DispatchQueue.main.async {
+            guard let eventID = self.eventFiles.removeValue(forKey: file.fileURL) else { return }
+            try? FileManager.default.removeItem(at: file.fileURL)
+            self.scheduleFileEventRetry(eventID)
         }
     }
 }
@@ -118,6 +158,9 @@ extension PhoneConnectionManager: WCSessionDelegate {
 // MARK: - Message Handling
 extension PhoneConnectionManager {
     private func receive(message: [String : Any]) {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.receive(message: message) }; return
+        }
         if let snapshotData = message[PayloadKey.workoutSnapshot] as? Data,
            let snapshot = WatchWorkoutWire.decode(WatchWorkoutSnapshot.self, from: snapshotData) {
             WorkoutSessionManagerStore.shared.applyWorkoutSnapshot(snapshot)
@@ -139,9 +182,12 @@ extension PhoneConnectionManager {
             ack.eventIDs.forEach {
                 eventSendInFlight.remove($0)
                 eventTransferSent.remove($0)
+                fileEventRetries.removeValue(forKey: $0)?.cancel()
+                fileRetryAttempts.removeValue(forKey: $0)
             }
             WorkoutSessionManagerStore.shared.notifySyncStateChanged()
             flushEventOutbox()
+            requestCurrentSnapshotIfReady()
         } else if let startMessage = message[PayloadKey.startWorkoutSession] as? [String : Any] {
             handleStartWorkoutSessionMessage(message: startMessage)
         } else if let endMessage = message[PayloadKey.endWorkoutSession] as? [String : Any] {
@@ -273,6 +319,38 @@ extension PhoneConnectionManager {
 }
 
 extension PhoneConnectionManager {
+    func requestLibrary() {
+        guard isActivated, isReachable else { return }
+        session.sendMessage([PayloadKey.requestWorkoutLibrary: true], replyHandler: nil, errorHandler: nil)
+    }
+
+    private func scheduleFileEventRetry(_ eventID: UUID) {
+        guard WatchWorkoutStore.shared.pendingEvents().contains(where: { $0.id == eventID }) else { return }
+        fileEventRetries.removeValue(forKey: eventID)?.cancel()
+        let attempt = fileRetryAttempts[eventID, default: 0]
+        fileRetryAttempts[eventID] = attempt + 1
+        let delay = [15.0, 30, 60, 120, 300][min(attempt, 4)]
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, WatchWorkoutStore.shared.pendingEvents().contains(where: { $0.id == eventID }) else { return }
+            self.eventTransferSent.remove(eventID)
+            self.eventSendInFlight.remove(eventID)
+            self.flushEventOutbox()
+        }
+        fileEventRetries[eventID] = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    func requestCurrentSnapshotIfReady() {
+        if let active = WatchWorkoutStore.shared.snapshot(),
+           WatchWorkoutStore.shared.pendingEvents().contains(where: { $0.workoutID == active.workoutID }) { return }
+        requestCurrentSnapshot()
+    }
+
+    func requestCurrentSnapshot() {
+        guard isActivated, isReachable else { return }
+        session.sendMessage([PayloadKey.requestWorkoutSnapshot: true], replyHandler: nil, errorHandler: nil)
+    }
+
     func handlePrepareWorkoutSession(_ workoutConfiguration: HKWorkoutConfiguration) {
         os_log("Ensuring we have a workout session that keeps the app alive")
         WorkoutSessionManagerStore.shared.ensurePreparedWorkoutSession(configuration: workoutConfiguration) { [weak self] result in
@@ -289,6 +367,22 @@ extension PhoneConnectionManager {
 
 // MARK: - Sending
 extension PhoneConnectionManager {
+    /// Live readings deliberately have no transferUserInfo fallback: replaying
+    /// old heart rates after reconnecting would misrepresent them as current.
+    func sendWorkoutMetrics(_ metrics: WatchWorkoutMetrics) {
+        dispatchPrecondition(condition: .onQueue(.main))
+        guard isActivated, isReachable,
+              let data = WatchWorkoutWire.encode(metrics) else { return }
+        session.sendMessage([PayloadKey.workoutMetrics: data], replyHandler: nil) { _ in }
+    }
+
+    private func sendCurrentWorkoutMetrics() {
+        guard isActivated, isReachable else { return }
+        WorkoutSessionManager.perform {
+            WorkoutSessionManagerStore.shared.workoutSessionManager?.publishLiveMetrics()
+        }
+    }
+
     /// wrapper to send either via message or transfer, depending on what's available
     private func sendUserInfo(userInfo: [String : Any]) {
         guard isActivated else {
@@ -319,11 +413,30 @@ extension PhoneConnectionManager {
     /// sends an immediate message when reachable. The phone acknowledges by
     /// event ID; duplicate deliveries are therefore safe for the phone adapter.
     func flushEventOutbox() {
+        guard Thread.isMainThread else {
+            DispatchQueue.main.async { self.flushEventOutbox() }; return
+        }
         guard isActivated else { return }
-        for event in WatchWorkoutStore.shared.pendingEvents() {
+        // Drain in sequence, waiting for each durable ACK. A later structural
+        // edit must never overtake creation (or undo a newer set completion).
+        // Duplicate deliveries from the fallback transport remain idempotent.
+        for event in WatchWorkoutStore.shared.pendingEvents().sorted(by: { $0.sequence < $1.sequence }).prefix(1) {
             guard !eventSendInFlight.contains(event.id),
                   let data = WatchWorkoutWire.encode(event) else { continue }
 
+            if data.count > 48 * 1_024 {
+                if !eventTransferSent.contains(event.id) {
+                    do {
+                        let url = FileManager.default.temporaryDirectory
+                            .appendingPathComponent("light-watch-event-" + UUID().uuidString + ".json")
+                        try data.write(to: url, options: .atomic)
+                        eventFiles[url] = event.id
+                        session.transferFile(url, metadata: ["ironWorkoutEvent": true])
+                        eventTransferSent.insert(event.id)
+                    } catch { WorkoutSessionManagerStore.shared.reportPersistenceFailure(error) }
+                }
+                continue
+            }
             let payload: [String: Any] = [PayloadKey.workoutEvent: data]
             if !eventTransferSent.contains(event.id) {
                 session.transferUserInfo(payload)
@@ -337,8 +450,10 @@ extension PhoneConnectionManager {
             }, errorHandler: { [weak self] _ in
                 // transferUserInfo above remains queued; allow a later
                 // reachability/activation transition to try the fast path.
-                self?.eventSendInFlight.remove(event.id)
-                self?.eventTransferSent.remove(event.id)
+                DispatchQueue.main.async {
+                    self?.eventSendInFlight.remove(event.id)
+                    self?.eventTransferSent.remove(event.id)
+                }
             })
         }
     }

@@ -18,7 +18,8 @@ struct HistoryView: View {
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var sceneState: SceneState
 
-    @FetchRequest(fetchRequest: HistoryView.fetchRequest) private var workouts
+    @Environment(\.managedObjectContext) private var managedObjectContext
+    @ObservedObject private var historyStore = TrainingHistoryStore.shared
 
     @State private var activityItems: [Any]?
     @State private var workoutToDelete: Workout?
@@ -29,17 +30,6 @@ struct HistoryView: View {
     @State private var trendMetric: HistoryTrendMetric = .duration
     @State private var selectedTimeFrame = WorkoutExerciseChartData.TimeFrame.month
     @State private var browseMode: HistoryBrowseMode = .workouts
-
-    private var completedWorkouts: [Workout] {
-        workouts.filter { $0.hasCompletedSets ?? false }
-    }
-
-    static var fetchRequest: NSFetchRequest<Workout> {
-        let request: NSFetchRequest<Workout> = Workout.fetchRequest()
-        request.predicate = NSPredicate(format: "\(#keyPath(Workout.isCurrentWorkout)) != %@", NSNumber(booleanLiteral: true))
-        request.sortDescriptors = [NSSortDescriptor(keyPath: \Workout.start, ascending: false)]
-        return request
-    }
 
     var body: some View {
         NavigationStack {
@@ -57,12 +47,31 @@ struct HistoryView: View {
                     .padding(.bottom, 4)
                 }
 
-                historyModeContent
+                if let error = historyStore.error {
+                    Section { Button("Retry Loading History") { historyStore.refresh() } } footer: { Text(error) }
+                } else if historyStore.isLoading && historyStore.snapshot.sessions.isEmpty {
+                    Section { ProgressView("Loading History…") }
+                } else {
+                    historyModeContent
+                }
             }
             .listStyle(.insetGrouped)
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.large)
+            .task { historyStore.observe(in: managedObjectContext) }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Menu {
+                        NavigationLink {
+                            exerciseProgressPage
+                        } label: {
+                            Label("Exercise Progress", systemImage: "chart.xyaxis.line")
+                        }
+                    } label: { Image(systemName: "ellipsis") }
+                    .accessibilityLabel("History options")
+                }
+            }
         }
         .confirmationDialog(
             "Delete this workout?",
@@ -85,7 +94,7 @@ struct HistoryView: View {
                 workoutToDelete = nil
             }
         } message: {
-            Text("This removes the workout, its logged sets, and Iron’s matching Apple Health workout.")
+            Text("This removes the workout, its logged sets, and Light’s matching Apple Health workout.")
         }
         .sheet(isPresented: $showingMuscleBreakdown) {
             WeeklyMuscleBreakdownSheet(items: weeklyMuscleBreakdown)
@@ -127,13 +136,17 @@ struct HistoryView: View {
         }
     }
 
+    private var exerciseProgressPage: some View {
+        List { exerciseHistoryContent }
+            .listStyle(.insetGrouped)
+            .navigationTitle("Exercise Progress")
+    }
+
     @ViewBuilder
     private var historyModeContent: some View {
         switch browseMode {
         case .workouts:
             workoutHistoryContent
-        case .exercises:
-            exerciseHistoryContent
         case .insights:
             progressSummary
             muscleRecoveryMap
@@ -143,57 +156,52 @@ struct HistoryView: View {
     @ViewBuilder
     private var progressSummary: some View {
         Section {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
+                Picker("Metric", selection: $trendMetric) {
+                    ForEach(HistoryTrendMetric.allCases) { metric in Text(metric.title).tag(metric) }
+                }
+                .pickerStyle(.segmented)
                 trendMetric.headlineText(value: currentTrendValue, weightUnit: settingsStore.weightUnit)
-                    .font(.ironMetric(.title))
-                    .foregroundStyle(trendMetric.color)
+                    .font(.ironMetric(.title)).foregroundStyle(trendMetric.color)
                     .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: currentTrendValue)
-
-                HistoryTrendChart(
-                    points: trendPoints,
-                    metricTitle: trendMetric.title,
-                    metricColor: trendMetric.color,
-                    weightUnit: settingsStore.weightUnit,
-                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) }
-                )
+                HistoryTrendChart(points: trendPoints, metricTitle: trendMetric.title,
+                    metricColor: trendMetric.color, weightUnit: settingsStore.weightUnit,
+                    valueLabel: { trendMetric.axisLabel(value: $0, weightUnit: settingsStore.weightUnit) })
+                HStack {
+                    Text("Period").font(.subheadline).foregroundStyle(IronTheme.secondaryText)
+                    Spacer()
+                    Picker("Period", selection: $selectedTimeFrame) {
+                        ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { frame in Text(frame.title).tag(frame) }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
+                }
             }
             .padding(.vertical, 6)
-
-            Picker("Metric", selection: $trendMetric) {
-                ForEach(HistoryTrendMetric.allCases) { metric in
-                    Text(metric.title).tag(metric)
-                }
-            }
-            .pickerStyle(.segmented)
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-
-            Picker("Range", selection: $selectedTimeFrame) {
-                ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { timeFrame in
-                    Text(timeFrame.title).tag(timeFrame)
-                }
-            }
-        } header: {
-            Text("Training Trend")
-        } footer: {
-            Text("Latest \(trendMetric.contextLabel(weightUnit: settingsStore.weightUnit)).")
-        }
+            .animation(IronMotion.preferred(IronMotion.fade, reduceMotion: reduceMotion), value: trendMetric)
+            .sensoryFeedback(.selection, trigger: trendMetric)
+            .sensoryFeedback(.selection, trigger: selectedTimeFrame)
+        } header: { Text("Training Trend") }
+        footer: { Text("Latest \(trendMetric.contextLabel(weightUnit: settingsStore.weightUnit)).") }
 
         Section("This Week") {
-            LabeledContent("Workouts", value: "\(workoutsThisWeek)")
-            LabeledContent("Sets", value: "\(setsThisWeek)")
-            LabeledContent("Time", value: durationThisWeek)
+            LabeledContent("Workouts") {
+                Text("\(workoutsThisWeek)").font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.accent)
+            }
+            LabeledContent("Sets") {
+                Text("\(setsThisWeek)").font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.metricSets)
+            }
+            LabeledContent("Time") {
+                Text(durationThisWeek).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(IronTheme.metricTime)
+            }
         }
-        .monospacedDigit()
     }
 
     @ViewBuilder
     private var workoutHistoryContent: some View {
-        let completed = completedWorkouts
+        let completed = historyStore.snapshot.sessions
         // isPersonalRecord performs count fetches. Build the same classification
         // once from the fetched history instead of querying from every row/bar.
-        let records = HistoryRecordIndex.recordSetIDs(in: completed)
+        let records = historyStore.snapshot.recordSetIDs
         if completed.isEmpty {
             Section("Workouts") {
                 ContentUnavailableView(
@@ -207,7 +215,7 @@ struct HistoryView: View {
             let weeks = HistoryWorkoutWeek.group(completed)
             ForEach(weeks) { week in
                 Section {
-                    ForEach(week.workouts, id: \.objectID) { workout in
+                    ForEach(week.workouts) { workout in
                         workoutHistoryLink(workout, recordSetIDs: records)
                     }
                 } header: {
@@ -246,8 +254,9 @@ struct HistoryView: View {
             .font(.ironMetric(.caption))
     }
 
-    private func workoutHistoryLink(_ workout: Workout, recordSetIDs: Set<NSManagedObjectID>) -> some View {
-        NavigationLink {
+    private func workoutHistoryLink(_ session: TrainingSessionSnapshot, recordSetIDs: Set<NSManagedObjectID>) -> some View {
+        let workout = managedObjectContext.object(with: session.id) as! Workout
+        return NavigationLink {
             WorkoutDetailView(workout: workout)
                 .environmentObject(settingsStore)
         } label: {
@@ -291,10 +300,11 @@ struct HistoryView: View {
 
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(summary.exercise.title)
+                                    .font(.headline)
                                     .lineLimit(2)
                                 Text("\(summary.sessionCount) session\(summary.sessionCount == 1 ? "" : "s") · \(summary.setCount) set\(summary.setCount == 1 ? "" : "s")")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                                    .font(.ironMetric(.caption, weight: .semibold))
+                                    .foregroundStyle(IronTheme.secondaryText)
                             }
 
                             Spacer(minLength: 8)
@@ -316,37 +326,12 @@ struct HistoryView: View {
     }
 
     private var trainedExerciseSummaries: [HistoryExerciseSummary] {
-        var summaries: [UUID: HistoryExerciseSummary] = [:]
-
-        for workout in completedWorkouts {
-            let workoutDate = workout.start ?? .distantPast
-            let workoutExercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
-
-            for workoutExercise in workoutExercises {
-                let completedSets = max(workoutExercise.numberOfCompletedSets ?? 0, 0)
-                guard completedSets > 0,
-                      let exercise = workoutExercise.exercise(in: exerciseStore.exercises) else { continue }
-
-                if var summary = summaries[exercise.uuid] {
-                    summary.sessionCount += 1
-                    summary.setCount += completedSets
-                    summary.lastTrained = max(summary.lastTrained, workoutDate)
-                    summaries[exercise.uuid] = summary
-                } else {
-                    summaries[exercise.uuid] = HistoryExerciseSummary(
-                        exercise: exercise,
-                        sessionCount: 1,
-                        setCount: completedSets,
-                        lastTrained: workoutDate
-                    )
-                }
-            }
-        }
-
-        return summaries.values.sorted {
-            if $0.lastTrained == $1.lastTrained {
-                return $0.exercise.title.localizedCaseInsensitiveCompare($1.exercise.title) == .orderedAscending
-            }
+        historyStore.snapshot.exerciseTotals.compactMap { uuid, total in
+            guard let exercise = exerciseStore.exercisesByUUID[uuid] else { return nil }
+            return HistoryExerciseSummary(exercise: exercise, sessionCount: total.sessions,
+                setCount: total.sets, lastTrained: total.lastTrained)
+        }.sorted {
+            if $0.lastTrained == $1.lastTrained { return $0.exercise.title.localizedStandardCompare($1.exercise.title) == .orderedAscending }
             return $0.lastTrained > $1.lastTrained
         }
     }
@@ -421,13 +406,10 @@ struct HistoryView: View {
     private var weeklyMuscleSets: [Muscle: Int] {
         var result: [Muscle: Int] = [:]
         for workout in workoutsThisWeekList {
-            let workoutExercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
-            for workoutExercise in workoutExercises {
-                guard let exercise = workoutExercise.exercise(in: exerciseStore.exercises) else { continue }
-                let completed = max(workoutExercise.numberOfCompletedSets ?? 0, 0)
-                guard completed > 0 else { continue }
-                for muscle in exercise.primaryMuscle.compactMap(mapMuscle) {
-                    result[muscle, default: 0] += completed
+            for item in workout.exercises {
+                guard let uuid = item.uuid, let exercise = exerciseStore.exercisesByUUID[uuid] else { continue }
+                for muscle in Set(exercise.primaryMuscle.compactMap(mapMuscle)) {
+                    result[muscle, default: 0] += item.setCount
                 }
             }
         }
@@ -495,18 +477,18 @@ struct HistoryView: View {
         Calendar.current.dateInterval(of: .weekOfYear, for: Date())?.start ?? Date.distantPast
     }
 
-    private var workoutsThisWeekList: [Workout] {
-        completedWorkouts.filter { ($0.start ?? .distantPast) >= weekStart }
+    private var workoutsThisWeekList: [TrainingSessionSnapshot] {
+        historyStore.snapshot.sessions.filter { $0.date >= weekStart }
     }
 
     private var workoutsThisWeek: Int { workoutsThisWeekList.count }
 
     private var setsThisWeek: Int {
-        workoutsThisWeekList.reduce(0) { $0 + ($1.numberOfCompletedSets ?? 0) }
+        workoutsThisWeekList.reduce(0) { $0 + $1.setCount }
     }
 
     private var durationThisWeek: String {
-        let seconds = workoutsThisWeekList.reduce(0) { $0 + ($1.duration ?? 0) }
+        let seconds = workoutsThisWeekList.reduce(0) { $0 + $1.duration }
         if seconds >= 3600 {
             let hours = Int(seconds) / 3600
             let minutes = (Int(seconds) % 3600) / 60
@@ -542,7 +524,7 @@ struct HistoryView: View {
             }
         case .sixMonths, .year, .all:
             let earliest = selectedTimeFrame.from
-                ?? completedWorkouts.compactMap(\.start).min()
+                ?? historyStore.snapshot.sessions.map(\.date).min()
                 ?? calendar.date(byAdding: .year, value: -1, to: now)
                 ?? now
             let startMonth = calendar.date(from: calendar.dateComponents([.year, .month], from: earliest)) ?? earliest
@@ -568,27 +550,14 @@ struct HistoryView: View {
     }
 
     private func trendPoint(start: Date, end: Date, label: String, isCurrent: Bool) -> HistoryTrendPoint {
-        let bucketWorkouts = completedWorkouts.filter {
-            let date = $0.start ?? .distantPast
-            return date >= start && date < end
-        }
-
-        let duration = bucketWorkouts.reduce(0) { $0 + ($1.duration ?? 0) }
-        let kilograms = bucketWorkouts.reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
-        let volume = WeightUnit.convert(
-            weight: kilograms,
-            from: .metric,
-            to: settingsStore.weightUnit
-        )
-        let sets = bucketWorkouts.reduce(0) { $0 + ($1.numberOfCompletedSets ?? 0) }
-        let repetitions = bucketWorkouts.reduce(0) { total, workout in
-            let exercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
-            return total + exercises.reduce(0) { $0 + ($1.numberOfCompletedRepetitions ?? 0) }
-        }
-        let efforts = bucketWorkouts.compactMap(\.sessionEffortValue)
-        let averageEffort = efforts.isEmpty
-            ? nil
-            : efforts.reduce(0, +) / Double(efforts.count)
+        let bucketWorkouts = historyStore.snapshot.sessions.filter { $0.date >= start && $0.date < end }
+        let duration = bucketWorkouts.reduce(0) { $0 + $1.duration }
+        let kilograms = bucketWorkouts.reduce(0) { $0 + $1.volume }
+        let volume = WeightUnit.convert(weight: kilograms, from: .metric, to: settingsStore.weightUnit)
+        let sets = bucketWorkouts.reduce(0) { $0 + $1.setCount }
+        let repetitions = bucketWorkouts.reduce(0) { $0 + $1.repetitions }
+        let efforts = bucketWorkouts.compactMap(\.effort)
+        let averageEffort = efforts.isEmpty ? nil : efforts.reduce(0, +) / Double(efforts.count)
 
         let value: Double
         switch trendMetric {
@@ -657,7 +626,6 @@ struct HistoryView: View {
 
 private enum HistoryBrowseMode: String, CaseIterable, Identifiable {
     case workouts
-    case exercises
     case insights
 
     var id: String { rawValue }
@@ -665,7 +633,6 @@ private enum HistoryBrowseMode: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .workouts: return "Workouts"
-        case .exercises: return "Exercises"
         case .insights: return "Insights"
         }
     }
@@ -673,7 +640,6 @@ private enum HistoryBrowseMode: String, CaseIterable, Identifiable {
     var systemImage: String {
         switch self {
         case .workouts: return "clock.arrow.circlepath"
-        case .exercises: return "dumbbell.fill"
         case .insights: return "chart.xyaxis.line"
         }
     }
@@ -785,6 +751,7 @@ private struct HistoryTrendPoint: Identifiable {
 
 private struct HistoryTrendChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let points: [HistoryTrendPoint]
     let metricTitle: String
     let metricColor: Color
@@ -814,18 +781,22 @@ private struct HistoryTrendChart: View {
         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
         .onAppear { hasAppeared = true }
         .chartYAxis {
-            AxisMarks(position: .leading) { value in
+            AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
                 AxisGridLine()
                 AxisValueLabel {
                     if let raw = value.as(Double.self) {
                         Text(valueLabel(raw))
+                            .font(.ironMetric(.footnote, weight: .semibold))
+                            .foregroundStyle(IronTheme.secondaryText)
                     }
                 }
             }
         }
         .chartXAxis {
-            AxisMarks(values: .automatic(desiredCount: 4)) {
+            AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4)) {
                 AxisValueLabel()
+                    .font(.footnote)
+                    .foregroundStyle(IronTheme.secondaryText)
             }
         }
         .chartXSelection(value: Binding(
@@ -840,7 +811,8 @@ private struct HistoryTrendChart: View {
                 }?.id
             }
         ))
-        .frame(height: 150)
+        .ironHorizontalChartScrubbing { selectedPointID = nil }
+        .frame(height: dynamicTypeSize.isAccessibilitySize ? 260 : 150)
         .overlay(alignment: .topTrailing) {
             if let selectedPoint {
                 selectionCallout(for: selectedPoint)
@@ -939,7 +911,7 @@ private struct WeeklyMuscleBreakdownSheet: View {
                         ContentUnavailableView(
                             "No Muscle Load",
                             systemImage: "figure.strengthtraining.traditional",
-                            description: Text("Complete a working set and Iron will map your weekly distribution here.")
+                            description: Text("Complete a working set and Light will map your weekly distribution here.")
                         )
                         .listRowBackground(Color.clear)
                     }
@@ -997,9 +969,9 @@ private struct WeeklyMuscleBreakdownSheet: View {
 }
 private struct HistoryWorkoutWeek: Identifiable {
     let id: Date
-    let workouts: [Workout]
+    let workouts: [TrainingSessionSnapshot]
 
-    var volume: Double { workouts.reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) } }
+    var volume: Double { workouts.reduce(0) { $0 + $1.volume } }
 
     var title: String {
         guard id != .distantPast else { return "Unknown date" }
@@ -1010,72 +982,11 @@ private struct HistoryWorkoutWeek: Identifiable {
         return "Week of \(id.formatted(.dateTime.month(.abbreviated).day().year()))"
     }
 
-    static func group(_ workouts: [Workout]) -> [Self] {
+    static func group(_ workouts: [TrainingSessionSnapshot]) -> [Self] {
         let grouped = Dictionary(grouping: workouts) { workout in
-            workout.start.flatMap { Calendar.current.dateInterval(of: .weekOfYear, for: $0)?.start } ?? .distantPast
+            Calendar.current.dateInterval(of: .weekOfYear, for: workout.date)?.start ?? .distantPast
         }
         return grouped.keys.sorted(by: >).map { Self(id: $0, workouts: grouped[$0] ?? []) }
-    }
-}
-
-/// A small Pareto frontier of weight/repetition pairs, matching the model's
-/// "no earlier set with both weight and reps >= this set" record rule.
-private struct HistoryRecordFrontier {
-    private var pairs: [(weight: Double, reps: Int16)] = []
-
-    func dominates(weight: Double, reps: Int16) -> Bool {
-        pairs.contains { $0.weight >= weight && $0.reps >= reps }
-    }
-
-    mutating func insert(weight: Double, reps: Int16) {
-        guard !dominates(weight: weight, reps: reps) else { return }
-        pairs.removeAll { weight >= $0.weight && reps >= $0.reps }
-        pairs.append((weight, reps))
-    }
-}
-
-private enum HistoryRecordIndex {
-    static func recordSetIDs(in workouts: [Workout]) -> Set<NSManagedObjectID> {
-        var records: Set<NSManagedObjectID> = []
-        var trained: Set<UUID> = []
-        var previous: [UUID: HistoryRecordFrontier] = [:]
-        let dated = Dictionary(grouping: workouts.filter { $0.start != nil }, by: { $0.start! })
-
-        // Workouts sharing a start are peers, never each other's prior history.
-        for date in dated.keys.sorted() {
-            let batch = dated[date] ?? []
-            for workout in batch {
-                for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
-                    guard let uuid = exercise.exerciseUuid else { continue }
-                    var earlier = HistoryRecordFrontier()
-                    for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] {
-                        if set.isCompleted, set.weight != nil, set.repetitions != nil,
-                           set.repetitionsValue > 0, trained.contains(uuid),
-                           !(previous[uuid]?.dominates(weight: set.weightValue, reps: set.repetitionsValue) ?? false),
-                           !earlier.dominates(weight: set.weightValue, reps: set.repetitionsValue) {
-                            records.insert(set.objectID)
-                        }
-                        // The model also considers earlier uncompleted sets in
-                        // the same exercise when suppressing duplicate records.
-                        earlier.insert(weight: set.weightValue, reps: set.repetitionsValue)
-                    }
-                }
-            }
-            for workout in batch {
-                for exercise in workout.workoutExercises?.array as? [WorkoutExercise] ?? [] {
-                    guard let uuid = exercise.exerciseUuid else { continue }
-                    for set in exercise.workoutSets?.array as? [WorkoutSet] ?? [] where set.isCompleted {
-                        trained.insert(uuid)
-                        if let weight = set.weight, let reps = set.repetitions {
-                            previous[uuid, default: HistoryRecordFrontier()].insert(
-                                weight: weight.doubleValue, reps: reps.int16Value
-                            )
-                        }
-                    }
-                }
-            }
-        }
-        return records
     }
 }
 
@@ -1153,19 +1064,14 @@ private struct WorkoutHistoryRow: View {
             }
 
             Text(metadata)
-                .font(.caption)
+                .font(.subheadline)
                 .foregroundStyle(IronTheme.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
 
-            (Text(durationText).foregroundColor(IronTheme.metricTime)
-             + Text(" · ").foregroundColor(IronTheme.secondaryText)
-             + Text("\(workout.numberOfCompletedSets ?? 0) sets").foregroundColor(IronTheme.metricSets)
-             + Text(" · ").foregroundColor(IronTheme.secondaryText)
-             + Text(volumeNumber).foregroundColor(IronTheme.metricVolume)
-             + Text(" \(settingsStore.weightUnit.unit.symbol)")
-                .font(.caption2).foregroundColor(IronTheme.secondaryText))
-                .font(.ironMetric(.caption))
-                .fixedSize(horizontal: false, vertical: true)
+            IronWorkoutMetricLine(
+                duration: durationText, sets: workout.numberOfCompletedSets ?? 0,
+                volume: volumeNumber, unit: settingsStore.weightUnit.unit.symbol
+            )
 
             WorkoutExerciseBreakdown(items: items)
         }
@@ -1174,7 +1080,7 @@ private struct WorkoutHistoryRow: View {
 
     private var title: some View {
         Text(workout.displayTitle(in: exerciseStore.exercises))
-            .font(.body.weight(.semibold))
+            .font(.headline)
             .fixedSize(horizontal: false, vertical: true)
     }
 

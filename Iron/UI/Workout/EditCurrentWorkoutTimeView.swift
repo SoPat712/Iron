@@ -55,7 +55,7 @@ struct EditCurrentWorkoutTimeView: View {
             Section {
                 LabeledContent("Duration") {
                     Text(durationTitle)
-                        .monospacedDigit()
+                        .font(.ironMetric(.body, weight: .semibold))
                         .contentTransition(.numericText())
                 }
                 Toggle("Track Time Automatically", isOn: $tracksAutomatically)

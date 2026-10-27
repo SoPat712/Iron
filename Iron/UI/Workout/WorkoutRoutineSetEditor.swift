@@ -11,6 +11,7 @@ import WorkoutDataKit
 
 struct WorkoutRoutineSetEditor: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject var settingsStore: SettingsStore
     @EnvironmentObject var exerciseStore: ExerciseStore
     
@@ -154,7 +155,7 @@ struct WorkoutRoutineSetEditor: View {
                 }
             }
         )
-        .foregroundColor(validRepetitions ? .primary : .red)
+        .foregroundStyle(validRepetitions ? IronTheme.primaryText : IronTheme.danger)
     }
     
     private var repetitionsMaxDragger: some View {
@@ -175,7 +176,7 @@ struct WorkoutRoutineSetEditor: View {
                 }
             }
         )
-        .foregroundColor(validRepetitions ? .primary : .red)
+        .foregroundStyle(validRepetitions ? IronTheme.primaryText : IronTheme.danger)
     }
     
     private var tagButton: some View {
@@ -192,19 +193,13 @@ struct WorkoutRoutineSetEditor: View {
     }
     
     private var doneButton: some View {
-        Button(action: {
-            self.onDone()
-        }) {
-            Text(showNext ? "Next" : "Done")
-                .fixedSize()
-                .foregroundColor(IronTheme.onAccent)
-                .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
-            .background(
-                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                    .fill(IronTheme.accent)
-            )
-        }
-        .buttonStyle(.plain)
+        Button(showNext ? "Next" : "Done", action: onDone)
+            .font(.headline)
+            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
+            .controlSize(.large)
+            .buttonBorderShape(.capsule)
+            .tint(IronTheme.accent)
+            .buttonStyle(.borderedProminent)
     }
     
     private var moreSheet: some View {
@@ -264,17 +259,17 @@ struct WorkoutRoutineSetEditor: View {
                     }) {
                         Image(systemName: self.showKeyboard == .repetitionsMin ? "arrow.right" : self.showNext ? "arrow.right" : "checkmark")
                             .padding()
-                            .foregroundColor(IronTheme.onAccent)
-                            .background(
-                                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
-                                    .foregroundColor(Color.accentColor)
-                            )
-                            .frame(width: geometry.size.width / 4, height: geometry.size.height / 4)
+                            .frame(maxWidth: .infinity, minHeight: IronTheme.controlHeight)
                     }
+                    .controlSize(.large)
+                    .buttonBorderShape(.capsule)
+                    .tint(IronTheme.accent)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityLabel(self.showKeyboard == .repetitionsMin ? "Next set value" : (self.showNext ? "Next set" : "Done"))
                 }
                 .frame(width: geometry.size.width / 4)
             }
-        }.frame(height: NumericKeyboard.HEIGHT)
+        }.frame(height: NumericKeyboard.height(for: dynamicTypeSize))
     }
     
     var body: some View {
@@ -373,7 +368,7 @@ private struct MoreView: View {
                 Spacer()
                 if self.workoutRoutineSet.tagValue == tag {
                     Image(systemName: "checkmark")
-                        .foregroundColor(.secondary)
+                        .foregroundStyle(IronTheme.secondaryText)
                 }
             }.background(Color.fakeClear)
         }

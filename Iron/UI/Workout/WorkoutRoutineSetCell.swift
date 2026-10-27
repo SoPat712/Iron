@@ -29,6 +29,7 @@ struct WorkoutRoutineSetCell: View {
                     Text("Set")
                     
                     Text(repetitionIntervalString ?? " ")
+                        .font(.ironMetric(.body, weight: .semibold))
                         .background(
                             Group {
                                 if isSelected {
@@ -51,7 +52,7 @@ struct WorkoutRoutineSetCell: View {
             Spacer()
 
             Text("\(index)")
-                .font(Font.body.monospacedDigit())
+                .font(.ironMetric(.body, weight: .semibold))
                 .foregroundColor(workoutRoutineSet.tagValue != nil ? .clear : .secondary)
                 .background(
                     Group {

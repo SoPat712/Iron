@@ -35,6 +35,7 @@ struct WorkoutExerciseSectionHeader: View {
             Image(systemName: "person")
                 .foregroundColor(.secondary)
             Text(format(weight: weight))
+                .font(.ironMetric(.caption, weight: .semibold))
         }
         .padding(4)
         .background(

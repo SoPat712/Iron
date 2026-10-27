@@ -87,7 +87,7 @@ extension HealthManager {
             case .unavailable:
                 return "Apple Health is not available on this device."
             case .denied:
-                return "Iron could not access Apple Health. You can review access in the Health app or iPhone Settings."
+                return "Light could not access Apple Health. You can review access in the Health app or iPhone Settings."
             }
         }
     }
@@ -822,7 +822,7 @@ extension HealthManager {
 
                 guard capturedError == nil else {
                     os_log(
-                        "Could not query prior Iron body measurements in HealthKit: %@",
+                        "Could not query prior Light body measurements in HealthKit: %@",
                         log: .health,
                         type: .error,
                         capturedError?.localizedDescription ?? "unknown error"
@@ -855,7 +855,7 @@ extension HealthManager {
                         completion: { result in
                             if case .failure(let error) = result {
                                 os_log(
-                                    "Could not reconcile Iron body measurement %@ in HealthKit: %@",
+                                    "Could not reconcile Light body measurement %@ in HealthKit: %@",
                                     log: .health,
                                     type: .error,
                                     plan.identifier.rawValue,

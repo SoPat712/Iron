@@ -145,10 +145,12 @@ struct WorkoutPlanView: View {
         NavigationLink(destination: WorkoutRoutineView(workoutRoutine: routine)) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(routine.displayTitle)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
                     .lineLimit(1)
                 Text(routine.subtitle(in: exerciseStore.exercises))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.subheadline)
+                    .foregroundStyle(IronTheme.secondaryText)
                     .lineLimit(2)
             }
         }

@@ -167,7 +167,7 @@ class NotificationManager: NSObject {
             
             let content = UNMutableNotificationContent()
             content.title = "Your workout was started"
-            content.body = "Open Iron to launch the Apple Watch companion."
+            content.body = "Open Light to launch the Apple Watch companion."
             if #available(iOS 15.0, *) {
                 content.interruptionLevel = .timeSensitive
             }

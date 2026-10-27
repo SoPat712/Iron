@@ -64,6 +64,14 @@ struct WorkoutActivityAttributes: ActivityAttributes {
         let setCount: Int
         let result: String
         var artworkFileName: String? = nil
+        /// Count this exercise's completed sets; its current set number can have holes.
+        /// Optional so an activity encoded by an earlier build still decodes.
+        var completedSetCount: Int? = nil
+
+        var completedSetProgress: Double? {
+            guard let completedSetCount, setCount > 0 else { return nil }
+            return Double(min(max(completedSetCount, 0), setCount)) / Double(setCount)
+        }
     }
 
     enum Phase: String, Codable, Hashable {
@@ -94,12 +102,17 @@ struct WorkoutActivityAttributes: ActivityAttributes {
         func resolvedPhase(at date: Date) -> Phase {
             switch phase {
             case .setCompleted:
-                if let confirmationUntil, date < confirmationUntil {
-                    return .setCompleted
+                guard nextSet != nil else {
+                    if let confirmationUntil, date < confirmationUntil {
+                        return .setCompleted
+                    }
+                    return .finished
                 }
-                guard nextSet != nil else { return .finished }
                 if isRestPaused || restTimerEnd.map({ date < $0 }) == true {
                     return .resting
+                }
+                if let confirmationUntil, date < confirmationUntil {
+                    return .setCompleted
                 }
                 return .currentSet
             case .resting:
@@ -143,7 +156,7 @@ struct WorkoutActivityAttributes: ActivityAttributes {
 @available(iOS 17.0, *)
 struct CompleteWorkoutSetIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Complete Workout Set"
-    static var description = IntentDescription("Marks the displayed Iron workout set complete.")
+    static var description = IntentDescription("Marks the displayed Light workout set complete.")
     static var openAppWhenRun = false
     static var isDiscoverable = false
 
@@ -179,7 +192,7 @@ struct CompleteWorkoutSetIntent: LiveActivityIntent {
 @available(iOS 17.0, *)
 struct AdjustWorkoutRestTimerIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Adjust Workout Rest Timer"
-    static var description = IntentDescription("Adds or removes time from Iron's active rest timer.")
+    static var description = IntentDescription("Adds or removes time from Light's active rest timer.")
     static var openAppWhenRun = false
     static var isDiscoverable = false
 
@@ -236,7 +249,7 @@ struct ResumeWorkoutRestTimerIntent: LiveActivityIntent {
 @available(iOS 17.0, *)
 struct SkipWorkoutRestTimerIntent: LiveActivityIntent {
     static var title: LocalizedStringResource = "Skip Workout Rest Timer"
-    static var description = IntentDescription("Skips Iron's active rest timer.")
+    static var description = IntentDescription("Skips Light's active rest timer.")
     static var openAppWhenRun = false
     static var isDiscoverable = false
 

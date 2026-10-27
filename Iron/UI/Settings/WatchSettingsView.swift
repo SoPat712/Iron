@@ -28,7 +28,7 @@ struct WatchSettingsView: View {
         var title: String {
             switch self {
             case .unavailable: return "Pair an Apple Watch"
-            case .installRequired: return "Install Iron on your watch"
+            case .installRequired: return "Install Light on your watch"
             case .connected: return "Connected now"
             case .ready: return "Ready to sync"
             }
@@ -39,11 +39,11 @@ struct WatchSettingsView: View {
             case .unavailable:
                 return "Pair a watch in the Watch app on your iPhone to use the workout companion."
             case .installRequired:
-                return "Open the Watch app on your iPhone and install Iron from Available Apps."
+                return "Open the Watch app on your iPhone and install Light from Available Apps."
             case .connected:
-                return "Iron can exchange workout changes with your watch right now."
+                return "Light can exchange workout changes with your watch right now."
             case .ready:
-                return "Your current workout will sync whenever Iron is available on both devices."
+                return "Your current workout will sync whenever Light is available on both devices."
             }
         }
 
@@ -73,7 +73,7 @@ struct WatchSettingsView: View {
         var setupActionTitle: String {
             switch self {
             case .unavailable: return "Pair in the Watch app"
-            case .installRequired: return "Install Iron on Apple Watch"
+            case .installRequired: return "Install Light on Apple Watch"
             case .connected, .ready: return "Open the Watch app"
             }
         }
@@ -105,7 +105,7 @@ struct WatchSettingsView: View {
             Section("Connection") {
                 connectionStatusRow
                 LabeledContent("Paired", value: connection.isPaired ? "Yes" : "No")
-                LabeledContent("Iron installed", value: connection.isWatchAppInstalled ? "Yes" : "No")
+                LabeledContent("Light installed", value: connection.isWatchAppInstalled ? "Yes" : "No")
                 LabeledContent("Connection", value: connection.isReachable ? "Live" : "Standby")
 
                 Button(action: openWatchSetup) {
@@ -230,12 +230,12 @@ struct WatchSettingsView: View {
 
     private var companionDetail: String {
         if !isCompanionAvailable {
-            return "Pair an Apple Watch and install Iron before enabling the workout companion."
+            return "Pair an Apple Watch and install Light before enabling the workout companion."
         }
         if displayedWatchCompanion {
             return "Heart rate and active energy are recorded by Apple Watch and remain available in Apple Health."
         }
-        return "You can keep logging on iPhone, but Iron will not automatically begin a watch workout."
+        return "You can keep logging on iPhone, but Light will not automatically begin a watch workout."
     }
 
     private var offlineContinuityRow: some View {
@@ -266,12 +266,12 @@ struct WatchSettingsView: View {
 
     private var offlineContinuityDetail: String {
         guard isCompanionAvailable else {
-            return "Pair an Apple Watch and install Iron to keep an active workout locally on your wrist when the phone disconnects."
+            return "Pair an Apple Watch and install Light to keep an active workout locally on your wrist when the phone disconnects."
         }
         guard displayedWatchCompanion else {
             return "Turn on Launch with workouts to begin the companion automatically. Until then, your active workout continues locally on iPhone."
         }
-        return "If the phone disconnects, Iron stores the current workout and queues your edits locally. Changes reconcile automatically when the connection returns."
+        return "If the phone disconnects, Light stores the current workout and queues your edits locally. Changes reconcile automatically when the connection returns."
     }
 
     private func featureRow(icon: String, title: String, detail: String) -> some View {

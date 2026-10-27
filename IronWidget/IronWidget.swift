@@ -142,9 +142,9 @@ struct LastWorkoutWidget: Widget {
 private enum WorkoutActivityPalette {
     static let accent = IronTheme.accent
     static let completion = IronTheme.accent
-    static let surface = IronTheme.topBar
-    static let onSurface = IronTheme.primaryText
-    static let secondary = IronTheme.secondaryText
+    static let surface = IronTheme.mediaBackdrop
+    static let onSurface = IronTheme.onMedia
+    static let secondary = IronTheme.onMedia.opacity(0.65)
     static let onAccent = IronTheme.onAccent
     static let compactCornerRadius: CGFloat = 12
 }
@@ -153,26 +153,14 @@ struct WorkoutLiveActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: WorkoutActivityAttributes.self) { context in
             WorkoutLiveActivityContainer(context: context)
+                .environment(\.colorScheme, .dark)
                 .activityBackgroundTint(WorkoutActivityPalette.surface)
                 .activitySystemActionForegroundColor(WorkoutActivityPalette.onSurface)
                 .widgetURL(DeepLink.url(for: .startWorkout))
         } dynamicIsland: { context in
             DynamicIsland {
-                DynamicIslandExpandedRegion(.leading) {
-                    WorkoutDynamicIslandExpandedLeading(context: context)
-                }
-
-                DynamicIslandExpandedRegion(.trailing) {
-                    Text(context.attributes.workoutStart, style: .timer)
-                        .font(.ironMetric(.caption, weight: .semibold))
-                        .foregroundStyle(IronTheme.metricTime)
-                        .multilineTextAlignment(.trailing)
-                }
-
-                DynamicIslandExpandedRegion(.center) {
-                    WorkoutDynamicIslandCenter(context: context)
-                }
-
+                // A full-width region below the sensor keeps the exercise and
+                // its progress inside the island's rounded-corner safe area.
                 DynamicIslandExpandedRegion(.bottom) {
                     WorkoutDynamicIslandBottom(context: context)
                 }
@@ -183,6 +171,9 @@ struct WorkoutLiveActivityWidget: Widget {
             } minimal: {
                 WorkoutDynamicIslandMinimal(context: context)
             }
+            .contentMargins(.horizontal, 20, for: .expanded)
+            .contentMargins(.top, 12, for: .expanded)
+            .contentMargins(.bottom, 12, for: .expanded)
             .keylineTint(WorkoutActivityPalette.accent)
             .widgetURL(DeepLink.url(for: .startWorkout))
         }
@@ -225,6 +216,7 @@ private struct WorkoutActivityFamilyRouter: View {
         switch activityFamily {
         case .small:
             WorkoutSmartStackView(context: context)
+                .foregroundStyle(IronTheme.onMedia)
         default:
             WorkoutLiveActivityLockScreenView(context: context)
         }
@@ -234,75 +226,60 @@ private struct WorkoutActivityFamilyRouter: View {
 /// Compact Smart Stack layout for Apple Watch: one glanceable line of state,
 /// the live value, and rest controls only when they are actionable.
 private struct WorkoutSmartStackView: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let presentationDate = workoutPresentationDate(context, timeline.date)
-            let phase = context.state.resolvedPhase(at: presentationDate)
-            let set = context.state.visibleSet(at: presentationDate)
+            let date = workoutPresentationDate(context, timeline.date)
+            let phase = context.state.resolvedPhase(at: date)
+            let set = context.state.visibleSet(at: date)
 
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Image(systemName: phaseSystemImage(phase))
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(phaseTint(phase))
-
-                    Text(set?.exerciseName ?? context.attributes.workoutTitle)
-                        .font(.caption.weight(.semibold))
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.7)
-
-                    Spacer(minLength: 4)
-
-                    Text("\(context.state.completedSets)/\(context.state.totalSets)")
-                        .font(.ironMetric(.caption2, weight: .semibold))
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .foregroundStyle(IronTheme.metricSets)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .center, spacing: 8) {
+                    WorkoutActivityExerciseArtwork(set: set, phase: phase, size: 30)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(set?.exerciseName ?? "Light Workout")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(WorkoutActivityPalette.onSurface)
+                            .lineLimit(2)
+                        Text(workoutSetPositionTitle(set, phase: phase))
+                            .font(.caption2)
+                            .foregroundStyle(WorkoutActivityPalette.secondary)
+                            .lineLimit(2)
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    WorkoutActivitySetProgress(set: set, state: context.state, size: 28)
                 }
 
                 if phase == .resting, context.state.isRestPaused {
                     WorkoutPausedRestControls(context: context, compact: true)
                 } else if phase == .resting, let end = context.state.restTimerEnd {
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
+                        Text("Rest")
+                            .font(.caption2)
+                            .foregroundStyle(WorkoutActivityPalette.secondary)
                         workoutRestTimerText(until: end)
-                            .foregroundStyle(IronTheme.metricTime)
-                            .font(.ironMetric(.title3, weight: .semibold))
-
-                        Spacer(minLength: 4)
-
-                        Button(intent: SkipWorkoutRestTimerIntent(
-                            workoutID: context.attributes.workoutID
-                        )) {
-                            Image(systemName: "forward.fill")
-                        }
-                        .buttonBorderShape(.circle)
-                        .accessibilityLabel("Skip rest timer")
-                    }
-                } else {
-                    HStack(spacing: 6) {
-                        Text(set?.result.isEmpty == false && set?.result != "—" ? set!.result : "Log a set")
-                            .font(.ironMetric(.title3, weight: .semibold))
-                            .contentTransition(reduceMotion ? .opacity : .numericText())
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.7)
-
-                        Spacer(minLength: 4)
-
-                        Text(context.attributes.workoutStart, style: .timer)
-                            .font(.ironMetric(.caption2, weight: .semibold))
+                            .font(.ironMetric(.body, weight: .semibold))
                             .foregroundStyle(IronTheme.metricTime)
                             .multilineTextAlignment(.trailing)
-                            .lineLimit(1)
-
-                        if phase == .currentSet, let set {
-                            WorkoutActivityCompleteSetButton(
-                                workoutID: context.attributes.workoutID,
-                                set: set,
-                                size: 30
-                            )
+                            .frame(maxWidth: .infinity, alignment: .trailing)
+                        Button(intent: SkipWorkoutRestTimerIntent(workoutID: context.attributes.workoutID)) {
+                            Text("Skip").font(.caption2.weight(.semibold))
+                                .frame(minWidth: 32, minHeight: 32)
                         }
+                        .buttonStyle(WorkoutActivityControlButtonStyle())
+                        .accessibilityLabel("Skip rest timer")
+                    }
+                } else if phase == .currentSet, let set {
+                    HStack(spacing: 8) {
+                        Text(set.result == "—" || set.result.isEmpty ? "Ready for your next set" : set.result)
+                            .font(.ironMetric(.caption, weight: .semibold))
+                            .foregroundStyle(WorkoutActivityPalette.onSurface)
+                            .lineLimit(2)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        WorkoutActivityCompleteSetButton(
+                            workoutID: context.attributes.workoutID, set: set, size: 30
+                        )
                     }
                 }
             }
@@ -339,13 +316,7 @@ private struct WorkoutLiveActivityLockScreenView: View {
 
                     Spacer(minLength: 8)
 
-                    Text(context.attributes.workoutStart, style: .timer)
-                        .font(.ironMetric(.caption, weight: .semibold))
-                        .contentTransition(reduceMotion ? .opacity : .numericText())
-                        .foregroundStyle(IronTheme.metricTime)
-                        .multilineTextAlignment(.trailing)
-                        .lineLimit(1)
-                        .minimumScaleFactor(0.76)
+                    WorkoutActivitySetProgress(set: set, state: context.state, size: 28)
                 }
 
                 HStack(spacing: 10) {
@@ -520,8 +491,8 @@ private struct WorkoutLiveActivityLockScreenView: View {
 
 }
 
-/// ActivityKit renders a small still from the on-device cache, never a GIF or
-/// a remote request. Rest keeps the timer symbol so its controls remain clear.
+/// Exercise identity stays visible during rest. ActivityKit uses a cached still,
+/// never a GIF or a remote request in the rendered activity.
 private struct WorkoutActivityExerciseArtwork: View {
     let set: WorkoutActivityAttributes.SetSnapshot?
     let phase: WorkoutActivityAttributes.Phase
@@ -529,8 +500,7 @@ private struct WorkoutActivityExerciseArtwork: View {
 
     var body: some View {
         Group {
-            if phase != .resting,
-               let fileURL = WorkoutLiveActivityArtwork.fileURL(for: set?.artworkFileName),
+            if let fileURL = WorkoutLiveActivityArtwork.fileURL(for: set?.artworkFileName),
                let image = UIImage(contentsOfFile: fileURL.path) {
                 Image(uiImage: image)
                     .resizable()
@@ -540,11 +510,11 @@ private struct WorkoutActivityExerciseArtwork: View {
                     .background(IronTheme.diagramCanvas, in: Circle())
                     .clipShape(Circle())
             } else {
-                Image(systemName: phase == .resting ? "timer" : "figure.strengthtraining.traditional")
+                Image(systemName: "figure.strengthtraining.traditional")
                     .font(.system(size: size * 0.5, weight: .semibold))
-                    .foregroundStyle(phaseTint(phase))
+                    .foregroundStyle(IronTheme.accent)
                     .frame(width: size, height: size)
-                    .background(phaseTint(phase).opacity(0.14), in: Circle())
+                    .background(IronTheme.accentSoft, in: Circle())
             }
         }
         .accessibilityHidden(true)
@@ -664,17 +634,6 @@ private struct WorkoutActivityCompleteSetButton: View {
     }
 }
 
-private struct WorkoutDynamicIslandCenter: View {
-    let context: ActivityViewContext<WorkoutActivityAttributes>
-
-    var body: some View {
-        // The exercise header lives in the full-width bottom region. Leaving
-        // center empty prevents the system's centered column from offsetting
-        // it relative to the result and controls underneath.
-        EmptyView()
-    }
-}
-
 private struct WorkoutDynamicIslandBottom: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
@@ -707,6 +666,7 @@ private struct WorkoutDynamicIslandBottom: View {
                     }
 
                     Spacer(minLength: 4)
+                    WorkoutActivitySetProgress(set: set, state: context.state, size: 28)
                 }
 
                 if phase == .resting, context.state.isRestPaused {
@@ -781,19 +741,8 @@ private struct WorkoutDynamicIslandBottom: View {
         phase: WorkoutActivityAttributes.Phase,
         set: WorkoutActivityAttributes.SetSnapshot?
     ) -> String {
-        guard let set else {
-            return "\(context.state.completedSets) of \(context.state.totalSets) sets"
-        }
-        switch phase {
-        case .setCompleted:
-            return "Set \(set.setNumber) of \(set.setCount) complete"
-        case .resting:
-            return "Next: set \(set.setNumber) of \(set.setCount) · \(dynamicResult(set))"
-        case .currentSet:
-            return "Set \(set.setNumber) of \(set.setCount) · \(dynamicResult(set))"
-        case .finished:
-            return "\(context.state.completedSets) sets logged"
-        }
+        let position = workoutSetPositionTitle(set, phase: phase)
+        return phase == .resting ? "Next · " + position : position
     }
 
     private func dynamicResult(_ set: WorkoutActivityAttributes.SetSnapshot?) -> String {
@@ -804,35 +753,90 @@ private struct WorkoutDynamicIslandBottom: View {
     }
 }
 
-private struct WorkoutDynamicIslandExpandedLeading: View {
-    let context: ActivityViewContext<WorkoutActivityAttributes>
+
+/// Optional snapshot counts keep activities from older builds readable until
+/// the app publishes a fresh state. Never infer completions from the set ordinal.
+private struct WorkoutActivitySetProgress: View {
+    let set: WorkoutActivityAttributes.SetSnapshot?
+    let state: WorkoutActivityAttributes.ContentState
+    let size: CGFloat
+
+    private var total: Int { max(set?.setCount ?? state.totalSets, 0) }
+    private var completed: Int? {
+        if let set { return set.completedSetCount.map { min(max($0, 0), total) } }
+        return min(max(state.completedSets, 0), total)
+    }
 
     var body: some View {
-        TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let phase = context.state.resolvedPhase(
-                at: workoutPresentationDate(context, timeline.date)
-            )
-            HStack(spacing: 6) {
-                Image(systemName: phaseSystemImage(phase))
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(phaseTint(phase))
-                Text(phaseTitle(phase))
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(WorkoutActivityPalette.secondary)
+        Group {
+            if let completed {
+                WorkoutSetProgressTile(completed: completed, total: total, size: size)
+                    .accessibilityLabel("\(set?.exerciseName ?? "Workout") progress")
+                    .accessibilityValue(total == 0 ? "No sets yet" : "\(completed) of \(total) sets complete")
+            } else if let set {
+                Text("\(set.setNumber)/\(set.setCount)")
+                    .font(.ironMetric(.caption2, weight: .semibold))
+                    .foregroundStyle(WorkoutActivityPalette.onSurface)
                     .lineLimit(1)
-                    .minimumScaleFactor(0.72)
+                    .minimumScaleFactor(0.7)
+                    .accessibilityLabel("Set \(set.setNumber) of \(set.setCount)")
             }
         }
     }
+}
 
-    private func phaseTitle(_ phase: WorkoutActivityAttributes.Phase) -> String {
-        switch phase {
-        case .currentSet: return "Iron"
-        case .setCompleted: return "Done"
-        case .resting: return "Rest"
-        case .finished: return "Done"
-        }
+private struct WorkoutSetProgressTile: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let completed: Int
+    let total: Int
+    let size: CGFloat
+
+    private var cells: Int { min(max(total, 1), 12) }
+    private var columns: Int { cells == 1 ? 1 : (cells <= 4 ? 2 : 3) }
+    private var rows: Int { (cells + columns - 1) / columns }
+    private var progress: Double {
+        guard total > 0 else { return 0 }
+        return Double(min(max(completed, 0), total)) / Double(total)
     }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let gap: CGFloat = 2
+            let width = (geometry.size.width - CGFloat(columns - 1) * gap) / CGFloat(columns)
+            let height = (geometry.size.height - CGFloat(rows - 1) * gap) / CGFloat(rows)
+            ZStack(alignment: .topLeading) {
+                ForEach(0..<cells, id: \.self) { cell in
+                    let fill = min(max(progress * Double(cells) - Double(cell), 0), 1)
+                    RoundedRectangle(cornerRadius: 2, style: .continuous)
+                        .fill(IronTheme.field)
+                        .overlay(alignment: .bottom) {
+                            Rectangle()
+                                .fill(IronTheme.accent)
+                                .scaleEffect(x: 1, y: CGFloat(fill), anchor: .bottom)
+                        }
+                        .clipShape(RoundedRectangle(cornerRadius: 2, style: .continuous))
+                        .frame(width: width, height: height)
+                        .position(
+                            x: CGFloat(cell % columns) * (width + gap) + width / 2,
+                            y: CGFloat(cell / columns) * (height + gap) + height / 2
+                        )
+                }
+            }
+        }
+        .frame(width: size, height: size)
+        .accessibilityElement(children: .ignore)
+        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completed)
+    }
+}
+
+private func workoutSetPositionTitle(
+    _ set: WorkoutActivityAttributes.SetSnapshot?,
+    phase: WorkoutActivityAttributes.Phase
+) -> String {
+    if phase == .finished { return "Workout complete" }
+    guard let set else { return "Open Light to add sets" }
+    if phase == .setCompleted { return "Set \(set.setNumber) complete" }
+    return "Set \(set.setNumber) of \(set.setCount)"
 }
 
 private struct WorkoutDynamicIslandCompactLeading: View {
@@ -840,60 +844,27 @@ private struct WorkoutDynamicIslandCompactLeading: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let phase = context.state.resolvedPhase(
-                at: workoutPresentationDate(context, timeline.date)
+            let date = workoutPresentationDate(context, timeline.date)
+            WorkoutActivityExerciseArtwork(
+                set: context.state.visibleSet(at: date),
+                phase: context.state.resolvedPhase(at: date),
+                size: 24
             )
-            Image(systemName: compactSystemImage(phase))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(
-                    phaseTint(phase)
-                )
-        }
-    }
-
-    private func compactSystemImage(_ phase: WorkoutActivityAttributes.Phase) -> String {
-        switch phase {
-        case .currentSet: return "dumbbell.fill"
-        case .setCompleted: return "checkmark"
-        case .resting: return "timer"
-        case .finished: return "checkmark.seal.fill"
         }
     }
 }
 
 private struct WorkoutDynamicIslandCompactTrailing: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let context: ActivityViewContext<WorkoutActivityAttributes>
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let presentationDate = workoutPresentationDate(context, timeline.date)
-            let phase = context.state.resolvedPhase(at: presentationDate)
-            if phase == .resting, context.state.isRestPaused {
-                Image(systemName: "pause.fill")
-                    .foregroundStyle(IronTheme.metricTime)
-                    .accessibilityLabel("Rest timer paused")
-            } else if phase == .resting, let end = context.state.restTimerEnd {
-                workoutRestTimerText(until: end)
-                    .font(.ironMetric(.caption, weight: .bold))
-                    .foregroundStyle(IronTheme.metricTime)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.66)
-            } else if phaseIsCompletion(phase) {
-                Image(systemName: "checkmark")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(WorkoutActivityPalette.completion)
-            } else if let set = context.state.visibleSet(at: presentationDate) {
-                Text("\(set.setNumber)/\(set.setCount)")
-                    .font(.ironMetric(.caption, weight: .bold))
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .foregroundStyle(IronTheme.metricSets)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.72)
-            } else {
-                Image(systemName: "checkmark")
-                    .foregroundStyle(WorkoutActivityPalette.completion)
-            }
+            let date = workoutPresentationDate(context, timeline.date)
+            WorkoutActivitySetProgress(
+                set: context.state.visibleSet(at: date), state: context.state, size: 20
+            )
+            .padding(.trailing, 6)
+            .frame(height: 24)
         }
     }
 }
@@ -942,12 +913,10 @@ private struct WorkoutDynamicIslandMinimal: View {
 
     var body: some View {
         TimelineView(.periodic(from: .now, by: 1)) { timeline in
-            let phase = context.state.resolvedPhase(
-                at: workoutPresentationDate(context, timeline.date)
+            let date = workoutPresentationDate(context, timeline.date)
+            WorkoutActivitySetProgress(
+                set: context.state.visibleSet(at: date), state: context.state, size: 20
             )
-            Image(systemName: phaseSystemImage(phase))
-                .font(.caption.weight(.bold))
-                .foregroundStyle(phaseTint(phase))
         }
     }
 }
@@ -976,7 +945,12 @@ private func workoutRestTimerText(until end: Date) -> some View {
     // The system keeps counting while the intent updates the deadline. Avoid
     // invalidation shimmer and replacement fades on each ±15-second action.
     .contentTransition(.identity)
-    .animation(nil, value: end)
+    .invalidatableContent(false)
+    .unredacted()
+    .transaction { transaction in
+        transaction.animation = nil
+        transaction.disablesAnimations = true
+    }
 }
 
 private func phaseSystemImage(_ phase: WorkoutActivityAttributes.Phase) -> String {

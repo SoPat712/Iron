@@ -51,6 +51,9 @@ struct RestoreBackupView: View {
                     } actions: {
                         Button("Try Again", action: backupStore.fetchBackups)
                             .buttonStyle(.borderedProminent)
+                            .buttonBorderShape(.capsule)
+                            .controlSize(.large)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
                     .listRowBackground(Color.clear)
 
@@ -103,7 +106,7 @@ struct RestoreBackupView: View {
             case .deleteConfirmation(let url):
                 IronConfirmationSheet(
                     title: "Delete this backup?",
-                    message: "This removes only the selected iCloud backup. Other backups and your current Iron data are not changed.",
+                    message: "This removes only the selected iCloud backup. Other backups and your current Light data are not changed.",
                     confirmTitle: "Delete Backup",
                     systemImage: "trash.fill",
                     secondaryTitle: "Keep Backup",
@@ -146,7 +149,7 @@ struct RestoreBackupView: View {
                     .controlSize(.large)
                 Text("Restoring Your Data")
                     .font(.headline)
-                Text("Keep Iron open while workouts and measurements are replaced.")
+                Text("Keep Light open while workouts and measurements are replaced.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -156,7 +159,7 @@ struct RestoreBackupView: View {
             .frame(maxWidth: 290)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Restoring your Iron data")
+        .accessibilityLabel("Restoring your Light data")
         .accessibilityAddTraits(.updatesFrequently)
     }
 

@@ -276,7 +276,12 @@ extension RestTimerStore {
         transition(start: restTimerStart, duration: adjustedDuration, pausedRemaining: nil)
     }
 
-    func applyWatchUpdate(end: Date?) {
+    func applyWatchUpdate(end: Date?, pausedRemaining: TimeInterval? = nil) {
+        if let pausedRemaining, let remaining = Self.validDuration(pausedRemaining) {
+            transition(start: nil, duration: max(restTimerDuration ?? remaining, remaining),
+                       pausedRemaining: remaining, updateWatch: false)
+            return
+        }
         guard let end else {
             transition(start: nil, duration: nil, pausedRemaining: nil, updateWatch: false)
             return

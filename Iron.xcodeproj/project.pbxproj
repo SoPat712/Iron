@@ -7,6 +7,15 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		298272C17E0A453685BEE003 /* WorkoutOrganizationSheets.swift in Sources */ = {isa = PBXBuildFile; fileRef = E800AD0C2755452E9932969A /* WorkoutOrganizationSheets.swift */; };
+		585545C7AC4644269DCDBF4E /* WorkoutOrganization.swift in Sources */ = {isa = PBXBuildFile; fileRef = DC41122EC62F4B42A87EDC67 /* WorkoutOrganization.swift */; };
+		065D0FF7C48140888457C16A /* WorkoutSetFocus.swift in Sources */ = {isa = PBXBuildFile; fileRef = 603745418FA144B2BFC686E3 /* WorkoutSetFocus.swift */; };
+		6C6E258F71B3450E93D4DAAF /* TrainingDayRecapView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 671E0155AE5F4B56A3B5FBFA /* TrainingDayRecapView.swift */; };
+		026E39C202A0429F897AEB25 /* TrainingHistoryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 39F058F9623B43C0940EA576 /* TrainingHistoryStore.swift */; };
+		F50100000000000000000001 /* IronMetricFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50100000000000000000000 /* IronMetricFont.swift */; };
+		F50100000000000000000002 /* IronMetricFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50100000000000000000000 /* IronMetricFont.swift */; };
+		F50100000000000000000003 /* IronMetricFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50100000000000000000000 /* IronMetricFont.swift */; };
+		F50100000000000000000004 /* IronMetricFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50100000000000000000000 /* IronMetricFont.swift */; };
 		F51000000000000000000001 /* RestLengthRuler.swift in Sources */ = {isa = PBXBuildFile; fileRef = F51000000000000000000000 /* RestLengthRuler.swift */; };
 		F70000000000000000000002 /* IronSoundPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000001 /* IronSoundPlayer.swift */; };
 		F70000000000000000000003 /* IronSoundPlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = F70000000000000000000001 /* IronSoundPlayer.swift */; };
@@ -307,6 +316,7 @@
 		8AB52128239931A8008064B2 /* NSManagedObjectContext+Publisher.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A74BEB722FC828A00AC33C5 /* NSManagedObjectContext+Publisher.swift */; };
 		8AB5212A2399329D008064B2 /* everkinetic-data in Resources */ = {isa = PBXBuildFile; fileRef = 8A7D6EBC200C156500AA0FA7 /* everkinetic-data */; };
 		8AB5212B239932A7008064B2 /* Exercise.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AC2B322200D2C8000DC68BE /* Exercise.swift */; };
+		C287B0261025000000000002 /* ExerciseCatalogMetadata.swift in Sources */ = {isa = PBXBuildFile; fileRef = C287B0261025000000000001 /* ExerciseCatalogMetadata.swift */; };
 		8AB5212C239932B5008064B2 /* ExerciseStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AE0A7A1233128DE0021EE23 /* ExerciseStore.swift */; };
 		8AB5212D239933FE008064B2 /* Array+uniq.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8AD40833202FC71B00A73E05 /* Array+uniq.swift */; };
 		8AB5212E2399341C008064B2 /* UserDefaults+HiddenExerciseUuids.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A2D21C023563FF60012A0A4 /* UserDefaults+HiddenExerciseUuids.swift */; };
@@ -382,6 +392,11 @@
 		F15D4B022C78000100F10001 /* MuscleMap in Frameworks */ = {isa = PBXBuildFile; productRef = F15D4B012C78000100F10001 /* MuscleMap */; };
 		F15D4B102C78000100F10001 /* HevyCSV.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15D4B112C78000100F10001 /* HevyCSV.swift */; };
 		F15D4B202C78000200F10001 /* ExerciseMediaStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = F15D4B212C78000200F10001 /* ExerciseMediaStore.swift */; };
+		F559802ABBBC33C723B3F675 /* WatchLibraryCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BF6706D25BB203D4411E45C /* WatchLibraryCatalog.swift */; };
+		76780A1A5D9557513FCA53A2 /* WatchDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = FA6DDBBA1A9B78AECE577BC0 /* WatchDesign.swift */; };
+		F221C0375F2490C0E24A30CB /* WatchExerciseCatalog.json in Resources */ = {isa = PBXBuildFile; fileRef = 06023808AD3EFE83BE8954DA /* WatchExerciseCatalog.json */; };
+		A8CE9CF8715C58CDADBCDAF2 /* WatchCompanionSyncTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1EF9663B4976A6A2945481DC /* WatchCompanionSyncTests.swift */; };
+		F50100000000000000000005 /* IronMetricFont.swift in Sources */ = {isa = PBXBuildFile; fileRef = F50100000000000000000000 /* IronMetricFont.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -527,6 +542,12 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		E800AD0C2755452E9932969A /* WorkoutOrganizationSheets.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutOrganizationSheets.swift; sourceTree = "<group>"; };
+		DC41122EC62F4B42A87EDC67 /* WorkoutOrganization.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutOrganization.swift; sourceTree = "<group>"; };
+		603745418FA144B2BFC686E3 /* WorkoutSetFocus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutSetFocus.swift; sourceTree = "<group>"; };
+		671E0155AE5F4B56A3B5FBFA /* TrainingDayRecapView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingDayRecapView.swift; sourceTree = "<group>"; };
+		39F058F9623B43C0940EA576 /* TrainingHistoryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TrainingHistoryStore.swift; sourceTree = "<group>"; };
+		F50100000000000000000000 /* IronMetricFont.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Shared/UI/SwiftUI/IronMetricFont.swift; sourceTree = SOURCE_ROOT; };
 		F51000000000000000000000 /* RestLengthRuler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Iron/UI/Components/RestLengthRuler.swift; sourceTree = SOURCE_ROOT; };
 		F70000000000000000000001 /* IronSoundPlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IronSoundPlayer.swift; sourceTree = "<group>"; };
 		F70000000000000000000011 /* set_complete.caf */ = {isa = PBXFileReference; lastKnownFileType = audio.caf; path = set_complete.caf; sourceTree = "<group>"; };
@@ -708,6 +729,7 @@
 		8AB972F6203583E40099507B /* InMemoryPersistentContainer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InMemoryPersistentContainer.swift; sourceTree = "<group>"; };
 		8ABB4C6522CE05DD0075CCE6 /* ExerciseMuscleGroupsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseMuscleGroupsView.swift; sourceTree = "<group>"; };
 		8AC2B322200D2C8000DC68BE /* Exercise.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Exercise.swift; sourceTree = "<group>"; };
+		C287B0261025000000000001 /* ExerciseCatalogMetadata.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseCatalogMetadata.swift; sourceTree = "<group>"; };
 		8AC4C9D123254A7E008E474A /* quotes */ = {isa = PBXFileReference; lastKnownFileType = folder; path = quotes; sourceTree = "<group>"; };
 		8AC6AF98242D60F400974279 /* WorkoutDataMigrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkoutDataMigrationTests.swift; sourceTree = "<group>"; };
 		8AC6AF9A242D610400974279 /* workout_data */ = {isa = PBXFileReference; lastKnownFileType = folder; path = workout_data; sourceTree = "<group>"; };
@@ -777,6 +799,10 @@
 		F15D4A102C77000100F10001 /* WorkoutData v5.xcdatamodel */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcdatamodel; path = "WorkoutData v5.xcdatamodel"; sourceTree = "<group>"; };
 		F15D4B112C78000100F10001 /* HevyCSV.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HevyCSV.swift; sourceTree = "<group>"; };
 		F15D4B212C78000200F10001 /* ExerciseMediaStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ExerciseMediaStore.swift; sourceTree = "<group>"; };
+		1BF6706D25BB203D4411E45C /* WatchLibraryCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WatchIron Extension/WatchLibraryCatalog.swift"; sourceTree = SOURCE_ROOT; };
+		FA6DDBBA1A9B78AECE577BC0 /* WatchDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "WatchIron Extension/UI/WatchDesign.swift"; sourceTree = SOURCE_ROOT; };
+		06023808AD3EFE83BE8954DA /* WatchExerciseCatalog.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "WatchIron Extension/WatchExerciseCatalog.json"; sourceTree = SOURCE_ROOT; };
+		1EF9663B4976A6A2945481DC /* WatchCompanionSyncTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "IronTests/WatchCompanionSyncTests.swift"; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -915,6 +941,9 @@
 				8A3A1156242699C0006DA244 /* WorkoutRoutineSetCell.swift */,
 				8A3A11582426B667006DA244 /* WorkoutRoutineSetEditor.swift */,
 				8A63B3752329463A001BD7B5 /* CurrentWorkoutView.swift */,
+				E800AD0C2755452E9932969A /* WorkoutOrganizationSheets.swift */,
+				DC41122EC62F4B42A87EDC67 /* WorkoutOrganization.swift */,
+				603745418FA144B2BFC686E3 /* WorkoutSetFocus.swift */,
 				8A1D989722C7C6AC0071225D /* WorkoutSetEditor.swift */,
 				8A38154F2301B865008ACDAD /* WorkoutLog.swift */,
 				8A70A73623041542000A3C76 /* TimerBannerView.swift */,
@@ -1229,6 +1258,10 @@
 		8A7D6E8B200BF92E00AA0FA7 = {
 			isa = PBXGroup;
 			children = (
+				1BF6706D25BB203D4411E45C /* WatchLibraryCatalog.swift */,
+				FA6DDBBA1A9B78AECE577BC0 /* WatchDesign.swift */,
+				06023808AD3EFE83BE8954DA /* WatchExerciseCatalog.json */,
+				1EF9663B4976A6A2945481DC /* WatchCompanionSyncTests.swift */,
 				8AD39685239C075E0000E3C4 /* Shared */,
 				8A7D6E96200BF92E00AA0FA7 /* Iron */,
 				8A86192C236DAB7000C1E96C /* WatchIron Extension */,
@@ -1437,6 +1470,7 @@
 				8AF4C535230EEE0A003A84DC /* WorkoutSetTag.swift */,
 				8AF4C539230EFB5F003A84DC /* RPE.swift */,
 				8AC2B322200D2C8000DC68BE /* Exercise.swift */,
+				C287B0261025000000000001 /* ExerciseCatalogMetadata.swift */,
 				8A9742D923F17B4700D74CDD /* ExerciseGroup.swift */,
 				8AE0A7A1233128DE0021EE23 /* ExerciseStore.swift */,
 			);
@@ -1496,6 +1530,7 @@
 			isa = PBXGroup;
 			children = (
 				8AC8063C22BAC54200086032 /* FeedView.swift */,
+				671E0155AE5F4B56A3B5FBFA /* TrainingDayRecapView.swift */,
 				8AC8064322BADC1B00086032 /* ActivityWorkoutsPerWeekCell.swift */,
 				8AA02614230AF74C00324853 /* ActivityWorkoutsPerWeekView.swift */,
 				8A743DE0252B6DFA0037C162 /* ActivitySummaryLast7DaysCell.swift */,
@@ -1511,6 +1546,7 @@
 			children = (
 				F70000000000000000000001 /* IronSoundPlayer.swift */,
 				F50000000000000000000000 /* IronStyle.swift */,
+				F50100000000000000000000 /* IronMetricFont.swift */,
 				F51000000000000000000000 /* RestLengthRuler.swift */,
 				8A507E03239C090200883339 /* Extension */,
 				8A507E05239C096200883339 /* Data */,
@@ -1560,6 +1596,7 @@
 				8A81E85523328D610094BAAF /* PinnedChartsStore.swift */,
 				8A204B3C23676E7200F40F79 /* BackupFileStore.swift */,
 				F15D4B212C78000200F10001 /* ExerciseMediaStore.swift */,
+				39F058F9623B43C0940EA576 /* TrainingHistoryStore.swift */,
 			);
 			path = Store;
 			sourceTree = "<group>";
@@ -1804,7 +1841,7 @@
 			mainGroup = 8A7D6E8B200BF92E00AA0FA7;
 			packageReferences = (
 				8A50F125243F5253003B3A6E /* XCRemoteSwiftPackageReference "Charts" */,
-				F15D4B002C78000100F10001 /* XCRemoteSwiftPackageReference "MuscleMap" */,
+				F15D4B002C78000100F10001 /* XCLocalSwiftPackageReference "MuscleMap" */,
 			);
 			productRefGroup = 8A7D6E95200BF92E00AA0FA7 /* Products */;
 			projectDirPath = "";
@@ -1870,6 +1907,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F221C0375F2490C0E24A30CB /* WatchExerciseCatalog.json in Resources */,
 				8A861937236DAB7100C1E96C /* Preview Assets.xcassets in Resources */,
 				8A861934236DAB7100C1E96C /* Assets.xcassets in Resources */,
 				8A861922236DAB7000C1E96C /* Assets.xcassets in Resources */,
@@ -1908,6 +1946,9 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F50100000000000000000005 /* IronMetricFont.swift in Sources */,
+				76780A1A5D9557513FCA53A2 /* WatchDesign.swift in Sources */,
+				F559802ABBBC33C723B3F675 /* WatchLibraryCatalog.swift in Sources */,
 				8A58807A23776004007F31A1 /* WorkoutSessionView.swift in Sources */,
 				8A141CAF239C7DFF00993A61 /* Benchmark.swift in Sources */,
 				8ADC1B5E2371C9390019C01A /* WorkoutSessionManager.swift in Sources */,
@@ -1928,6 +1969,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F50100000000000000000001 /* IronMetricFont.swift in Sources */,
 				F70000000000000000000003 /* IronSoundPlayer.swift in Sources */,
 				8AAD1017239D927900C1A447 /* DateFormatter+OptionalDate.swift in Sources */,
 				8AAD1012239D927900C1A447 /* Workout+SwiftUI.swift in Sources */,
@@ -2005,6 +2047,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F50100000000000000000002 /* IronMetricFont.swift in Sources */,
 				F70000000000000000000004 /* IronSoundPlayer.swift in Sources */,
 				8AAD106E239DA97B00C1A447 /* WorkoutExerciseChartData.swift in Sources */,
 				8AAD1044239D928C00C1A447 /* BannerView.swift in Sources */,
@@ -2077,9 +2120,13 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F50100000000000000000003 /* IronMetricFont.swift in Sources */,
 				F70000000000000000000002 /* IronSoundPlayer.swift in Sources */,
 				8A3A11592426B667006DA244 /* WorkoutRoutineSetEditor.swift in Sources */,
 				8A63B3772329463A001BD7B5 /* CurrentWorkoutView.swift in Sources */,
+				298272C17E0A453685BEE003 /* WorkoutOrganizationSheets.swift in Sources */,
+				585545C7AC4644269DCDBF4E /* WorkoutOrganization.swift in Sources */,
+				065D0FF7C48140888457C16A /* WorkoutSetFocus.swift in Sources */,
 				8AF92552232FD49600C6977D /* ExerciseFilter.swift in Sources */,
 				8A9E4F7E231436260038ACC5 /* String+Enquote.swift in Sources */,
 				8AF5DAF9242E74E500A90A60 /* NSManagedObjectContext+performAndWait.swift in Sources */,
@@ -2183,6 +2230,8 @@
 				8ABB4C6622CE05DD0075CCE6 /* ExerciseMuscleGroupsView.swift in Sources */,
 				8A3C5F99218E3F4F00467DA6 /* UserDefaults+PinnedCharts.swift in Sources */,
 				8AC8063D22BAC54200086032 /* FeedView.swift in Sources */,
+				6C6E258F71B3450E93D4DAAF /* TrainingDayRecapView.swift in Sources */,
+				026E39C202A0429F897AEB25 /* TrainingHistoryStore.swift in Sources */,
 				8AB5213E23999ED4008064B2 /* WorkoutDataStorage+shared.swift in Sources */,
 				8AE0A79E233128280021EE23 /* Quote.swift in Sources */,
 				8A81CFB122E3B1CF00B11394 /* PinnedChart.swift in Sources */,
@@ -2229,6 +2278,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A8CE9CF8715C58CDADBCDAF2 /* WatchCompanionSyncTests.swift in Sources */,
 				8AB972F7203583E40099507B /* InMemoryPersistentContainer.swift in Sources */,
 				8A0ECFCC242BBB9100C0B306 /* IronBackupTests.swift in Sources */,
 				8AC6AF99242D60F400974279 /* WorkoutDataMigrationTests.swift in Sources */,
@@ -2263,6 +2313,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				F50100000000000000000004 /* IronMetricFont.swift in Sources */,
 				8A9D3B442541F78A00C5A8B7 /* OSLog+Logs.swift in Sources */,
 				8AAFE3832534B68700CF03E5 /* WorkoutDataStorage+shared2.swift in Sources */,
 				8AAFE3492534AB3800CF03E5 /* IronWidget.swift in Sources */,
@@ -2295,6 +2346,7 @@
 				8AF5DAF5242E375000A90A60 /* WorkoutDataV2_V4.xcmappingmodel in Sources */,
 				8AB5212123992F2E008064B2 /* WorkoutSet.swift in Sources */,
 				8AB5212B239932A7008064B2 /* Exercise.swift in Sources */,
+				C287B0261025000000000002 /* ExerciseCatalogMetadata.swift in Sources */,
 				8AB5212023992F2E008064B2 /* WorkoutExercise.swift in Sources */,
 				8AA6252C23AE679600217DA9 /* WorkoutRoutineSet.swift in Sources */,
 				8AB5212623992F42008064B2 /* WorkoutDataV1_V2.xcmappingmodel in Sources */,
@@ -2390,7 +2442,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntents/IronIntents.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronIntents/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2417,7 +2469,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntents/IronIntents.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronIntents/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2443,7 +2495,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntentsUI/IronIntentsUIPersonalTeam.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronIntentsUI/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2470,7 +2522,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronIntentsUI/IronIntentsUI.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronIntentsUI/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
@@ -2614,7 +2666,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = Iron/IronSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = Iron/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -2639,7 +2691,7 @@
 				CODE_SIGN_ENTITLEMENTS = Iron/Iron.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = Iron/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -2709,15 +2761,15 @@
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "WatchIron Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Iron;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Iron can display your heart rate and burned calories during a workout.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Iron can save your finished workouts to Apple Health.";
+				INFOPLIST_KEY_CFBundleDisplayName = Light;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Light can display your heart rate and burned calories during a workout.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Light can save your finished workouts to Apple Health.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.joshpatra.IronDev;
 				MARKETING_VERSION = 1.6;
@@ -2744,15 +2796,15 @@
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "WatchIron Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = Iron;
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Iron can display your heart rate and burned calories during a workout.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Iron can save your finished workouts to Apple Health.";
+				INFOPLIST_KEY_CFBundleDisplayName = Light;
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Light can display your heart rate and burned calories during a workout.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Light can save your finished workouts to Apple Health.";
 				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
 				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = com.kabouzeid.Iron;
 				MARKETING_VERSION = 1.6;
@@ -2775,15 +2827,15 @@
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "WatchIron Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "WatchIron Extension";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Iron can display your heart rate and burned calories during a workout.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Iron can save your finished workouts to Apple Health.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Light Watch Extension";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Light can display your heart rate and burned calories during a workout.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Light can save your finished workouts to Apple Health.";
 				INFOPLIST_KEY_WKExtensionDelegateClassName = "$(PRODUCT_MODULE_NAME).ExtensionDelegate";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -2811,15 +2863,15 @@
 				CLANG_ENABLE_OBJC_WEAK = YES;
 				CODE_SIGN_ENTITLEMENTS = "WatchIron Extension/WatchIron Extension.entitlements";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_ASSET_PATHS = "\"WatchIron Extension/Preview Content\"";
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "WatchIron Extension/Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = "WatchIron Extension";
-				INFOPLIST_KEY_NSHealthShareUsageDescription = "Iron can display your heart rate and burned calories during a workout.";
-				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Iron can save your finished workouts to Apple Health.";
+				INFOPLIST_KEY_CFBundleDisplayName = "Light Watch Extension";
+				INFOPLIST_KEY_NSHealthShareUsageDescription = "Light can display your heart rate and burned calories during a workout.";
+				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "Light can save your finished workouts to Apple Health.";
 				INFOPLIST_KEY_WKExtensionDelegateClassName = "$(PRODUCT_MODULE_NAME).ExtensionDelegate";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -2849,7 +2901,7 @@
 				"CODE_SIGN_ENTITLEMENTS[sdk=iphonesimulator*]" = IronWidget/IronWidgetSimulator.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = CSNM446KVY;
 				INFOPLIST_FILE = IronWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -2879,7 +2931,7 @@
 				CODE_SIGN_ENTITLEMENTS = IronWidget/IronWidgetExtension.entitlements;
 				CODE_SIGN_IDENTITY = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 36;
+				CURRENT_PROJECT_VERSION = 43;
 				DEVELOPMENT_TEAM = 2L6CX7XT2U;
 				INFOPLIST_FILE = IronWidget/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
@@ -3062,15 +3114,14 @@
 				revision = 1bad5469f57628782110b05996d4fa00473abf06;
 			};
 		};
-		F15D4B002C78000100F10001 /* XCRemoteSwiftPackageReference "MuscleMap" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/melihcolpan/MuscleMap.git";
-			requirement = {
-				kind = exactVersion;
-				version = 1.6.4;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		F15D4B002C78000100F10001 /* XCLocalSwiftPackageReference "MuscleMap" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/MuscleMap;
+		};
+/* End XCLocalSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
 		8A50F126243F5253003B3A6E /* DGCharts */ = {
@@ -3090,7 +3141,7 @@
 		};
 		F15D4B012C78000100F10001 /* MuscleMap */ = {
 			isa = XCSwiftPackageProductDependency;
-			package = F15D4B002C78000100F10001 /* XCRemoteSwiftPackageReference "MuscleMap" */;
+			package = F15D4B002C78000100F10001 /* XCLocalSwiftPackageReference "MuscleMap" */;
 			productName = MuscleMap;
 		};
 /* End XCSwiftPackageProductDependency section */

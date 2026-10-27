@@ -21,8 +21,16 @@ public class ExerciseStore: ObservableObject {
     }
     
     public let builtInExercises: [Exercise]
+    private let catalogMetadata: ExerciseCatalogMetadata
     
-    @Published private(set) public var customExercises: [Exercise]
+    @Published private(set) public var customExercises: [Exercise] {
+        didSet { rebuildExerciseLookup() }
+    }
+    public private(set) var exercisesByUUID: [UUID: Exercise] = [:]
+
+    private func rebuildExerciseLookup() {
+        exercisesByUUID = (builtInExercises + customExercises).reduce(into: [:]) { $0[$1.uuid] = $1 }
+    }
 
     /// Shared history snapshot. Searching and rendering only read this cache.
     @Published private(set) public var lastPerformedDates: [UUID: Date] = [:]
@@ -50,15 +58,25 @@ public class ExerciseStore: ObservableObject {
     public init(builtInExercisesURL: URL = ExerciseStore.defaultBuiltInExercisesURL, customExercisesURL: URL?, userDefaults: UserDefaults = UserDefaults.standard) {
         self.userDefaults = userDefaults
         self.customExercisesURL = customExercisesURL
-        builtInExercises = Self.loadBuiltInExercises(builtInExercisesURL: builtInExercisesURL)
-        customExercises = Self.loadCustomExercises(customExercisesURL: customExercisesURL)
+        let catalog = Self.loadBuiltInExercises(builtInExercisesURL: builtInExercisesURL)
+        builtInExercises = catalog
+        let preferredAliases = Self.loadPreferredAliases(builtInExercisesURL: builtInExercisesURL)
+        let metadata = ExerciseCatalogMetadata(exercises: catalog, preferredAliases: preferredAliases)
+        catalogMetadata = metadata
+        customExercises = Self.loadCustomExercises(customExercisesURL: customExercisesURL).map(metadata.enriching)
         assert(!customExercises.contains { !$0.isCustom }, "Decoded custom exercise that is not custom.")
+        rebuildExerciseLookup()
     }
     
     private static func loadBuiltInExercises(builtInExercisesURL: URL?) -> [Exercise] {
         guard let builtInExercisesURL = builtInExercisesURL else { fatalError("Built in exercises URL invalid") }
         do {
-            return try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: builtInExercisesURL))
+            let legacy = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: builtInExercisesURL))
+            let exercises = ExerciseCatalogMetadata.updatingCatalog(
+                legacy, with: loadMetadataTemplates(builtInExercisesURL: builtInExercisesURL)
+            )
+            let aliases = loadPreferredAliases(builtInExercisesURL: builtInExercisesURL)
+            return ExerciseCatalogMetadata.addingAliases(aliases, to: exercises)
         } catch {
             fatalError("Error decoding built in exercises: \(error.localizedDescription)")
         }
@@ -75,6 +93,27 @@ public class ExerciseStore: ObservableObject {
             os_log("Successfully migrated custom exercises", log: .migration, type: .info)
             return (try? JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))) ?? []
         }
+    }
+
+    /// OpenGym text updates the main library while retained legacy definitions
+    /// and the converter's stable UUIDs preserve all workout relationships.
+    private static func loadMetadataTemplates(builtInExercisesURL: URL?) -> [Exercise] {
+        guard let url = builtInExercisesURL?.deletingLastPathComponent()
+            .appendingPathComponent("opengym-text-templates.json"),
+              let data = try? Data(contentsOf: url),
+              let templates = try? JSONDecoder().decode([Exercise].self, from: data) else { return [] }
+        return templates
+    }
+
+    private static func loadPreferredAliases(builtInExercisesURL: URL?) -> [String: UUID] {
+        guard let root = builtInExercisesURL?.deletingLastPathComponent() else { return [:] }
+        var result: [String: UUID] = [:]
+        for name in ["hevy-template-aliases.json", "hevy-aliases.json"] {
+            guard let data = try? Data(contentsOf: root.appendingPathComponent(name)),
+                  let aliases = try? JSONDecoder().decode([String: UUID].self, from: data) else { continue }
+            result.merge(aliases) { _, reviewedExisting in reviewedExisting }
+        }
+        return result
     }
 }
 
@@ -410,7 +449,7 @@ extension ExerciseStore {
     }
 
     public func publish(_ replacement: StagedCustomExerciseReplacement) {
-        customExercises = replacement.replacementExercises
+        customExercises = replacement.replacementExercises.map(catalogMetadata.enriching)
     }
 
     public func rollback(_ replacement: StagedCustomExerciseReplacement) throws {
@@ -542,7 +581,7 @@ extension ExerciseStore {
         }
         do {
             try JSONEncoder().encode(exercises).write(to: url, options: .atomic)
-            customExercises = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))
+            customExercises = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url)).map(catalogMetadata.enriching)
         } catch {
             throw CustomExerciseMutationError.couldNotWrite(error)
         }
@@ -602,6 +641,6 @@ extension ExerciseStore {
     public func replaceCustomExercises(with customExercises: [Exercise]) throws {
         guard let url = customExercisesURL else { throw RestoreError.customExerciseURLIsNil }
         try JSONEncoder().encode(customExercises).write(to: url, options: .atomic)
-        self.customExercises = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url))
+        self.customExercises = try JSONDecoder().decode([Exercise].self, from: Data(contentsOf: url)).map(catalogMetadata.enriching)
     }
 }

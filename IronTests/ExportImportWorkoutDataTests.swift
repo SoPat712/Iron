@@ -716,3 +716,642 @@ extension ExportImportWorkoutDataTests {
         XCTAssertEqual(measurementStore.entries.first?[.bodyWeight], 82)
     }
 }
+
+extension ExportImportWorkoutDataTests {
+    private func makeImportedDataTestWorkout(in context: NSManagedObjectContext) -> Workout {
+        let workout = Workout.create(context: context)
+        workout.start = Date(timeIntervalSince1970: 1_790_000_000)
+        workout.end = workout.start?.addingTimeInterval(60)
+        return workout
+    }
+
+    func testHevyReimportSkipsRenamedWorkoutByExerciseAndSets() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let data = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(data, into: persistenContainer.viewContext, exerciseStore: .shared)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        workout.title = "Renamed in Iron"
+        try persistenContainer.viewContext.save()
+
+        let result = try HevyCSV.importData(data, into: persistenContainer.viewContext, exerciseStore: .shared)
+        XCTAssertEqual(result.importedWorkouts, 0)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(workout.title, "Renamed in Iron")
+        XCTAssertEqual(try persistenContainer.viewContext.count(for: Workout.fetchRequest()), 1)
+    }
+
+    func testHevyFingerprintDistinguishesDatesAndSetValues() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let original = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(original, into: persistenContainer.viewContext, exerciseStore: .shared)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        workout.title = "Renamed"
+        try persistenContainer.viewContext.save()
+        let changed = Data(String(decoding: original, as: UTF8.self).replacingOccurrences(of: ",100,8", with: ",105,8").utf8)
+        let changedResult = try HevyCSV.importData(changed, into: persistenContainer.viewContext, exerciseStore: .shared)
+        XCTAssertEqual(changedResult.importedWorkouts, 1)
+        let later = workoutCSV(start: "2026-08-18T08:16:00Z", end: "2026-08-18T08:35:00Z", exerciseTitle: exercise.title)
+        let laterResult = try HevyCSV.importData(later, into: persistenContainer.viewContext, exerciseStore: .shared)
+        XCTAssertEqual(laterResult.importedWorkouts, 1)
+        XCTAssertEqual(try persistenContainer.viewContext.count(for: Workout.fetchRequest()), 3)
+    }
+
+    func testContentFingerprintDoesNotTreatNativeWorkoutAsHevyImport() throws {
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let data = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(data, into: persistenContainer.viewContext, exerciseStore: .shared)
+        let native = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        native.importSource = nil
+        native.title = "Logged in Iron"
+        try persistenContainer.viewContext.save()
+        let result = try HevyCSV.importData(data, into: persistenContainer.viewContext, exerciseStore: .shared)
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertNil(native.importSource)
+        XCTAssertEqual(native.title, "Logged in Iron")
+    }
+
+    func testRemovalPredicateOnlySelectsExactHevySource() throws {
+        let context = persistenContainer.viewContext
+        let sources: [String?] = [nil, "hevy", "json", "sample", "Hevy", ""]
+        for source in sources {
+            let workout = makeImportedDataTestWorkout(in: context)
+            workout.importSource = source
+        }
+        try context.save()
+        let selected = try HevyImportedWorkouts.fetch(in: context)
+        XCTAssertEqual(selected.count, 1)
+        XCTAssertEqual(selected.first?.importSource, "hevy")
+        XCTAssertEqual(try HevyImportedWorkouts.remove(in: context), 1)
+        let remaining = try context.fetch(Workout.fetchRequest())
+        XCTAssertEqual(remaining.count, 5)
+        XCTAssertTrue(remaining.contains { $0.importSource == nil })
+        XCTAssertFalse(remaining.contains { $0.importSource == "hevy" })
+    }
+
+    func testRemovalCascadesImportedSetsAndKeepsNativeWorkout() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: .shared)
+        let native = makeImportedDataTestWorkout(in: context)
+        native.title = "Iron workout"
+        let nativeExercise = WorkoutExercise.create(context: context)
+        nativeExercise.exerciseUuid = exercise.uuid
+        native.addToWorkoutExercises(nativeExercise)
+        let nativeSet = WorkoutSet.create(context: context)
+        nativeSet.isCompleted = true
+        nativeExercise.addToWorkoutSets(nativeSet)
+        try context.save()
+
+        XCTAssertEqual(try HevyImportedWorkouts.remove(in: context), 1)
+        XCTAssertEqual(try context.fetch(Workout.fetchRequest()), [native])
+        XCTAssertEqual(try context.fetch(WorkoutExercise.fetchRequest()), [nativeExercise])
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+        XCTAssertEqual(native.title, "Iron workout")
+    }
+
+    func testRemovalSaveFailureRestoresImportedGraphAndPendingNativeEdit() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: .shared)
+        let imported = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        let native = makeImportedDataTestWorkout(in: context)
+        try context.save()
+        native.comment = "Unsaved native note"
+        XCTAssertThrowsError(try HevyImportedWorkouts.remove(in: context, save: { throw ImportSaveFailure() }))
+        XCTAssertFalse(imported.isDeleted)
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).count, 1)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+        XCTAssertEqual(native.comment, "Unsaved native note")
+        XCTAssertTrue(context.hasChanges)
+    }
+
+    func testReplacementUpdatesHevySessionAndKeepsNativeAndMeasurements() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let original = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(original, into: context, exerciseStore: .shared)
+        let oldID = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first?.objectID)
+        let native = makeImportedDataTestWorkout(in: context)
+        native.title = "Keep me"
+        try context.save()
+        let suite = "HevyReplaceMeasurements.\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let measurements = BodyMetricsStore(userDefaults: defaults)
+        let entry = BodyMeasurementEntry(values: [BodyMeasurementKind.bodyWeight.rawValue: 82])
+        XCTAssertTrue(measurements.save(entry, exportToHealth: false))
+        let changed = Data(String(decoding: original, as: UTF8.self).replacingOccurrences(of: ",100,8", with: ",105,8").utf8)
+        let result = try HevyCSV.importData(HevyCSV.prepareImport([changed]), into: context,
+                                          exerciseStore: .shared, bodyMetricsStore: measurements,
+                                          replacingImportedWorkouts: true)
+        XCTAssertEqual(result.removedWorkouts, 1)
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.skippedDuplicateWorkouts, 0)
+        let replacement = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        XCTAssertNotEqual(replacement.objectID, oldID)
+        let replacementExercise = try XCTUnwrap(replacement.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual((replacementExercise.workoutSets?.firstObject as? WorkoutSet)?.weightValue, 105)
+        XCTAssertEqual(native.title, "Keep me")
+        XCTAssertNil(native.importSource)
+        XCTAssertEqual(measurements.entries, [entry])
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+    }
+
+    func testReplacementFailureRestoresOldGraphAndCustomExerciseFile() throws {
+        let context = persistenContainer.viewContext
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let exercise = try XCTUnwrap(store.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: store)
+        let old = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        let oldID = old.objectID
+        let native = makeImportedDataTestWorkout(in: context)
+        try context.save()
+        native.comment = "Keep pending edit"
+        let prepared = try HevyCSV.prepareImport([workoutCSV(exerciseTitle: "Unique Replacement Test Press")])
+        XCTAssertThrowsError(try HevyCSV.importData(prepared, into: context, exerciseStore: store,
+                                                   replacingImportedWorkouts: true, save: { throw ImportSaveFailure() }))
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).map(\.objectID), [oldID])
+        XCTAssertFalse(old.isDeleted)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+        XCTAssertEqual(native.comment, "Keep pending edit")
+        XCTAssertTrue(store.customExercises.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
+
+    func testReplacementRejectsMeasurementOnlyCSVWithoutDeletingWorkouts() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: .shared)
+        let prepared = try HevyCSV.prepareImport([Data("date,weight_kg\n2026-08-17T08:00:00Z,82\n".utf8)])
+        XCTAssertThrowsError(try HevyCSV.importData(prepared, into: context, exerciseStore: .shared,
+                                                   replacingImportedWorkouts: true))
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).count, 1)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+    }
+
+    @MainActor
+    func testBackgroundRemovalMergesDeletionAndPreservesPendingNativeEdit() async throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: .shared)
+        let native = makeImportedDataTestWorkout(in: context)
+        try context.save()
+        native.comment = "Still editing"
+        let controller = HevyImportController()
+        let outcome = await controller.remove(count: 1, from: context)
+        let result = try outcome.result.get()
+        XCTAssertEqual(result.removedWorkouts, 1)
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).count, 0)
+        XCTAssertEqual(native.comment, "Still editing")
+        XCTAssertTrue(context.hasChanges)
+        XCTAssertNil(controller.phase)
+    }
+}
+
+extension ExportImportWorkoutDataTests {
+    func testReplacementRejectsPartiallyMalformedExportBeforeDeletion() throws {
+        let context = persistenContainer.viewContext
+        let exercise = try XCTUnwrap(ExerciseStore.shared.exercises.first)
+        let original = workoutCSV(exerciseTitle: exercise.title)
+        _ = try HevyCSV.importData(original, into: context, exerciseStore: .shared)
+        let malformed = Data((String(decoding: original, as: UTF8.self) + "\nBroken,not-a-date,,Unknown,0,100,8\n").utf8)
+        let prepared = try HevyCSV.prepareImport([malformed])
+        XCTAssertThrowsError(try HevyCSV.importData(prepared, into: context, exerciseStore: .shared,
+                                                   replacingImportedWorkouts: true))
+        XCTAssertEqual(try HevyImportedWorkouts.fetch(in: context).count, 1)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+    }
+}
+
+extension ExportImportWorkoutDataTests {
+    @MainActor
+    func testBackgroundReplacementPublishesCustomExerciseAndMergesGraphBeforeSuccess() async throws {
+        let context = persistenContainer.viewContext
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let exercise = try XCTUnwrap(store.exercises.first)
+        _ = try HevyCSV.importData(workoutCSV(exerciseTitle: exercise.title), into: context, exerciseStore: store)
+        let native = makeImportedDataTestWorkout(in: context)
+        native.title = "Keep native workout"
+        try context.save()
+        native.comment = "Pending native note"
+        let controller = HevyImportController()
+        let outcome = await controller.replace(workoutCSV(exerciseTitle: "Background Replacement Test Press"),
+                                               into: context, exerciseStore: store)
+        let result = try outcome.result.get()
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.removedWorkouts, 1)
+        let created = try XCTUnwrap(store.customExercises.first { $0.title == "Background Replacement Test Press" })
+        let imported = try XCTUnwrap(HevyImportedWorkouts.fetch(in: context).first)
+        let importedExercise = try XCTUnwrap(imported.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(importedExercise.exerciseUuid, created.uuid)
+        XCTAssertEqual(try context.count(for: WorkoutSet.fetchRequest()), 1)
+        XCTAssertEqual(native.comment, "Pending native note")
+        XCTAssertTrue(context.hasChanges)
+        XCTAssertNil(controller.phase)
+    }
+}
+
+extension ExportImportWorkoutDataTests {
+    func testHevyAliasResolvesToCuratedBuiltInWithoutCreatingCustomExercise() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let curatedUUID = try XCTUnwrap(UUID(uuidString: "7988E742-0363-5443-98DB-86EE3879C512"))
+        let curated = try XCTUnwrap(store.builtInExercises.first { $0.uuid == curatedUUID })
+        XCTAssertTrue(curated.alias.contains("Leg Raise Parallel Bars"))
+
+        let result = try HevyCSV.importData(
+            workoutCSV(exerciseTitle: "Leg Raise Parallel Bars"),
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.createdExercises, 0)
+        XCTAssertTrue(store.customExercises.isEmpty)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(workoutExercise.exerciseUuid, curatedUUID)
+    }
+
+    func testHevyAliasEnrichesEmptyCustomInMemoryAndPreservesCustomIdentityAndHistory() throws {
+        let (_, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let customUUID = UUID()
+        let custom = Exercise(
+            uuid: customUUID,
+            everkineticId: 10_000,
+            title: "Leg Raise Parallel Bars",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let originalData = try JSONEncoder().encode([custom])
+        try originalData.write(to: url, options: .atomic)
+
+        let store = ExerciseStore(customExercisesURL: url)
+        let enriched = try XCTUnwrap(store.customExercises.first)
+        XCTAssertEqual(enriched.uuid, customUUID)
+        XCTAssertEqual(enriched.title, "Leg Raise Parallel Bars")
+        XCTAssertFalse(enriched.primaryMuscle.isEmpty)
+        XCTAssertFalse(enriched.secondaryMuscle.isEmpty)
+        XCTAssertNotNil(enriched.imageFilename)
+        XCTAssertNotNil(enriched.animationFilename)
+        XCTAssertEqual(try Data(contentsOf: url), originalData)
+
+        let data = workoutCSV(exerciseTitle: "Leg Raise Parallel Bars")
+        let firstResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+        XCTAssertEqual(firstResult.importedWorkouts, 1)
+        XCTAssertEqual(firstResult.createdExercises, 0)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(workoutExercise.exerciseUuid, customUUID)
+
+        workout.title = "Renamed in Iron"
+        try persistenContainer.viewContext.save()
+        let duplicateResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+        XCTAssertEqual(duplicateResult.importedWorkouts, 0)
+        XCTAssertEqual(duplicateResult.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(workout.title, "Renamed in Iron")
+        XCTAssertEqual(try persistenContainer.viewContext.count(for: Workout.fetchRequest()), 1)
+        XCTAssertEqual(try Data(contentsOf: url), originalData)
+    }
+
+    func testExerciseCatalogEnrichmentPreservesUnknownAndExplicitCustomMetadata() throws {
+        let (_, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let unknown = Exercise(
+            uuid: UUID(),
+            everkineticId: 10_000,
+            title: "Uncatalogued Hevy Movement",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let explicitMuscles = Exercise(
+            uuid: UUID(),
+            everkineticId: 10_000,
+            title: "Leg Raise Parallel Bars",
+            alias: [],
+            description: nil,
+            primaryMuscle: ["custom muscle"],
+            secondaryMuscle: ["custom stabilizer"],
+            equipment: ["body weight"],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let explicitEquipment = Exercise(
+            uuid: UUID(),
+            everkineticId: 10_000,
+            title: "Bicep Curl (Barbell)",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: ["custom apparatus"],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let originalData = try JSONEncoder().encode([unknown, explicitMuscles, explicitEquipment])
+        try originalData.write(to: url, options: .atomic)
+
+        let store = ExerciseStore(customExercisesURL: url)
+        let loadedUnknown = try XCTUnwrap(store.customExercises.first { $0.title == unknown.title })
+        XCTAssertTrue(loadedUnknown.primaryMuscle.isEmpty)
+        XCTAssertTrue(loadedUnknown.secondaryMuscle.isEmpty)
+        XCTAssertTrue(loadedUnknown.equipment.isEmpty)
+        XCTAssertNil(loadedUnknown.imageFilename)
+        XCTAssertNil(loadedUnknown.animationFilename)
+
+        let loadedMuscles = try XCTUnwrap(store.customExercises.first { $0.title == explicitMuscles.title })
+        XCTAssertEqual(loadedMuscles.primaryMuscle, explicitMuscles.primaryMuscle)
+        XCTAssertEqual(loadedMuscles.secondaryMuscle, explicitMuscles.secondaryMuscle)
+        XCTAssertEqual(loadedMuscles.equipment, explicitMuscles.equipment)
+        XCTAssertNil(loadedMuscles.imageFilename)
+        XCTAssertNil(loadedMuscles.animationFilename)
+
+        let loadedEquipment = try XCTUnwrap(store.customExercises.first { $0.title == explicitEquipment.title })
+        XCTAssertTrue(loadedEquipment.primaryMuscle.isEmpty)
+        XCTAssertTrue(loadedEquipment.secondaryMuscle.isEmpty)
+        XCTAssertEqual(loadedEquipment.equipment, explicitEquipment.equipment)
+        XCTAssertNil(loadedEquipment.imageFilename)
+        XCTAssertNil(loadedEquipment.animationFilename)
+        XCTAssertEqual(try Data(contentsOf: url), originalData)
+    }
+
+    func testUpdatingCatalogPreservesLegacyUpdatesExistingAndAppendsNewWithoutDuplicateUUIDs() {
+        func fixture(uuid: UUID, id: Int, title: String, primary: [String]) -> Exercise {
+            Exercise(
+                uuid: uuid,
+                everkineticId: id,
+                title: title,
+                alias: [],
+                description: "Description \(title)",
+                primaryMuscle: primary,
+                secondaryMuscle: [],
+                equipment: ["body weight"],
+                steps: ["Instruction \(title)"],
+                tips: [],
+                references: [],
+                pdfPaths: []
+            )
+        }
+
+        let legacyUUID = UUID()
+        let existingUUID = UUID()
+        let newUUID = UUID()
+        let legacy = fixture(uuid: legacyUUID, id: 1, title: "Legacy Only", primary: ["legacy muscle"])
+        let existing = fixture(uuid: existingUUID, id: 2, title: "Existing Name", primary: ["old muscle"])
+        let updated = fixture(uuid: existingUUID, id: 2, title: "Updated Name", primary: ["new muscle"])
+        let new = fixture(uuid: newUUID, id: -3, title: "New Name", primary: ["new catalog muscle"])
+
+        let catalog = ExerciseCatalogMetadata.updatingCatalog([legacy, existing], with: [updated, new])
+
+        XCTAssertEqual(catalog.map(\.uuid), [legacyUUID, existingUUID, newUUID])
+        XCTAssertEqual(catalog.map(\.everkineticId), [1, 2, -3])
+        XCTAssertEqual(catalog.first, legacy)
+        XCTAssertEqual(catalog[1].title, "Updated Name")
+        XCTAssertEqual(catalog[1].primaryMuscle, ["new muscle"])
+        XCTAssertEqual(catalog[2].uuid, newUUID)
+        XCTAssertEqual(Set(catalog.map(\.uuid)).count, catalog.count)
+    }
+
+    func testOpenGymCatalogMetadataEnrichesHipThrustAndPreservesCustomIdentityThroughImport() throws {
+        let (seedStore, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let customUUID = UUID()
+        let custom = Exercise(
+            uuid: customUUID,
+            everkineticId: 10_000,
+            title: "Hip Thrust (Barbell)",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let originalData = try JSONEncoder().encode([custom])
+        try originalData.write(to: url, options: .atomic)
+
+        let store = ExerciseStore(customExercisesURL: url)
+        let builtInCount = seedStore.builtInExercises.count
+        let enriched = try XCTUnwrap(store.customExercises.first)
+        XCTAssertEqual(enriched.uuid, customUUID)
+        XCTAssertEqual(enriched.everkineticId, 10_000)
+        XCTAssertEqual(enriched.title, custom.title)
+        XCTAssertEqual(enriched.primaryMuscle, ["glutes"])
+        XCTAssertEqual(enriched.secondaryMuscle, ["hamstrings", "quadriceps", "core"])
+        XCTAssertEqual(enriched.equipment, ["barbell"])
+        XCTAssertFalse(enriched.steps.isEmpty)
+        XCTAssertNil(enriched.imageFilename)
+        XCTAssertNil(enriched.animationFilename)
+        XCTAssertEqual(store.builtInExercises.count, builtInCount)
+        XCTAssertFalse(store.builtInExercises.contains { $0.uuid == customUUID })
+        XCTAssertEqual(try Data(contentsOf: url), originalData)
+
+        let data = workoutCSV(title: "Hip Thrust Import", exerciseTitle: custom.title)
+        let firstResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+        XCTAssertEqual(firstResult.importedWorkouts, 1)
+        XCTAssertEqual(firstResult.createdExercises, 0)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(workoutExercise.exerciseUuid, customUUID)
+
+        workout.title = "Renamed Hip Thrust Import"
+        try persistenContainer.viewContext.save()
+        let duplicateResult = try HevyCSV.importData(
+            data,
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+        XCTAssertEqual(duplicateResult.importedWorkouts, 0)
+        XCTAssertEqual(duplicateResult.skippedDuplicateWorkouts, 1)
+        XCTAssertEqual(workout.title, "Renamed Hip Thrust Import")
+        XCTAssertEqual(try persistenContainer.viewContext.count(for: Workout.fetchRequest()), 1)
+        XCTAssertEqual(try Data(contentsOf: url), originalData)
+    }
+
+    func testReviewedHipThrustAliasResolvesToBuiltInWithoutCreatingCustom() throws {
+        let (store, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let curatedUUID = try XCTUnwrap(UUID(uuidString: "8C8CF9C9-DA60-524C-AFCF-716AFBA3FC6E"))
+        let curated = try XCTUnwrap(store.builtInExercises.first { $0.uuid == curatedUUID })
+        XCTAssertTrue(curated.alias.contains("Hip Thrust (Barbell)"))
+        let builtInCount = store.builtInExercises.count
+
+        let result = try HevyCSV.importData(
+            workoutCSV(title: "Fresh Hip Thrust", exerciseTitle: "Hip Thrust (Barbell)"),
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.createdExercises, 0)
+        XCTAssertTrue(store.customExercises.isEmpty)
+        XCTAssertEqual(store.builtInExercises.count, builtInCount)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(workoutExercise.exerciseUuid, curatedUUID)
+    }
+
+    func testPreferredAliasOverridesAmbiguousCatalogNameWhileUnreviewedNameRemainsUnchanged() {
+        func fixture(
+            uuid: UUID,
+            title: String,
+            alias: [String],
+            primary: [String],
+            secondary: [String],
+            equipment: [String]
+        ) -> Exercise {
+            Exercise(
+                uuid: uuid,
+                everkineticId: 1,
+                title: title,
+                alias: alias,
+                description: "Template description",
+                primaryMuscle: primary,
+                secondaryMuscle: secondary,
+                equipment: equipment,
+                steps: ["Template instruction"],
+                tips: [],
+                references: [],
+                pdfPaths: []
+            )
+        }
+
+        let firstUUID = UUID()
+        let secondUUID = UUID()
+        let first = fixture(
+            uuid: firstUUID,
+            title: "First Template",
+            alias: ["Reviewed Movement", "Shared Ambiguous"],
+            primary: ["first muscle"],
+            secondary: ["first stabilizer"],
+            equipment: ["first equipment"]
+        )
+        let second = fixture(
+            uuid: secondUUID,
+            title: "Second Template",
+            alias: ["Reviewed Movement", "Shared Ambiguous"],
+            primary: ["second muscle"],
+            secondary: ["second stabilizer"],
+            equipment: ["second equipment"]
+        )
+        let metadata = ExerciseCatalogMetadata(
+            exercises: [first, second],
+            preferredAliases: ["Reviewed Movement": secondUUID]
+        )
+        let reviewed = Exercise(
+            uuid: UUID(),
+            everkineticId: 10_000,
+            title: "Reviewed Movement",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let resolved = metadata.enriching(reviewed)
+        XCTAssertEqual(resolved.uuid, reviewed.uuid)
+        XCTAssertEqual(resolved.title, reviewed.title)
+        XCTAssertEqual(resolved.primaryMuscle, second.primaryMuscle)
+        XCTAssertEqual(resolved.secondaryMuscle, second.secondaryMuscle)
+        XCTAssertEqual(resolved.equipment, second.equipment)
+        XCTAssertEqual(resolved.steps, second.steps)
+
+        let ambiguous = Exercise(
+            uuid: UUID(),
+            everkineticId: 10_000,
+            title: "Shared Ambiguous",
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        let unchanged = metadata.enriching(ambiguous)
+        XCTAssertEqual(unchanged.uuid, ambiguous.uuid)
+        XCTAssertEqual(unchanged.title, ambiguous.title)
+        XCTAssertTrue(unchanged.primaryMuscle.isEmpty)
+        XCTAssertTrue(unchanged.secondaryMuscle.isEmpty)
+        XCTAssertTrue(unchanged.equipment.isEmpty)
+        XCTAssertTrue(unchanged.steps.isEmpty)
+    }
+
+    func testExactCustomTitleWinsOverBuiltInTitleDuringHevyImport() throws {
+        let (seedStore, url) = temporaryExerciseStore()
+        defer { try? FileManager.default.removeItem(at: url) }
+        let builtIn = try XCTUnwrap(seedStore.builtInExercises.first)
+        let customUUID = UUID()
+        let custom = Exercise(
+            uuid: customUUID,
+            everkineticId: 10_000,
+            title: builtIn.title,
+            alias: [],
+            description: nil,
+            primaryMuscle: [],
+            secondaryMuscle: [],
+            equipment: [],
+            steps: [],
+            tips: [],
+            references: [],
+            pdfPaths: []
+        )
+        try JSONEncoder().encode([custom]).write(to: url, options: .atomic)
+
+        let store = ExerciseStore(customExercisesURL: url)
+        XCTAssertEqual(store.exercises.first?.uuid, builtIn.uuid)
+        XCTAssertEqual(store.customExercises.first?.uuid, customUUID)
+        let result = try HevyCSV.importData(
+            workoutCSV(title: "Exact Custom Title", exerciseTitle: builtIn.title),
+            into: persistenContainer.viewContext,
+            exerciseStore: store
+        )
+        XCTAssertEqual(result.importedWorkouts, 1)
+        XCTAssertEqual(result.createdExercises, 0)
+        let workout = try XCTUnwrap(persistenContainer.viewContext.fetch(Workout.fetchRequest()).first)
+        let workoutExercise = try XCTUnwrap(workout.workoutExercises?.firstObject as? WorkoutExercise)
+        XCTAssertEqual(workoutExercise.exerciseUuid, customUUID)
+    }
+}

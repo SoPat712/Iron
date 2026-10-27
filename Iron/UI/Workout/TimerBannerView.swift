@@ -75,7 +75,7 @@ struct TimerBannerView: View {
                             .font(.caption2.weight(.medium))
                             .foregroundColor(IronTheme.secondaryText)
                         Text(workoutTimerDurationFormatter.string(from: workout.safeDuration) ?? "00:00")
-                            .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                            .font(.ironMetric(.callout, weight: .semibold))
                             .foregroundColor(IronTheme.primaryText)
                     }
                     Spacer(minLength: 0)
@@ -99,7 +99,7 @@ struct TimerBannerView: View {
                             .foregroundColor(IronTheme.secondaryText)
                         if let remainingTime = remainingTime {
                             Text(restTimerDurationFormatter.string(from: abs(remainingTime.rounded(.up))) ?? "00:00")
-                                .font(.system(size: 16, weight: .semibold).monospacedDigit())
+                                .font(.ironMetric(.callout, weight: .semibold))
                                 .foregroundColor(remainingTime < 0 ? IronTheme.danger : IronTheme.primaryText)
                         } else {
                             Text("Start timer")

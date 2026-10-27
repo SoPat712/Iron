@@ -42,13 +42,15 @@ final class ExerciseMediaStore {
     }()
 
     private var prefetchTask: Task<Void, Never>?
+    private let cacheDirectoryOverride: URL?
 
-    private init() {
+    init(cacheDirectoryURL: URL? = nil) {
+        cacheDirectoryOverride = cacheDirectoryURL
         try? fileManager.createDirectory(at: directoryURL, withIntermediateDirectories: true)
     }
 
     private var directoryURL: URL {
-        fileManager.appGroupContainerApplicationSupportURL
+        cacheDirectoryOverride ?? fileManager.appGroupContainerApplicationSupportURL
             .appendingPathComponent("ExerciseMedia", isDirectory: true)
     }
 
@@ -76,10 +78,55 @@ final class ExerciseMediaStore {
 
     /// Returns persisted bytes, downloading and storing them when missing.
     func data(for remoteURL: URL) async -> Data? {
+        if remoteURL.isFileURL { return try? Data(contentsOf: remoteURL) }
         if let cached = cachedData(for: remoteURL) {
             return cached
         }
         return await download(remoteURL, session: interactiveSession)
+    }
+
+    /// Lists read a persisted still, while the demonstration keeps its original
+    /// animation. This uses only Iron's current provider/cache, not OpenGym media.
+    func stillData(for remoteURL: URL) async -> Data? {
+        if remoteURL.isFileURL { return try? Data(contentsOf: remoteURL) }
+        let destination = directoryURL.appendingPathComponent("still", isDirectory: true)
+            .appendingPathComponent(cacheFileName(for: remoteURL) + ".png")
+        if let cached = try? Data(contentsOf: destination) { return cached }
+        guard let original = await data(for: remoteURL) else { return nil }
+        let log = self.log
+        return await withCheckedContinuation { continuation in
+            ioQueue.async {
+                if let cached = try? Data(contentsOf: destination) {
+                    continuation.resume(returning: cached)
+                    return
+                }
+                guard let source = CGImageSourceCreateWithData(original as CFData, nil),
+                      let frame = CGImageSourceCreateImageAtIndex(source, 0, nil) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let bytes = NSMutableData()
+                guard let encoder = CGImageDestinationCreateWithData(
+                    bytes, UTType.png.identifier as CFString, 1, nil
+                ) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                CGImageDestinationAddImage(encoder, frame, nil)
+                guard CGImageDestinationFinalize(encoder) else {
+                    continuation.resume(returning: nil)
+                    return
+                }
+                let result = bytes as Data
+                do {
+                    try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+                    try result.write(to: destination, options: .atomic)
+                } catch {
+                    os_log("Could not cache exercise still: %{public}@", log: log, type: .error, error.localizedDescription)
+                }
+                continuation.resume(returning: result)
+            }
+        }
     }
 
     /// Fills any missing catalogue GIFs in the background. Safe to call on every launch.
@@ -101,7 +148,8 @@ final class ExerciseMediaStore {
         var urls: [URL] = []
         urls.reserveCapacity(exercises.count)
         for exercise in exercises {
-            guard let url = exercise.imageURL ?? exercise.animationURL else { continue }
+            guard let url = exercise.imageURL ?? exercise.animationURL,
+                  !url.isFileURL else { continue }
             if seen.insert(url).inserted {
                 urls.append(url)
             }

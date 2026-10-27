@@ -32,7 +32,7 @@ struct GeneralSettingsView: View {
             } header: {
                 Text("Rest Timer")
             } footer: {
-                Text("Iron picks the equipment-specific rest length when an exercise matches, and falls back to Default. Counting past zero shows how long you have overrun in red.")
+                Text("Light picks the equipment-specific rest length when an exercise matches, and falls back to Default. Counting past zero shows how long you have overrun in red.")
             }
 
             Section {
@@ -71,6 +71,7 @@ struct GeneralSettingsView: View {
         Picker(title, selection: selection) {
             ForEach(Self.restDurations, id: \.self) { duration in
                 Text(restTimerDurationFormatter.string(from: duration) ?? "\(Int(duration))s")
+                    .font(.ironMetric(.body, weight: .semibold))
                     .tag(duration)
             }
         }
@@ -103,7 +104,9 @@ struct UnitsSettingsView: View {
             Section {
                 Picker("Max Repetitions", selection: $settingsStore.maxRepetitionsOneRepMax) {
                     ForEach(Array(maxRepetitionsOneRepMaxValues), id: \.self) { value in
-                        Text("^[\(value) rep](inflect: true)").tag(value)
+                        Text("^[\(value) rep](inflect: true)")
+                            .font(.ironMetric(.body, weight: .semibold))
+                            .tag(value)
                     }
                 }
             } header: {

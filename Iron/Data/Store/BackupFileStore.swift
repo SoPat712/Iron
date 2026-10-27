@@ -134,7 +134,7 @@ class BackupFileStore: ObservableObject {
             type: .error,
             error.localizedDescription
         )
-        return "Iron could not read its iCloud backup folder. Check your connection and iCloud Drive, then try again."
+        return "Light could not read its iCloud backup folder. Check your connection and iCloud Drive, then try again."
     }
 }
 

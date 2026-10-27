@@ -2,10 +2,12 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+	<key>CADisableMinimumFrameDurationOnPhone</key>
+	<true/>
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Iron</string>
+	<string>Light</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -21,7 +23,7 @@
 				<string>iron_backup_file_images/iron_backup_file_320.png</string>
 			</array>
 			<key>CFBundleTypeName</key>
-			<string>Iron Backup</string>
+			<string>Light Backup (Iron Compatible)</string>
 			<key>CFBundleTypeRole</key>
 			<string>Viewer</string>
 			<key>LSHandlerRank</key>
@@ -55,7 +57,7 @@
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>$(PRODUCT_NAME)</string>
+	<string>Light</string>
 	<key>CFBundlePackageType</key>
 	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
 	<key>CFBundleShortVersionString</key>
@@ -69,9 +71,9 @@
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
 	<key>NSHealthShareUsageDescription</key>
-	<string>Iron reads your body weight, height, body fat, waist, heart rate, and workout data to keep your training history and measurements in sync.</string>
+	<string>Light reads your body weight, height, body fat, waist, heart rate, and workout data to keep your training history and measurements in sync.</string>
 	<key>NSHealthUpdateUsageDescription</key>
-	<string>Iron saves completed strength workouts and supported body measurements to Apple Health.</string>
+	<string>Light saves completed strength workouts and supported body measurements to Apple Health.</string>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
 	<key>NSUbiquitousContainers</key>
@@ -81,7 +83,7 @@
 			<key>NSUbiquitousContainerIsDocumentScopePublic</key>
 			<true/>
 			<key>NSUbiquitousContainerName</key>
-			<string>Iron</string>
+			<string>Light</string>
 			<key>NSUbiquitousContainerSupportedFolderLevels</key>
 			<string>Any</string>
 		</dict>
@@ -138,7 +140,7 @@
 				<string>public.data</string>
 			</array>
 			<key>UTTypeDescription</key>
-			<string>Iron Backup</string>
+			<string>Light Backup (Iron Compatible)</string>
 			<key>UTTypeIconFiles</key>
 			<array>
 				<string>iron_backup_file_images/iron_backup_file_29.png</string>

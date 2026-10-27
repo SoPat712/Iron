@@ -15,24 +15,72 @@ import CoreData
 import MuscleMap
 import WorkoutDataKit
 
-private struct CurrentWorkoutScrollOffsetPreferenceKey: PreferenceKey {
-    static var defaultValue: CGFloat = 0
-
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = nextValue()
-    }
-}
-
 private struct PersonalRecordBanner: Identifiable, Equatable {
     let id = UUID()
     let exerciseTitle: String
     let detail: String
 }
 
+/// Sensor ticks invalidate only this row, not the sets, charts or muscle paths.
+private struct WorkoutWatchMetricsView: View {
+    @ObservedObject var store: WatchWorkoutMetricsStore
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let workoutID: UUID?
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 5)) { context in
+            let metrics = store.latest.flatMap { $0.workoutID == workoutID ? $0 : nil }
+            let heartRate = metrics?.currentHeartRate(at: context.date)
+            let energy = metrics?.currentActiveEnergy(at: context.date)
+            Group {
+                if dynamicTypeSize.isAccessibilitySize {
+                    VStack(alignment: .leading, spacing: 6) {
+                        reading(heartRate, unit: "bpm", symbol: "heart.fill", tint: IronTheme.metricHeartRate,
+                                name: "Heart rate", spokenUnit: "beats per minute")
+                        reading(energy, unit: "active kcal", symbol: "flame.fill", tint: IronTheme.metricEnergy,
+                                name: "Estimated active energy", spokenUnit: "active kilocalories")
+                    }
+                } else {
+                    HStack(spacing: 12) {
+                        reading(heartRate, unit: "bpm", symbol: "heart.fill", tint: IronTheme.metricHeartRate,
+                                name: "Heart rate", spokenUnit: "beats per minute")
+                        reading(energy, unit: "active kcal", symbol: "flame.fill", tint: IronTheme.metricEnergy,
+                                name: "Estimated active energy", spokenUnit: "active kilocalories")
+                    }
+                }
+            }
+        }
+    }
+
+    private func reading(_ value: Double?, unit: String, symbol: String, tint: Color,
+                         name: String, spokenUnit: String) -> some View {
+        let number = value?.formatted(.number.precision(.fractionLength(0))) ?? "—"
+        return HStack(alignment: .firstTextBaseline, spacing: 4) {
+            Image(systemName: symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(tint)
+            Text(number)
+                .font(.ironMetric(.subheadline, weight: .semibold))
+                .foregroundStyle(value == nil ? IronTheme.secondaryText : tint)
+                .contentTransition(reduceMotion ? .opacity : .numericText())
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: number)
+            Text(unit)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(IronTheme.secondaryText)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityValue(value == nil ? "Waiting for a current Watch reading" : "\(number) \(spokenUnit)")
+    }
+}
+
 struct CurrentWorkoutView: View {
     @Environment(\.managedObjectContext) private var managedObjectContext
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @EnvironmentObject private var sceneState: SceneState
     @EnvironmentObject private var restTimerStore: RestTimerStore
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @EnvironmentObject private var settingsStore: SettingsStore
@@ -60,15 +108,22 @@ struct CurrentWorkoutView: View {
     @State private var updateLinkedRoutine = false
     @State private var syncWithHealth = true
     @State private var showingVisibilityInfo = false
-    @State private var isSessionHeaderCollapsed = false
     /// Height of the collapsed glass summary pill plus its top padding and a gap.
-    private let collapsedSummaryClearance: CGFloat = 66
+    @ScaledMetric(relativeTo: .caption) private var summaryLineHeight: CGFloat = 16
+    @ScaledMetric(relativeTo: .subheadline) private var accessibleSummaryRowHeight: CGFloat = 24
+    @ScaledMetric(relativeTo: .subheadline) private var accessibleSyncBannerHeight: CGFloat = 56
+    @State private var collapsedSummaryMeasuredHeight: CGFloat = 46
+    private var collapsedSummaryClearance: CGFloat {
+        max(collapsedSummaryMeasuredHeight, usesAccessibilityHeaderLayout ? summaryLineHeight * 3 + 20 : 46) + 20
+    }
     @State private var isFinishingWorkout = false
     @State private var persistenceError: String?
     @State private var restTimerEditorExercise: WorkoutExercise?
     @State private var exercisePendingRemoval: WorkoutExercise?
     @State private var exercisePendingReplacement: WorkoutExercise?
     @State private var supersetExercise: WorkoutExercise?
+    @State private var showingArrangeExercises = false
+    @State private var selectedExerciseDetail: Exercise?
     @State private var personalRecordBanner: PersonalRecordBanner?
     @State private var scrollTarget: NSManagedObjectID?
     @State private var openSwipeSetID: NSManagedObjectID?
@@ -124,7 +179,7 @@ struct CurrentWorkoutView: View {
     }
 
     private var watchSyncBannerHeight: CGFloat {
-        usesAccessibilityHeaderLayout ? 68 : 56
+        usesAccessibilityHeaderLayout ? accessibleSyncBannerHeight : 56
     }
 
     private let muscleMapHeight: CGFloat = 54
@@ -134,12 +189,12 @@ struct CurrentWorkoutView: View {
     /// so a summary shorter than its tallest child visibly cuts the body figures.
     private var workoutSummaryHeight: CGFloat {
         usesAccessibilityHeaderLayout
-            ? 84
+            ? max(accessibleSummaryRowHeight, IronTheme.controlHeight) * 3 + workoutSummaryVerticalPadding * 2 + 12
             : muscleMapHeight + workoutSummaryVerticalPadding * 2
     }
 
     private var sessionHeaderExpandedHeight: CGFloat {
-        watchSyncBannerHeight + workoutSummaryHeight + 1
+        watchSyncBannerHeight + workoutSummaryHeight
     }
 
     private var workoutTitle: Binding<String> {
@@ -165,100 +220,91 @@ struct CurrentWorkoutView: View {
     }
 
     var body: some View {
+        let focus = WorkoutSetFocus.next(in: workout)
         NavigationStack {
             ZStack {
                 Color(.systemGroupedBackground)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    workoutTopBar
-                    if !workoutExercises.isEmpty {
-                        WorkoutSessionProgressBar(workout: workout) { exerciseID in
-                            scrollTarget = exerciseID
+                    VStack(spacing: 0) {
+                        workoutTopBar
+                        if !workoutExercises.isEmpty {
+                            WorkoutSessionProgressBar(workout: workout, focusedExerciseID: focus?.exerciseID) { exerciseID in
+                                scrollTarget = exerciseID
+                            }
+                            .padding(.horizontal, IronTheme.horizontalPadding)
+                            .padding(.top, 2)
+                            .padding(.bottom, 8)
                         }
-                        .padding(.horizontal, IronTheme.horizontalPadding)
-                        .padding(.top, 2)
-                        .padding(.bottom, 8)
+                        if !isSessionHeaderCollapsed {
+                            sessionHeader
+                        }
                     }
+                    .background(.bar)
                     ZStack(alignment: .top) {
                         VStack(spacing: 0) {
-                            if !isSessionHeaderCollapsed {
-                                sessionHeader
-                            }
+                            ZStack(alignment: .top) {
+                                ScrollViewReader { scrollProxy in
+                                    ScrollView {
+                                        LazyVStack(spacing: 0) {
+                                            workoutMetadata
 
-                            ScrollViewReader { scrollProxy in
-                            ScrollView {
-                                LazyVStack(spacing: 0) {
-                                    GeometryReader { proxy in
-                                        Color.clear.preference(
-                                            key: CurrentWorkoutScrollOffsetPreferenceKey.self,
-                                            value: proxy.frame(in: .named("current-workout-scroll")).minY
-                                        )
-                                    }
-                                    .frame(height: 0)
+                                            if workoutExercises.isEmpty {
+                                                emptyWorkoutState
+                                            } else {
+                                                ForEach(workoutExercises) { workoutExercise in
+                                                    workoutExerciseSection(workoutExercise, focusedSetID: focus?.setID)
+                                                }
+                                            }
 
-                                    workoutMetadata
+                                            if !workoutExercises.isEmpty {
+                                                Button {
+                                                    showingExerciseSelector = true
+                                                } label: {
+                                                    Label("Add Exercises", systemImage: "plus")
+                                                        .frame(maxWidth: .infinity)
+                                                }
+                                                .ironProminentGlassButtonStyle()
+                                                .buttonBorderShape(.capsule)
+                                                .controlSize(.large)
+                                                .padding(.horizontal, IronTheme.horizontalPadding)
+                                                .padding(.top, 18)
+                                            }
 
-                                    if workoutExercises.isEmpty {
-                                        emptyWorkoutState
-                                    } else {
-                                        ForEach(Array(workoutExercises.enumerated()), id: \.element.id) { index, workoutExercise in
-                                            workoutExerciseSection(workoutExercise, index: index)
+                                            workoutBottomActions
                                         }
                                     }
-
-                                    if !workoutExercises.isEmpty {
-                                        Button {
-                                            showingExerciseSelector = true
-                                        } label: {
-                                            Label("Add Exercises", systemImage: "plus")
-                                                .frame(maxWidth: .infinity)
+                                    // Reserve the pill's height at the scroll top, but keep its
+                                    // glass floating over the viewport as content scrolls behind it.
+                                    .contentMargins(.top, isSessionHeaderCollapsed ? collapsedSummaryClearance : 0, for: .scrollContent)
+                                    .clipped()
+                                    .onChange(of: restStripScrollRequest) { _, _ in
+                                        withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
+                                            scrollProxy.scrollTo("active-rest-strip", anchor: .center)
                                         }
-                                        .ironProminentGlassButtonStyle()
-                                        .buttonBorderShape(.capsule)
-                                        .controlSize(.large)
+                                    }
+                                    .onChange(of: scrollTarget) { _, target in
+                                        guard let target else { return }
+                                        withAnimation(reduceMotion ? nil : IronMotion.focusScroll) {
+                                            scrollProxy.scrollTo(target, anchor: .top)
+                                        }
+                                        scrollTarget = nil
+                                    }
+                                }
+                                if isSessionHeaderCollapsed {
+                                    collapsedWorkoutSummaryPill
+                                        .onGeometryChange(for: CGFloat.self) { proxy in
+                                            proxy.size.height
+                                        } action: { height in
+                                            collapsedSummaryMeasuredHeight = max(46, height.rounded(.up))
+                                        }
                                         .padding(.horizontal, IronTheme.horizontalPadding)
-                                        .padding(.top, 18)
-                                    }
-
-                                    workoutBottomActions
+                                        .padding(.top, 8)
+                                        .transition(.opacity)
+                                        .zIndex(1)
                                 }
                             }
-                            .coordinateSpace(name: "current-workout-scroll")
-                            // The collapsed glass summary floats over the list; inset the
-                            // content by its height so it never covers the first exercise.
-                            .contentMargins(.top, isSessionHeaderCollapsed ? collapsedSummaryClearance : 0, for: .scrollContent)
-                            .onPreferenceChange(CurrentWorkoutScrollOffsetPreferenceKey.self) { offset in
-                                // Use hysteresis so a small bounce cannot make the two header
-                                // presentations flicker. Returning to the real top always
-                                // restores the complete summary.
-                                if offset <= -64, !isSessionHeaderCollapsed {
-                                    setSessionHeaderCollapsed(true)
-                                } else if offset >= -1, isSessionHeaderCollapsed {
-                                    setSessionHeaderCollapsed(false)
-                                }
-                            }
-                            .onChange(of: restStripScrollRequest) { _, _ in
-                                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-                                    scrollProxy.scrollTo("active-rest-strip", anchor: .center)
-                                }
-                            }
-                            .onChange(of: scrollTarget) { _, target in
-                                guard let target else { return }
-                                withAnimation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion)) {
-                                    scrollProxy.scrollTo(target, anchor: .top)
-                                }
-                                scrollTarget = nil
-                            }
-                            }
-                        }
-
-                        if isSessionHeaderCollapsed {
-                            collapsedWorkoutSummaryPill
-                                .padding(.horizontal, IronTheme.horizontalPadding)
-                                .padding(.top, 8)
-                                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
-                                .zIndex(2)
                         }
 
                         if let banner = personalRecordBanner {
@@ -271,6 +317,9 @@ struct CurrentWorkoutView: View {
                     }
                 }
                 .navigationBarHidden(true)
+                .navigationDestination(item: $selectedExerciseDetail) { exercise in
+                    ExerciseDetailView(exercise: exercise)
+                }
             }
         }
         .sheet(isPresented: $showingExerciseSelector) {
@@ -347,43 +396,26 @@ struct CurrentWorkoutView: View {
         } message: {
             Text("Every set logged for this exercise in the current workout will be removed.")
         }
-        .confirmationDialog(
-            "Superset",
-            isPresented: Binding(
-                get: { supersetExercise != nil },
-                set: { if !$0 { supersetExercise = nil } }
-            ),
-            titleVisibility: .visible
-        ) {
-            if let source = supersetExercise {
-                ForEach(workoutExercises.filter { $0.objectID != source.objectID }) { candidate in
-                    Button(supersetCandidateTitle(candidate)) {
-                        if assignSuperset(between: source, and: candidate) {
-                            supersetExercise = nil
-                        }
-                    }
-                }
-
-                if source.supersetUuid != nil {
-                    Button("Remove from Superset", role: .destructive) {
-                        if removeFromSuperset(source) {
-                            supersetExercise = nil
-                        }
-                    }
-                }
-            }
-
-            Button("Cancel", role: .cancel) {
-                supersetExercise = nil
-            }
-        } message: {
-            if let source = supersetExercise {
-                Text("Choose an exercise to alternate with \(supersetCandidateTitle(source)).")
-            }
+        .sheet(item: $supersetExercise) { source in
+            persistenceAlert(WorkoutSupersetSheet(
+                source: source,
+                exercises: workoutExercises,
+                onSave: { partnerIDs in configureSuperset(for: source, partnerIDs: partnerIDs) },
+                onRemove: source.supersetUuid == nil ? nil : { removeFromSuperset(source) }
+            ))
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
+        }
+        .sheet(isPresented: $showingArrangeExercises) {
+            persistenceAlert(WorkoutArrangeExercisesSheet(
+                exercises: workoutExercises,
+                onSave: saveExerciseOrder
+            ))
+            .presentationDetents([.large])
+            .presentationDragIndicator(.visible)
         }
         .ironScreen()
         .onAppear {
-            isSessionHeaderCollapsed = false
             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("-ironInspectAddExercises") {
@@ -396,6 +428,22 @@ struct CurrentWorkoutView: View {
         }
         .onDisappear {
             UIApplication.shared.isIdleTimerDisabled = false
+        }
+        .onReceive(managedObjectContext.publisher) { changes in
+            // Child-set edits (including Watch events) do not always invalidate
+            // an observed Workout. Refresh aggregates on edits, not clock ticks.
+            let changed = changes.inserted.union(changes.updated).union(changes.deleted)
+            if changed.contains(where: { object in
+                if let exercise = object as? WorkoutExercise {
+                    return exercise.isDeleted || exercise.workout == workout
+                }
+                if let set = object as? WorkoutSet {
+                    return set.isDeleted || set.workoutExercise?.workout == workout
+                }
+                return false
+            }) {
+                workout.objectWillChange.send()
+            }
         }
         .onChange(of: settingsStore.keepScreenAwakeDuringWorkout) { _, _ in
             applyIdleTimerPreference()
@@ -544,16 +592,18 @@ struct CurrentWorkoutView: View {
                 Image(systemName: "chevron.down")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.secondary)
-                    .frame(width: 32, height: 32)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Minimize Workout")
 
-            Text(usesAccessibilityHeaderLayout ? "Workout" : "Log Workout")
-                .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.78)
+            if !usesAccessibilityHeaderLayout {
+                Text("Log Workout")
+                    .font(.headline)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.78)
+            }
 
             Spacer(minLength: 4)
 
@@ -564,12 +614,13 @@ struct CurrentWorkoutView: View {
                 .buttonBorderShape(.capsule)
                 .controlSize(.small)
                 .fixedSize(horizontal: true, vertical: false)
+                .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                .contentShape(Rectangle())
                 .layoutPriority(2)
                 .disabled(workoutExercises.isEmpty)
         }
         .padding(.horizontal, IronTheme.horizontalPadding)
         .frame(height: workoutTopBarHeight)
-        .background(.bar)
     }
 
     /// Timer control beside Finish: a compact timer glyph at rest, and the
@@ -580,6 +631,7 @@ struct CurrentWorkoutView: View {
                 if let remaining = restTimerStore.restTimerRemainingTime {
                     Text(restTimerCountdownText(remaining))
                         .font(.ironMetric(.subheadline, weight: .semibold))
+                        .fixedSize(horizontal: true, vertical: false)
                         .foregroundStyle(restTimerTint)
                         .contentTransition(reduceMotion ? .opacity : .numericText())
                         .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(remaining))
@@ -666,16 +718,12 @@ struct CurrentWorkoutView: View {
     private var sessionHeader: some View {
         VStack(spacing: 0) {
             watchSyncBanner
-
-            Divider()
             workoutSummary
                 .frame(height: workoutSummaryHeight)
         }
         // A plain conditional swap with the compact pill. An offset-and-clip reveal
         // let individual children linger outside the clip during the transition.
         .frame(height: sessionHeaderExpandedHeight)
-        .background(Color(.systemGroupedBackground))
-        .overlay(Divider(), alignment: .bottom)
     }
 
     private var watchSyncColor: Color {
@@ -688,7 +736,7 @@ struct CurrentWorkoutView: View {
     private var watchSyncTitle: String {
         guard settingsStore.watchCompanion else { return "Saved locally on this iPhone" }
         guard watchConnection.isPaired else { return "Saved on iPhone · Watch not paired" }
-        guard watchConnection.isWatchAppInstalled else { return "Saved on iPhone · Install Iron on Watch" }
+        guard watchConnection.isWatchAppInstalled else { return "Saved on iPhone · Install Light on Watch" }
         if watchConnection.isReachable { return "Live Sync Active" }
         return watchConnection.isActivated
             ? "Watch offline · changes queued"
@@ -704,29 +752,51 @@ struct CurrentWorkoutView: View {
         return "applewatch"
     }
 
+    private var workoutSummaryKey: String {
+        workout.uuid?.uuidString ?? workout.objectID.uriRepresentation().absoluteString
+    }
+
+    private var isSessionHeaderCollapsed: Bool {
+        sceneState.collapsedWorkoutSummaries.contains(workoutSummaryKey)
+    }
+
     private func setSessionHeaderCollapsed(_ collapsed: Bool) {
         guard collapsed != isSessionHeaderCollapsed else { return }
 
         withAnimation(IronMotion.preferred(IronMotion.collapse, reduceMotion: reduceMotion)) {
-            isSessionHeaderCollapsed = collapsed
+            if collapsed {
+                sceneState.collapsedWorkoutSummaries.insert(workoutSummaryKey)
+            } else {
+                sceneState.collapsedWorkoutSummaries.remove(workoutSummaryKey)
+            }
         }
     }
 
     private var watchSyncBanner: some View {
         let color = watchSyncColor
+        let showsMetrics = settingsStore.watchCompanion && watchConnection.isPaired
+            && watchConnection.isWatchAppInstalled && watchConnection.isReachable
 
         return HStack(spacing: 9) {
             Circle()
                 .fill(color)
                 .frame(width: 9, height: 9)
-            Text(watchSyncTitle)
-                .font(.subheadline)
-                .lineLimit(usesAccessibilityHeaderLayout ? 2 : 1)
-                .minimumScaleFactor(0.75)
+                .accessibilityLabel(showsMetrics ? "Watch connected" : watchSyncTitle)
+            if showsMetrics {
+                WorkoutWatchMetricsView(store: watchConnection.liveMetrics, workoutID: workout.uuid)
+            } else {
+                Text(watchSyncTitle)
+                    .font(.subheadline)
+                    .lineLimit(usesAccessibilityHeaderLayout ? 2 : 1)
+                    .minimumScaleFactor(0.75)
+            }
             Spacer()
-            Image(systemName: watchSyncSystemImage)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(color)
+            if !showsMetrics {
+                Image(systemName: watchSyncSystemImage)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(color)
+                    .accessibilityHidden(true)
+            }
 
             Button {
                 setSessionHeaderCollapsed(!isSessionHeaderCollapsed)
@@ -738,6 +808,8 @@ struct CurrentWorkoutView: View {
             .buttonStyle(.bordered)
             .buttonBorderShape(.circle)
             .controlSize(.small)
+            .frame(width: IronTheme.controlHeight, height: IronTheme.controlHeight)
+            .contentShape(Circle())
             .accessibilityLabel(isSessionHeaderCollapsed ? "Expand workout summary" : "Collapse workout summary")
         }
         .padding(.leading, IronTheme.horizontalPadding)
@@ -746,47 +818,106 @@ struct CurrentWorkoutView: View {
     }
 
     private var workoutSummary: some View {
-        TimelineView(.periodic(from: Date(), by: 1)) { _ in
-            HStack(spacing: 0) {
-                Button(action: { activeSheet = .workoutTime }) {
-                    summaryValue(
-                        "Duration",
-                        workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00",
-                        tint: IronTheme.metricTime,
-                        systemImage: "pencil"
-                    )
+        Group {
+            if usesAccessibilityHeaderLayout {
+                VStack(spacing: 6) {
+                    workoutDurationSummary
+                    accessibleSummaryRow("Volume", value: workoutVolumeTitle, tint: IronTheme.metricVolume)
+                    accessibleSummaryRow("Sets", value: "\(workout.numberOfCompletedSets ?? 0)", tint: IronTheme.metricSets)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Edit workout duration")
-                .accessibilityValue(workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
-                summaryValue("Volume", workoutVolumeNumber, tint: IronTheme.metricVolume, unit: settingsStore.weightUnit.unit.symbol)
-                summaryValue("Sets", "\(workout.numberOfCompletedSets ?? 0)", tint: IronTheme.metricSets)
-
-                if !usesAccessibilityHeaderLayout {
-                    liveMuscleMap
-                        .frame(maxWidth: .infinity)
+            } else {
+                GeometryReader { proxy in
+                    // Duration/volume need more room than the set count. Explicit
+                    // columns and gutters keep changing numbers inside their lane.
+                    let mapWidth: CGFloat = 64
+                    let metricWidth = max(0, proxy.size.width - mapWidth - 36)
+                    HStack(alignment: .top, spacing: 12) {
+                        workoutDurationSummary
+                            .frame(width: metricWidth * 0.43)
+                        summaryValue("Volume", workoutVolumeNumber, tint: IronTheme.metricVolume, unit: settingsStore.weightUnit.unit.symbol)
+                            .frame(width: metricWidth * 0.41)
+                        summaryValue("Sets", "\(workout.numberOfCompletedSets ?? 0)", tint: IronTheme.metricSets)
+                            .frame(width: metricWidth * 0.16)
+                        liveMuscleMap
+                            .frame(width: mapWidth)
+                    }
+                    .frame(height: proxy.size.height, alignment: .top)
                 }
             }
-            .padding(.horizontal, IronTheme.horizontalPadding)
-            .padding(.vertical, workoutSummaryVerticalPadding)
+        }
+        .padding(.horizontal, IronTheme.horizontalPadding)
+        .padding(.vertical, workoutSummaryVerticalPadding)
+    }
+
+    /// Only the clock refreshes each second. Metrics and the two muscle paths
+    /// refresh when the model changes, rather than on every clock tick.
+    private var workoutDurationSummary: some View {
+        TimelineView(.periodic(from: Date(), by: 1)) { _ in
+            let title = workoutDurationTitle
+            Button(action: { activeSheet = .workoutTime }) {
+                if usesAccessibilityHeaderLayout {
+                    accessibleSummaryRow("Duration", value: title, tint: IronTheme.metricTime)
+                } else {
+                    summaryValue("Duration", title, tint: IronTheme.metricTime, systemImage: "pencil")
+                        .frame(minHeight: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Edit workout duration")
+            .accessibilityValue(title)
         }
     }
 
+    private func accessibleSummaryRow(_ title: String, value: String, tint: Color) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Text(title).foregroundStyle(IronTheme.secondaryText)
+            Spacer(minLength: 0)
+            Text(value).font(.ironMetric(.subheadline)).foregroundStyle(tint)
+        }
+        .font(.subheadline)
+        .lineLimit(1)
+        .minimumScaleFactor(0.7)
+        .frame(minHeight: max(accessibleSummaryRowHeight, IronTheme.controlHeight))
+        .accessibilityElement(children: .combine)
+    }
+
     private var collapsedWorkoutSummaryPill: some View {
-        TimelineView(.periodic(from: Date(), by: 1)) { _ in
+        let volume = collapsedVolume
+        let sets = collapsedSets
+        let volumeTitle = workoutVolumeTitle
+        let setCount = workout.numberOfCompletedSets ?? 0
+        return TimelineView(.periodic(from: Date(), by: 1)) { _ in
+            let durationTitle = workoutDurationTitle
             Button(action: { setSessionHeaderCollapsed(false) }) {
                 HStack(spacing: 8) {
                     Circle()
                         .fill(.tint)
                         .frame(width: 7, height: 7)
 
-                    Text(workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00")
-                    Text("•")
-                        .foregroundStyle(.tertiary)
-                    Text(workoutVolumeTitle)
-                    Text("•")
-                        .foregroundStyle(.tertiary)
-                    Text("\(workout.numberOfCompletedSets ?? 0) sets")
+                    if usesAccessibilityHeaderLayout {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(durationTitle)
+                                .font(.ironMetric(.subheadline, weight: .semibold))
+                                .foregroundStyle(IronTheme.metricTime)
+                            volume
+                            sets
+                        }
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .padding(.vertical, 8)
+                    } else {
+                        Text(durationTitle)
+                            .font(.ironMetric(.subheadline, weight: .semibold))
+                            .foregroundStyle(IronTheme.metricTime)
+                        Text("•")
+                            .foregroundStyle(.tertiary)
+                        volume
+                        Text("•")
+                            .foregroundStyle(.tertiary)
+                        sets
+
+                    }
 
                     Spacer(minLength: 4)
 
@@ -794,10 +925,10 @@ struct CurrentWorkoutView: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.tint)
                 }
-                .font(.ironMetric(.caption))
+                .font(.caption)
                 .contentTransition(reduceMotion ? .opacity : .numericText())
-                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workoutVolumeTitle)
-                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: workout.numberOfCompletedSets)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: volumeTitle)
+                .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: setCount)
                 .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: Int(workout.safeDuration))
                 .padding(.horizontal, 14)
                 .frame(maxWidth: .infinity, minHeight: 46)
@@ -807,12 +938,28 @@ struct CurrentWorkoutView: View {
             // Keep the compact summary optically above the exercise rows. A clear
             // glass tint preserves refraction without reintroducing an opaque white card.
             .ironLiquidGlassPill(tint: .clear)
-            .shadow(color: Color.black.opacity(0.16), radius: 16, x: 0, y: 7)
+            .shadow(color: IronTheme.outline.opacity(0.16), radius: 16, x: 0, y: 7)
             .accessibilityLabel("Expand workout summary")
             .accessibilityValue(
-                "\(workoutDurationFormatter.string(from: workout.safeDuration) ?? "0:00"), \(workoutVolumeTitle), \(workout.numberOfCompletedSets ?? 0) sets"
+                "\(durationTitle), \(volumeTitle), \(setCount) sets"
             )
         }
+    }
+
+    private var collapsedVolume: some View {
+        IronMetricValue(
+            value: workoutVolumeNumber, unit: settingsStore.weightUnit.unit.symbol,
+            style: .subheadline, weight: .semibold, unitStyle: .caption,
+            tint: IronTheme.metricVolume
+        )
+    }
+
+    private var collapsedSets: some View {
+        IronMetricValue(
+            value: "\(workout.numberOfCompletedSets ?? 0)", unit: "sets",
+            style: .subheadline, weight: .semibold, unitStyle: .caption,
+            tint: IronTheme.metricSets
+        )
     }
 
     private func summaryValue(
@@ -834,18 +981,9 @@ struct CurrentWorkoutView: View {
             .foregroundStyle(tint)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(value)
-                    .font(.ironMetric(.callout))
-                    .foregroundStyle(IronTheme.primaryText)
-                    .contentTransition(reduceMotion ? .opacity : .numericText())
-                    .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
-                if let unit {
-                    Text(unit)
-                        .font(.caption)
-                        .foregroundStyle(IronTheme.secondaryText)
-                }
-            }
+            IronMetricValue(value: value, unit: unit, tint: tint)
+            .contentTransition(reduceMotion ? .opacity : .numericText())
+            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
             .lineLimit(1)
             .minimumScaleFactor(0.65)
         }
@@ -880,12 +1018,12 @@ struct CurrentWorkoutView: View {
         }
         .frame(height: muscleMapHeight)
         .allowsHitTesting(false)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(
-            muscles.primary.isEmpty && muscles.secondary.isEmpty
-                ? "No muscles logged yet"
-                : "Muscles trained in completed sets"
-        )
+        .accessibilityRepresentation {
+            Text(muscles.primary.isEmpty && muscles.secondary.isEmpty
+                 ? "No muscles logged yet"
+                 : "Muscles trained in completed sets")
+                .accessibilityAddTraits(.isImage)
+        }
     }
 
     private func liveMuscleBody(
@@ -925,7 +1063,6 @@ struct CurrentWorkoutView: View {
             }
             .padding(.horizontal, IronTheme.horizontalPadding)
             .padding(.vertical, 10)
-            .overlay(Divider(), alignment: .bottom)
         }
     }
 
@@ -938,11 +1075,13 @@ struct CurrentWorkoutView: View {
             Button("Add Exercises") { showingExerciseSelector = true }
                 .ironProminentGlassButtonStyle()
                 .buttonBorderShape(.capsule)
+                .controlSize(.large)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.top, 24)
     }
 
-    private func workoutExerciseSection(_ workoutExercise: WorkoutExercise, index: Int) -> some View {
+    private func workoutExerciseSection(_ workoutExercise: WorkoutExercise, focusedSetID: NSManagedObjectID?) -> some View {
         let exercise = workoutExercise.exercise(in: exerciseStore.exercises)
         let sets = workoutSets(for: workoutExercise)
         let isBarbell = exercise?.type == .barbell
@@ -955,6 +1094,14 @@ struct CurrentWorkoutView: View {
             headerLayout {
                 if let exercise = exercise {
                     ExerciseDiagramThumbnail(exercise: exercise, size: 42)
+                        .frame(width: IronTheme.iconButtonSize, height: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
+                        .onLongPressGesture(minimumDuration: 0.35) {
+                            showingArrangeExercises = true
+                        }
+                        .accessibilityAction(named: Text("Reorder Exercises")) {
+                            showingArrangeExercises = true
+                        }
                 } else {
                     Circle()
                         .fill(IronTheme.tertiaryFill)
@@ -963,7 +1110,10 @@ struct CurrentWorkoutView: View {
                 }
 
                 if let exercise = exercise {
-                    NavigationLink(destination: ExerciseDetailView(exercise: exercise)) {
+                    Button {
+                        guard !showingArrangeExercises else { return }
+                        selectedExerciseDetail = exercise
+                    } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(exercise.title)
                                 .font(.headline)
@@ -981,10 +1131,26 @@ struct CurrentWorkoutView: View {
                                     .foregroundStyle(.secondary)
                             }
                         }
-                        .draggable(workoutExercise.objectID.uriRepresentation().absoluteString)
+                        .frame(minHeight: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
-                    .accessibilityHint("Double tap to open. Touch and hold, then drag to reorder.")
+                    .highPriorityGesture(
+                        LongPressGesture(minimumDuration: 0.35)
+                            .exclusively(before: TapGesture())
+                            .onEnded { result in
+                                switch result {
+                                case .first:
+                                    showingArrangeExercises = true
+                                case .second:
+                                    selectedExerciseDetail = exercise
+                                }
+                            }
+                    )
+                    .accessibilityHint("Double tap to open. Touch and hold to arrange exercises.")
+                    .accessibilityAction(named: Text("Reorder Exercises")) {
+                        showingArrangeExercises = true
+                    }
                 } else {
                     Text("Unknown Exercise")
                         .font(.headline)
@@ -1057,7 +1223,7 @@ struct CurrentWorkoutView: View {
                     },
                     allowsSwipeToDelete: true,
                     openSwipeSetID: $openSwipeSetID,
-                    isCurrent: sets.first(where: { !$0.isCompleted })?.objectID == set.objectID,
+                    isCurrent: focusedSetID == set.objectID,
                     previousWeight: previousSet?.weightValue,
                     previousRepetitions: previousSet.map { Int($0.repetitionsValue) }
                 )
@@ -1098,11 +1264,12 @@ struct CurrentWorkoutView: View {
                 addSet(to: workoutExercise)
             } label: {
                 Label("Add Set", systemImage: "plus")
+                    .font(.headline)
                     .frame(maxWidth: .infinity)
             }
             .ironGlassButtonStyle()
             .buttonBorderShape(.capsule)
-            .controlSize(.regular)
+            .controlSize(.large)
             .padding(.top, 12)
         }
         .padding(14)
@@ -1117,14 +1284,7 @@ struct CurrentWorkoutView: View {
         .padding(.horizontal, IronTheme.horizontalPadding)
         .padding(.top, 14)
         .id(workoutExercise.objectID)
-        .dropDestination(for: String.self) { payloads, _ in
-            guard let payload = payloads.first,
-                  let source = workoutExercises.firstIndex(where: {
-                      $0.objectID.uriRepresentation().absoluteString == payload
-                  }),
-                  source != index else { return false }
-            return moveWorkoutExercise(from: source, to: index)
-        }
+
     }
 
     @ViewBuilder
@@ -1140,6 +1300,9 @@ struct CurrentWorkoutView: View {
 
         Button("Superset", systemImage: "link") {
             supersetExercise = workoutExercise
+        }
+        Button("Reorder Exercises", systemImage: "arrow.up.arrow.down") {
+            showingArrangeExercises = true
         }
 
         if isBarbell,
@@ -1166,32 +1329,35 @@ struct CurrentWorkoutView: View {
         }
     }
 
+    @ViewBuilder
     private func setTableHeader(usesDuration: Bool) -> some View {
-        HStack(spacing: InlineWorkoutSetLayout.spacing) {
-            Text("Set").frame(width: InlineWorkoutSetLayout.setWidth)
-            Text("Previous").frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
-            if usesDuration {
-                Text("Duration")
+        if !usesAccessibilityHeaderLayout {
+            HStack(spacing: InlineWorkoutSetLayout.spacing) {
+                Text("Set").frame(width: InlineWorkoutSetLayout.setWidth)
+                Text("Previous").frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
+                if usesDuration {
+                    Text("Duration")
+                        .frame(maxWidth: .infinity)
+                } else {
+                    HStack(spacing: 3) {
+                        Image(systemName: "dumbbell")
+                            .accessibilityHidden(true)
+                        Text(settingsStore.weightUnit.unit.symbol)
+                    }
                     .frame(maxWidth: .infinity)
-            } else {
-                HStack(spacing: 3) {
-                    Image(systemName: "dumbbell")
-                        .accessibilityHidden(true)
-                    Text(settingsStore.weightUnit.unit.symbol)
+                    Text("Reps").frame(width: InlineWorkoutSetLayout.repetitionsWidth)
                 }
-                .frame(maxWidth: .infinity)
-                Text("Reps").frame(width: InlineWorkoutSetLayout.repetitionsWidth)
+                if settingsStore.logRPE {
+                    Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
+                }
+                Image(systemName: "checkmark")
+                    .frame(width: InlineWorkoutSetLayout.completionWidth)
+                    .accessibilityHidden(true)
             }
-            if settingsStore.logRPE {
-                Text("RPE").frame(width: InlineWorkoutSetLayout.rpeWidth)
-            }
-            Image(systemName: "checkmark")
-                .frame(width: InlineWorkoutSetLayout.completionWidth)
-                .accessibilityHidden(true)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .padding(.bottom, 6)
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .padding(.bottom, 6)
     }
 
     private var activeRestTimerExercise: WorkoutExercise? {
@@ -1324,7 +1490,6 @@ struct CurrentWorkoutView: View {
                 IronTheme.metricTimeContainer,
                 in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous)
             )
-            .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: countdown)
         }
     }
 
@@ -1344,6 +1509,7 @@ struct CurrentWorkoutView: View {
                         .font(.ironMetric(.title3))
                         .foregroundStyle(IronTheme.metricTime)
                         .contentTransition(reduceMotion ? .opacity : .numericText(countsDown: true))
+                        .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: countdown)
                     Text("Rest of \(restTimerTimeText(duration))")
                         .font(.caption2)
                         .foregroundStyle(IronTheme.secondaryText)
@@ -1541,7 +1707,7 @@ struct CurrentWorkoutView: View {
         .sheet(isPresented: $showingFinishStartDateEditor) {
             IronDateTimePickerSheet(
                 title: "Workout started",
-                subtitle: "Duration stays the same; Iron adjusts the finish time automatically.",
+                subtitle: "Duration stays the same; Light adjusts the finish time automatically.",
                 initialDate: finishStartDate,
                 range: Date.distantPast...Date()
             ) { newDate in
@@ -1816,7 +1982,7 @@ struct CurrentWorkoutView: View {
             } label: {
                 LabeledContent("Visibility", value: "Private")
             }
-            .accessibilityHint("Iron workouts are private. Tap to learn why.")
+            .accessibilityHint("Light workouts are private. Tap to learn why.")
         } header: {
             Text("Saving")
         } footer: {
@@ -1845,8 +2011,8 @@ struct CurrentWorkoutView: View {
                     Spacer()
 
                     Text("\(workoutExercise.numberOfCompletedSets ?? 0)")
-                        .monospacedDigit()
-                        .foregroundStyle(.secondary)
+                        .font(.ironMetric(.body))
+                        .foregroundStyle(IronTheme.metricSets)
                 }
                 .accessibilityElement(children: .combine)
                 .accessibilityLabel("\(exercise?.title ?? "Unknown exercise"), \(workoutExercise.numberOfCompletedSets ?? 0) completed sets")
@@ -1875,7 +2041,7 @@ struct CurrentWorkoutView: View {
             onClose: { showingVisibilityInfo = false }
         ) {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Iron has no social feed or public profiles. Finished workouts are always saved as Private · Only you, so your training history stays on this device and in your personal backups.")
+                Text("Light has no social feed or public profiles. Finished workouts are always saved as Private · Only you, so your training history stays on this device and in your personal backups.")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -1904,9 +2070,15 @@ struct CurrentWorkoutView: View {
         let formatter = DateComponentsFormatter()
         formatter.unitsStyle = .positional
         formatter.allowedUnits = [.hour, .minute, .second]
-        formatter.zeroFormattingBehavior = .pad
+        formatter.zeroFormattingBehavior = .dropLeading
         return formatter
     }()
+
+    private var workoutDurationTitle: String {
+        let duration = max(0, workout.safeDuration)
+        if duration < 60 { return String(format: "0:%02d", Int(duration)) }
+        return workoutDurationFormatter.string(from: duration) ?? "0:00"
+    }
 
     private var workoutVolumeNumber: String {
         let displayWeight = WeightUnit.convert(
@@ -1976,26 +2148,13 @@ struct CurrentWorkoutView: View {
         return saved
     }
 
-    private func supersetCandidateTitle(_ workoutExercise: WorkoutExercise) -> String {
-        workoutExercise.exercise(in: exerciseStore.exercises)?.title ?? "Unknown Exercise"
-    }
-
     @discardableResult
-    private func assignSuperset(between source: WorkoutExercise, and candidate: WorkoutExercise) -> Bool {
-        let existingIDs = Set([source.supersetUuid, candidate.supersetUuid].compactMap { $0 })
-        let supersetID = source.supersetUuid ?? candidate.supersetUuid ?? UUID()
-
+    private func configureSuperset(for source: WorkoutExercise, partnerIDs: Set<NSManagedObjectID>) -> Bool {
         let saved = persistMutation {
-            for workoutExercise in workoutExercises {
-                let belongsToExistingGroup = workoutExercise.supersetUuid.map(existingIDs.contains) ?? false
-                if workoutExercise.objectID == source.objectID
-                    || workoutExercise.objectID == candidate.objectID
-                    || belongsToExistingGroup {
-                    workoutExercise.supersetUuid = supersetID
-                }
-            }
+            try WorkoutOrganization.setSuperset(in: workout, source: source, partnerIDs: partnerIDs)
         }
         if saved {
+            workout.objectWillChange.send()
             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             UISelectionFeedbackGenerator().selectionChanged()
         }
@@ -2004,6 +2163,11 @@ struct CurrentWorkoutView: View {
 
     @discardableResult
     private func removeFromSuperset(_ source: WorkoutExercise) -> Bool {
+        guard workout.isCurrentWorkout, !source.isDeleted,
+              workoutExercises.contains(where: { $0.objectID == source.objectID }) else {
+            persistenceError = WorkoutOrganization.Failure.changedWorkout.localizedDescription
+            return false
+        }
         let previousID = source.supersetUuid
         let saved = persistMutation {
             source.supersetUuid = nil
@@ -2117,17 +2281,12 @@ struct CurrentWorkoutView: View {
     }
 
     @discardableResult
-    private func moveWorkoutExercise(from source: Int, to destination: Int) -> Bool {
-        guard source != destination,
-              workoutExercises.indices.contains(source),
-              workoutExercises.indices.contains(destination) else { return false }
+    private func saveExerciseOrder(_ orderedIDs: [NSManagedObjectID]) -> Bool {
         let saved = persistMutation {
-            var exercises = workoutExercises
-            let exercise = exercises.remove(at: source)
-            exercises.insert(exercise, at: destination)
-            workout.workoutExercises = NSOrderedSet(array: exercises)
+            try WorkoutOrganization.reorder(orderedIDs, in: workout)
         }
         if saved {
+            workout.objectWillChange.send()
             WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             UISelectionFeedbackGenerator().selectionChanged()
         }
@@ -2204,19 +2363,12 @@ struct CurrentWorkoutView: View {
         }
     }
 
-    /// Moves the log to the next unfinished exercise in the same superset so the
-    /// user can keep alternating without scrolling by hand.
+    /// Keep automatic superset scrolling aimed at the same set as the editor.
+    /// The next workout unit takes focus when every member of the group is done.
     private func advanceThroughSuperset(from workoutExercise: WorkoutExercise) {
-        guard let supersetUuid = workoutExercise.supersetUuid else { return }
-        let partners = workoutExercises.filter { $0.supersetUuid == supersetUuid }
-        guard partners.count > 1,
-              let currentIndex = partners.firstIndex(of: workoutExercise) else { return }
-
-        let rotated = partners[(currentIndex + 1)...] + partners[..<currentIndex]
-        guard let next = rotated.first(where: { partner in
-            workoutSets(for: partner).contains { !$0.isCompleted }
-        }) else { return }
-        scrollTarget = next.id
+        guard workoutExercise.supersetUuid != nil,
+              let next = WorkoutSetFocus.next(in: workout) else { return }
+        scrollTarget = next.exerciseID
     }
 
     @discardableResult
@@ -2446,7 +2598,7 @@ struct CurrentWorkoutView: View {
                 if updateLinkedRoutine { updateLinkedRoutineFromCompletedSets() }
             }
         } catch {
-            persistenceError = "Your workout is still active. Iron could not save it: \(error.localizedDescription)"
+            persistenceError = "Your workout is still active. Light could not save it: \(error.localizedDescription)"
             return
         }
         UserDefaults.standard.syncFinishedWorkoutsWithHealth = syncWithHealth
@@ -2485,7 +2637,7 @@ struct CurrentWorkoutView: View {
     }
 
     @discardableResult
-    private func persistMutation(_ mutation: () -> Void) -> Bool {
+    private func persistMutation(_ mutation: () throws -> Void) -> Bool {
         do {
             try CurrentWorkoutPersistence.perform(
                 in: managedObjectContext,
@@ -2801,8 +2953,7 @@ private struct FinishWorkoutEffortBar: View {
                 .scaleEffect(y: hasAppeared || reduceMotion ? 1 : 0, anchor: .bottom)
                 .frame(height: 56, alignment: .bottom)
             Text("\(level)")
-                .font(.caption2.weight(level == rating ? .bold : .regular))
-                .monospacedDigit()
+                .font(.ironMetric(.caption2, weight: level == rating ? .bold : .semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.6)
                 .foregroundStyle(level == rating ? IronTheme.metricEffort : IronTheme.secondaryText)
@@ -2828,7 +2979,7 @@ enum CurrentWorkoutPersistence {
     static func perform(
         in context: NSManagedObjectContext,
         save: () throws -> Void,
-        mutation: () -> Void
+        mutation: () throws -> Void
     ) throws {
         try context.persistMutation(save: save, mutation: mutation)
     }
@@ -2922,6 +3073,7 @@ private struct WorkoutSessionProgressBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var exerciseStore: ExerciseStore
     @ObservedObject var workout: Workout
+    let focusedExerciseID: NSManagedObjectID?
     let onSelect: (NSManagedObjectID) -> Void
     private var exercises: [WorkoutExercise] {
         workout.workoutExercises?.array as? [WorkoutExercise] ?? []
@@ -2936,7 +3088,7 @@ private struct WorkoutSessionProgressBar: View {
     private var totalCount: Int { exercises.reduce(0) { $0 + sets(for: $1).count } }
     private var completedCount: Int { exercises.reduce(0) { $0 + sets(for: $1).filter(\.isCompleted).count } }
     private var currentExercise: WorkoutExercise? {
-        exercises.first { sets(for: $0).contains { !$0.isCompleted } }
+        exercises.first { $0.objectID == focusedExerciseID }
     }
 
     var body: some View {
@@ -3004,12 +3156,6 @@ private struct WorkoutSessionProgressBar: View {
                 .frame(width: fillWidth)
             }
             .clipShape(Capsule())
-            .overlay {
-                Capsule().strokeBorder(
-                    currentExercise?.objectID == exercise.objectID ? IronTheme.accent.opacity(0.5) : .clear,
-                    lineWidth: 1
-                )
-            }
             .frame(height: 6)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: completed.count)
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: allSets.count)
@@ -3041,6 +3187,7 @@ enum InlineWorkoutSetLayout {
 
 struct InlineWorkoutSetRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var settingsStore: SettingsStore
     @ObservedObject var set: WorkoutSet
 
@@ -3172,7 +3319,7 @@ struct InlineWorkoutSetRow: View {
                     isRunning ? IronTheme.danger : (set.isCompleted || isRaisedCurrent ? IronTheme.metricTime : IronTheme.secondaryText)
                 )
             Text(text)
-                .font(.ironMetric(.subheadline))
+                .font(.ironMetric(.title3))
                 .foregroundColor(valueColor)
                 .contentTransition(reduceMotion ? .opacity : .numericText())
                 .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: text)
@@ -3464,7 +3611,7 @@ struct InlineWorkoutSetRow: View {
                             .font(.caption2.weight(.semibold))
                             .foregroundStyle(IronTheme.secondaryText)
                     }
-                    .font(.headline.weight(.bold))
+                    .font(.ironMetric(.headline))
                     .foregroundStyle(IronTheme.primaryText)
                     .frame(minHeight: IronTheme.controlHeight)
                     .contentShape(Rectangle())
@@ -3526,7 +3673,7 @@ struct InlineWorkoutSetRow: View {
             .accessibilityLabel("Log set \(index + 1)")
         }
         .padding(14)
-        .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: 20, style: .continuous))
+        .background(IronTheme.raisedSurface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
         .padding(.vertical, 6)
     }
 
@@ -3539,7 +3686,7 @@ struct InlineWorkoutSetRow: View {
                 .foregroundStyle(IronTheme.secondaryText)
             HStack(alignment: .firstTextBaseline, spacing: 3) {
                 TextField(placeholder, text: isWeight ? weightTextBinding : repetitionsTextBinding)
-                    .font(.ironMetric(.largeTitle, weight: .heavy))
+                    .font(.ironMetric(.largeTitle))
                     .foregroundStyle(IronTheme.primaryText)
                     .keyboardType(isWeight ? .decimalPad : .numberPad)
                     .focused($focusedField, equals: field)
@@ -3562,9 +3709,9 @@ struct InlineWorkoutSetRow: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
+            RoundedRectangle(cornerRadius: IronTheme.cornerRadius, style: .continuous)
                 .stroke(focusedField == field ? IronTheme.accent : IronTheme.outline, lineWidth: focusedField == field ? 2 : 0.5)
         }
         .accessibilityElement(children: .contain)
@@ -3591,6 +3738,8 @@ struct InlineWorkoutSetRow: View {
                 .foregroundStyle(IronTheme.primaryText)
                 .frame(width: 40, height: 40)
                 .background(IronTheme.field, in: Circle())
+                .frame(width: IronTheme.controlHeight, height: IronTheme.controlHeight)
+                .contentShape(Circle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(field == .weight ? "\(action) weight by \(increment) \(unitName)" : "\(action) reps by 1")
@@ -3644,7 +3793,101 @@ struct InlineWorkoutSetRow: View {
         }
     }
 
+    @ViewBuilder
     private var compactRow: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            accessibleCompactRow
+        } else {
+            regularCompactRow
+        }
+    }
+
+    private var accessibleCompactRow: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Menu { setTypeMenuItems } label: {
+                    Text(set.tagValue == nil ? "Set \(index + 1)" : "\(setLabel) · Set \(index + 1)")
+                        .font(.headline)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.7)
+                        .foregroundStyle(badgeColor)
+                        .padding(.horizontal, 8)
+                        .frame(minHeight: IronTheme.controlHeight)
+                        .background(badgeFill, in: Capsule())
+                }
+                .accessibilityLabel("Set type")
+                .accessibilityValue(set.tagValue?.title ?? "Normal set")
+                Spacer(minLength: 0)
+                if settingsStore.logRPE {
+                    Button { showingRPEPicker = true } label: {
+                        Text(set.rpeValue.map { "RPE " + String(format: "%g", $0) } ?? "RPE")
+                            .font(.ironMetric(.caption, weight: .semibold))
+                            .foregroundStyle(IronTheme.metricEffort)
+                            .frame(minWidth: IronTheme.controlHeight, minHeight: IronTheme.controlHeight)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(rpeAccessibilityLabel)
+                    .accessibilityHint("Opens the effort selector")
+                }
+                Button(action: toggleCompletion) {
+                    completionSymbol
+                        .frame(width: IronTheme.controlHeight, height: IronTheme.controlHeight)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(set.isCompleted ? "Set \(index + 1) completed" : "Mark set \(index + 1) complete")
+                .accessibilityValue(set.isCompleted ? "Completed" : "Not completed")
+                .accessibilityAddTraits(set.isCompleted ? .isSelected : [])
+            }
+            if previousTitle != "—", !previousTitle.isEmpty {
+                Text("Previous: \(previousTitle)")
+                    .font(.caption)
+                    .foregroundStyle(IronTheme.secondaryText)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(IronTheme.tertiaryFill, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
+            }
+            if usesDuration {
+                setField {
+                    durationControl
+                }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } else {
+                HStack(alignment: .top, spacing: 12) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Weight (\(settingsStore.weightUnit.unit.symbol))")
+                            .font(.caption).foregroundStyle(IronTheme.secondaryText)
+                        setField(isFocused: focusedField == .weight) {
+                            TextField("0", text: weightTextBinding)
+                                .keyboardType(.decimalPad)
+                                .focused($focusedField, equals: .weight)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .accessibilityLabel("Weight in \(settingsStore.weightUnit.unit.symbol)")
+                        }
+                    }
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Reps").font(.caption).foregroundStyle(IronTheme.secondaryText)
+                        setField(isFocused: focusedField == .repetitions) {
+                            TextField("0", text: repetitionsTextBinding)
+                                .keyboardType(.numberPad)
+                                .focused($focusedField, equals: .repetitions)
+                                .textInputAutocapitalization(.never)
+                                .autocorrectionDisabled()
+                                .accessibilityLabel("Repetitions")
+                        }
+                    }
+                }
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, InlineWorkoutSetLayout.completedChromeExpansion)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var regularCompactRow: some View {
         HStack(spacing: InlineWorkoutSetLayout.spacing) {
             Menu {
                 setTypeMenuItems
@@ -3673,6 +3916,8 @@ struct InlineWorkoutSetRow: View {
                 .minimumScaleFactor(0.7)
                 .multilineTextAlignment(.center)
                 .frame(width: InlineWorkoutSetLayout.previousWidth, alignment: .center)
+                .frame(minHeight: 46)
+                .background(IronTheme.tertiaryFill, in: RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous))
 
             if usesDuration {
                 setField {
@@ -3881,20 +4126,17 @@ struct InlineWorkoutSetRow: View {
         @ViewBuilder content: () -> Content
     ) -> some View {
         content()
-            .font(.ironMetric(.callout))
+            .font(.ironMetric(.title3))
             .foregroundColor(valueColor)
             .multilineTextAlignment(.center)
             .frame(maxWidth: width == nil ? .infinity : nil, minHeight: 46)
             .frame(width: width)
             .background(
-                Capsule(style: .continuous)
+                RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
                     .fill(isFocused ? IronTheme.accentSoft : IronTheme.tertiaryFill)
-                    .opacity(!set.isCompleted && (isRaisedCurrent || isFocused) ? 1 : 0)
                     .overlay {
-                        if isFocused && !set.isCompleted {
-                            Capsule(style: .continuous)
-                                .stroke(IronTheme.accent, lineWidth: 2)
-                        }
+                        RoundedRectangle(cornerRadius: IronTheme.compactCornerRadius, style: .continuous)
+                            .strokeBorder(isFocused ? IronTheme.accent : IronTheme.outline.opacity(set.isCompleted ? 0.5 : 1), lineWidth: isFocused ? 2 : 0.5)
                     }
             )
             .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: isFocused)

@@ -1,7 +1,8 @@
 import AVFoundation
 import UIKit
 
-/// Original, prewarmed UI cues. All player/session state belongs to the main queue.
+/// Original, prewarmed UI cues. Player state belongs to the main queue;
+/// audio-session configuration runs on a dedicated queue so launch stays responsive.
 final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
     enum Sound: String, CaseIterable, Identifiable {
         case setComplete = "set_complete"
@@ -34,6 +35,8 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
     static let shared = IronSoundPlayer()
 
     private var players: [Sound: AVAudioPlayer] = [:]
+    private let sessionQueue = DispatchQueue(label: "com.joshpatra.Iron.audio-session", qos: .userInitiated)
+    private var isPreloading = false
     private var isAppActive = false
     private var lastTickTime: TimeInterval = -.infinity
 
@@ -56,13 +59,30 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
             DispatchQueue.main.async { self.preload() }
             return
         }
-        guard Bundle.main.bundleURL.pathExtension != "appex", players.isEmpty else { return }
+        guard Bundle.main.bundleURL.pathExtension != "appex", players.isEmpty, !isPreloading else { return }
+        // Launch and scene activation can both request prewarming. Configure once
+        // before preparing players, without blocking either main-thread callback.
+        isPreloading = true
+        sessionQueue.async {
+            do {
+                // Ambient mixes with the user's music and honors Ring/Silent.
+                try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
+                DispatchQueue.main.async { self.preparePlayers() }
+            } catch {
+                DispatchQueue.main.async {
+                    self.isPreloading = false
+                    print("Could not configure Light sounds: \(error.localizedDescription)")
+                }
+            }
+        }
+    }
+
+    private func preparePlayers() {
+        defer { isPreloading = false }
         do {
-            // Ambient mixes with the user's music and honors Ring/Silent.
-            try AVAudioSession.sharedInstance().setCategory(.ambient, mode: .default)
             for sound in Sound.allCases {
                 guard let url = Bundle.main.url(forResource: sound.rawValue, withExtension: "caf") else {
-                    print("Missing Iron sound: \(sound.rawValue).caf")
+                    print("Missing Light sound: \(sound.rawValue).caf")
                     continue
                 }
                 let player = try AVAudioPlayer(contentsOf: url)
@@ -72,7 +92,7 @@ final class IronSoundPlayer: NSObject, AVAudioPlayerDelegate {
                 players[sound] = player
             }
         } catch {
-            print("Could not prepare Iron sounds: \(error.localizedDescription)")
+            print("Could not prepare Light sounds: \(error.localizedDescription)")
         }
     }
 

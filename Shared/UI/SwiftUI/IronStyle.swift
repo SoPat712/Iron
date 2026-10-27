@@ -23,6 +23,8 @@ struct IronPaletteColors {
     let metricRecordContainer: UIColor
     let metricBody: UIColor
     let metricBodyContainer: UIColor
+    let metricHeartRate: UIColor
+    let metricEnergy: UIColor
     let success: UIColor
     let successContainer: UIColor
     let successControl: UIColor
@@ -62,6 +64,8 @@ enum IronPalette {
         metricRecordContainer: UIColor.systemYellow.withAlphaComponent(0.18),
         metricBody: .systemPurple,
         metricBodyContainer: UIColor.systemPurple.withAlphaComponent(0.18),
+        metricHeartRate: .systemRed,
+        metricEnergy: .systemOrange,
         success: .systemGreen,
         successContainer: UIColor.systemGreen.withAlphaComponent(0.14),
         successControl: UIColor.systemGreen.withAlphaComponent(0.22),
@@ -110,6 +114,8 @@ enum IronTheme {
     static let metricRecordContainer = IronPalette.color(\.metricRecordContainer)
     static let metricBody = IronPalette.color(\.metricBody)
     static let metricBodyContainer = IronPalette.color(\.metricBodyContainer)
+    static let metricHeartRate = IronPalette.color(\.metricHeartRate)
+    static let metricEnergy = IronPalette.color(\.metricEnergy)
     static let setWarmUpTint = Color(UIColor.systemOrange)
     static let setDropTint = Color(UIColor.systemIndigo)
     static let setFailureTint = Color(UIColor.systemRed)
@@ -175,17 +181,9 @@ enum IronTheme {
     static let floatingWorkoutBottomClearance: CGFloat = 152
 }
 
-extension Font {
-    /// SF Pro metric numerals with fixed digit widths; use semibold in dense rows.
-    /// Example: `Text("185").font(.ironMetric(.title2))` or
-    /// `Text("8").font(.ironMetric(.body, weight: .semibold))`.
-    /// Render units separately in a smaller, secondary semantic style.
-    static func ironMetric(_ style: Font.TextStyle, weight: Font.Weight = .bold) -> Font {
-        .system(style, design: .default).weight(weight).monospacedDigit()
-    }
-}
 
-/// Motion is short, spring-based, and always defeasible by Reduce Motion.
+/// Motion uses springs for state changes and a decelerating curve for travel.
+/// Every spatial animation remains defeasible by Reduce Motion.
 enum IronMotion {
     /// Direct manipulation and state changes the finger caused: set complete,
     /// header collapse, filter selection.
@@ -193,6 +191,8 @@ enum IronMotion {
     /// Layout changes that move a large surface, such as the logger summary
     /// collapsing into the floating pill.
     static let collapse = Animation.spring(response: 0.42, dampingFraction: 0.86)
+    /// Guided travel between exercises: move promptly, then settle without bounce.
+    static let focusScroll = Animation.timingCurve(0.16, 1, 0.3, 1, duration: 0.65)
     /// Non-spatial changes where a spring would look decorative.
     static let fade = Animation.easeInOut(duration: 0.18)
 

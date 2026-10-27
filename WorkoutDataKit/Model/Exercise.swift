@@ -8,6 +8,8 @@
 
 import Foundation
 
+private final class ExerciseMediaBundleToken: NSObject {}
+
 public struct Exercise: Hashable {
     public static let exerciseMediaProvider = "ExerciseDB V1"
     public static let mediaAttribution = "© Gym Visual — gymvisual.com"
@@ -58,9 +60,17 @@ public struct Exercise: Hashable {
     }
 
     public var imageURL: URL? {
-        // The free ExerciseDB V1 API exposes GIFs rather than separate stills.
-        // AsyncImage renders the first frame as a lightweight list thumbnail.
-        Self.mediaURL(filename: animationFilename ?? imageFilename)
+        // A separately licensed bundled still may be supplied without changing
+        // exercise identity. Otherwise retain the existing free-provider GIF.
+        if let imageFilename,
+           imageFilename.hasPrefix("catalogue/still/"),
+           !imageFilename.split(separator: "/").contains("..") {
+            let url = Bundle(for: ExerciseMediaBundleToken.self).bundleURL
+                .appendingPathComponent("everkinetic-data", isDirectory: true)
+                .appendingPathComponent(imageFilename)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return Self.mediaURL(filename: animationFilename ?? imageFilename)
     }
 
     public var animationURL: URL? {

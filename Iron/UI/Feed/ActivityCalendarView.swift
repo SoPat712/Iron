@@ -87,7 +87,7 @@ struct ActivityCalendarView: View {
             }
         }
         .navigationDestination(item: $selectedWorkout) { workout in
-            WorkoutDetailView(workout: workout)
+            TrainingDayRecapView(date: workout.start ?? Date())
         }
         .preference(key: WorkoutsLast28DaysKey.self, value: numberOfWorkouts)
     }

@@ -26,6 +26,9 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
         
         #if DEBUG
         seedSampleDataIfRequested()
+        if ProcessInfo.processInfo.arguments.contains("-ironRunImportedDataSmokeCheck") {
+            Task { await IronImportedDataSmokeCheck.run() }
+        }
         #endif
 
         ExerciseStore.shared.observeWorkoutHistory(in: WorkoutDataStorage.shared.persistentContainer.viewContext)

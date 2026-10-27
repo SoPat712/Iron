@@ -65,7 +65,9 @@ struct ContentView : View {
                 }
             }
             .onChange(of: scenePhase) { _, newPhase in
-                guard newPhase == .active, let workout = currentWorkouts.first else { return }
+                guard newPhase == .active else { return }
+                TrainingHistoryStore.shared.refresh()
+                guard let workout = currentWorkouts.first else { return }
                 WorkoutLiveActivityManager.shared.startOrUpdate(for: workout)
             }
             .onReceive(NotificationCenter.default.publisher(for: Notification.Name.RestoreFromBackup)) { output in
@@ -96,26 +98,16 @@ struct ContentView : View {
             }
             .sheet(
                 isPresented: Binding(
-                    get: { restoreBackupData != nil },
+                    get: { restoreBackupData != nil && !usesNativeLoggerPresentation },
                     set: { if !$0 { restoreBackupData = nil } }
                 )
             ) {
-                IronConfirmationSheet(
-                    title: RestoreActionSheet.confirmationTitle,
-                    message: RestoreActionSheet.confirmationMessage,
-                    confirmTitle: "Restore Backup",
-                    systemImage: "arrow.counterclockwise.icloud.fill",
-                    secondaryTitle: "Keep Current Data",
-                    onCancel: { restoreBackupData = nil },
-                    onConfirm: restoreIncomingBackup
-                )
-                .presentationDetents([.height(410), .medium])
-                .presentationDragIndicator(.visible)
+                restoreBackupConfirmation
             }
-            .sheet(item: $restoreResult) { restoreResultHolder in
+            .sheet(item: rootPresentationBinding($restoreResult)) { restoreResultHolder in
                 restoreResultSheet(restoreResultHolder.value)
             }
-            .sheet(item: $hevyImportOutcome) { outcome in
+            .sheet(item: rootPresentationBinding($hevyImportOutcome)) { outcome in
                 HevyCSVImportResultSheet(outcome: outcome)
             }
             .alert(
@@ -129,6 +121,31 @@ struct ContentView : View {
             } message: {
                 Text("The active workout, its notes, and every logged set will be permanently deleted.")
             }
+    }
+
+    private var restoreBackupConfirmation: some View {
+        IronConfirmationSheet(
+            title: RestoreActionSheet.confirmationTitle,
+            message: RestoreActionSheet.confirmationMessage,
+            confirmTitle: "Restore Backup",
+            systemImage: "arrow.counterclockwise.icloud.fill",
+            secondaryTitle: "Keep Current Data",
+            onCancel: { restoreBackupData = nil },
+            onConfirm: restoreIncomingBackup
+        )
+        .presentationDetents([.height(410), .medium])
+        .presentationDragIndicator(.visible)
+    }
+
+    private var usesNativeLoggerPresentation: Bool {
+        if #available(iOS 18.0, *) {
+            return !reduceMotion && sceneState.isCurrentWorkoutExpanded && currentWorkouts.first != nil
+        }
+        return false
+    }
+
+    private func rootPresentationBinding<Value>(_ state: Binding<Value?>) -> Binding<Value?> {
+        Binding(get: { usesNativeLoggerPresentation ? nil : state.wrappedValue }, set: { state.wrappedValue = $0 })
     }
 
     private func restoreIncomingBackup() {
@@ -157,7 +174,47 @@ struct ContentView : View {
     @ViewBuilder
     private var rootView: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.arguments.contains("-ironInspectHealthSettings") {
+        if ProcessInfo.processInfo.arguments.contains("-ironInspectHome") {
+            FeedView()
+                .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHistory") {
+            HistoryView()
+                .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectSettings") {
+            SettingsView()
+                .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectEmptyWorkoutTab") {
+            StartWorkoutView()
+                .environment(\.managedObjectContext, Self.inspectionEmptyContext)
+                .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectImportedData") {
+            NavigationStack {
+                BackupAndExportView()
+                    .environment(\.managedObjectContext, Self.inspectionImportedContext)
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectWorkoutTab") {
+            StartWorkoutView()
+                .productionEnvironment()
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectExerciseLibrary") {
+            NavigationStack {
+                ExerciseMuscleGroupsView()
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectExerciseDetail"),
+                  let inspectionExercise = inspectionWorkoutExercise?.exercise(in: exerciseStore.exercises)
+                    ?? exerciseStore.exercises.first {
+            NavigationStack {
+                ExerciseDetailView(exercise: inspectionExercise)
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectEmptyExercise"),
+                  let inspectionExercise = inspectionEmptyExercise {
+            NavigationStack {
+                ExerciseDetailView(exercise: inspectionExercise)
+                    .productionEnvironment()
+            }
+        } else if ProcessInfo.processInfo.arguments.contains("-ironInspectHealthSettings") {
             NavigationStack {
                 HealthSettingsView()
                     .productionEnvironment()
@@ -236,43 +293,131 @@ struct ContentView : View {
 
     @ViewBuilder
     private var standardRootView: some View {
+        if #available(iOS 18.0, *), !reduceMotion {
+            workoutRootSurface(useNativeWorkoutPresentation: true)
+                .fullScreenCover(
+                    isPresented: nativeWorkoutPresentationBinding
+                ) {
+                    if let workout = currentWorkouts.first {
+                        nativeCurrentWorkoutPresentation(workout)
+                    }
+                }
+        } else {
+            workoutRootSurface(useNativeWorkoutPresentation: false)
+        }
+    }
+
+    @ViewBuilder
+    private func workoutRootSurface(useNativeWorkoutPresentation: Bool) -> some View {
         ZStack {
             tabSurface
 
             if let workout = currentWorkouts.first {
-                if sceneState.isCurrentWorkoutExpanded {
-                    CurrentWorkoutView(workout: workout) {
-                        withAnimation(activeWorkoutTransition) {
-                            sceneState.selectedTab = .workout
-                            sceneState.isCurrentWorkoutExpanded = false
+                if useNativeWorkoutPresentation {
+                    // Keep the source mounted behind the native cover so the
+                    // reverse zoom has a live origin after an interactive dismiss.
+                    if #available(iOS 18.0, *) {
+                        if #unavailable(iOS 26.1) {
+                            nativeCollapsedWorkoutSource(workout)
+                                .zIndex(9)
                         }
                     }
-                    .productionEnvironment()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .background(IronTheme.background.ignoresSafeArea())
-                    .matchedGeometryEffect(
-                        id: "active-workout-surface",
-                        in: activeWorkoutNamespace,
-                        properties: reduceMotion ? [] : .frame,
-                        anchor: .bottom
-                    )
-                    .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
-                    .zIndex(10)
-                } else if #unavailable(iOS 26.1) {
-                    collapsedActiveWorkoutPill(workout)
-                        .matchedGeometryEffect(
-                            id: "active-workout-surface",
-                            in: activeWorkoutNamespace,
-                            properties: reduceMotion ? [] : .frame,
-                            anchor: .bottom
-                        )
-                        .transition(.opacity)
-                        .zIndex(9)
+                } else {
+                    if sceneState.isCurrentWorkoutExpanded {
+                        legacyCurrentWorkoutOverlay(workout)
+                    } else if #unavailable(iOS 26.1) {
+                        collapsedActiveWorkoutPill(workout)
+                            .matchedGeometryEffect(
+                                id: "active-workout-surface",
+                                in: activeWorkoutNamespace,
+                                properties: reduceMotion ? [] : .frame,
+                                anchor: .bottom
+                            )
+                            .transition(.opacity)
+                            .zIndex(9)
+                    }
                 }
             }
         }
         .animation(activeWorkoutTransition, value: sceneState.isCurrentWorkoutExpanded)
         .animation(activeWorkoutTransition, value: currentWorkouts.first?.objectID)
+    }
+
+    private func legacyCurrentWorkoutOverlay(_ workout: Workout) -> some View {
+        currentWorkoutLogger(workout)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(IronTheme.background.ignoresSafeArea())
+            .matchedGeometryEffect(
+                id: "active-workout-surface",
+                in: activeWorkoutNamespace,
+                properties: reduceMotion ? [] : .frame,
+                anchor: .bottom
+            )
+            .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+            .zIndex(10)
+    }
+
+    @available(iOS 18.0, *)
+    private func nativeCollapsedWorkoutSource(_ workout: Workout) -> some View {
+        activeWorkoutPillChrome(workout)
+            .matchedTransitionSource(
+                id: "active-workout-zoom",
+                in: activeWorkoutNamespace
+            )
+            .padding(.horizontal, IronTheme.activeWorkoutPillHorizontalPadding)
+            .padding(.bottom, IronTheme.activeWorkoutPillBottomOffset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private func currentWorkoutLogger(_ workout: Workout) -> some View {
+        CurrentWorkoutView(workout: workout, onMinimize: minimizeCurrentWorkout)
+            .productionEnvironment()
+    }
+
+    @available(iOS 18.0, *)
+    private func nativeCurrentWorkoutPresentation(_ workout: Workout) -> some View {
+        currentWorkoutLogger(workout)
+            // Global import/restore UI must be presented above the native cover,
+            // just as it was above the former in-place logger overlay.
+            .overlay {
+                if let phase = importController.phase {
+                    HevyImportProgressOverlay(phase: phase)
+                }
+            }
+            .sheet(isPresented: Binding(
+                get: { restoreBackupData != nil },
+                set: { if !$0 { restoreBackupData = nil } }
+            )) {
+                restoreBackupConfirmation
+            }
+            .sheet(item: $restoreResult) { result in
+                restoreResultSheet(result.value)
+            }
+            .sheet(item: $hevyImportOutcome) { outcome in
+                HevyCSVImportResultSheet(outcome: outcome)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(IronTheme.background.ignoresSafeArea())
+            .navigationTransition(
+                .zoom(sourceID: "active-workout-zoom", in: activeWorkoutNamespace)
+            )
+    }
+
+    @available(iOS 18.0, *)
+    private var nativeWorkoutPresentationBinding: Binding<Bool> {
+        Binding(
+            get: {
+                sceneState.isCurrentWorkoutExpanded && currentWorkouts.first != nil
+            },
+            set: { isPresented in
+                if isPresented {
+                    guard currentWorkouts.first != nil else { return }
+                    sceneState.isCurrentWorkoutExpanded = true
+                } else {
+                    sceneState.isCurrentWorkoutExpanded = false
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -281,15 +426,10 @@ struct ContentView : View {
             tabView
                 .tabBarMinimizeBehavior(hasActiveWorkout ? .onScrollDown : .never)
                 .tabViewBottomAccessory(
-                    isEnabled: hasCollapsedWorkoutAccessory
+                    isEnabled: hasActiveWorkout && (!sceneState.isCurrentWorkoutExpanded || !reduceMotion)
                 ) {
                     if let workout = currentWorkouts.first {
-                        AdaptiveWorkoutTabAccessory {
-                            collapsedActiveWorkoutAccessory(workout)
-                                .padding(.horizontal, 4)
-                        } inline: {
-                            inlineActiveWorkoutAccessory(workout)
-                        }
+                        activeWorkoutAccessory(workout)
                     }
                 }
         } else {
@@ -297,12 +437,22 @@ struct ContentView : View {
         }
     }
 
-    private var hasActiveWorkout: Bool {
-        currentWorkouts.first != nil
+    @available(iOS 26.1, *)
+    private func activeWorkoutAccessory(_ workout: Workout) -> some View {
+        AdaptiveWorkoutTabAccessory {
+            collapsedActiveWorkoutAccessory(workout)
+                .padding(.horizontal, 4)
+        } inline: {
+            inlineActiveWorkoutAccessory(workout)
+        }
+        .matchedTransitionSource(
+            id: "active-workout-zoom",
+            in: activeWorkoutNamespace
+        )
     }
 
-    private var hasCollapsedWorkoutAccessory: Bool {
-        hasActiveWorkout && !sceneState.isCurrentWorkoutExpanded
+    private var hasActiveWorkout: Bool {
+        currentWorkouts.first != nil
     }
 
     private var activeWorkoutTransition: Animation {
@@ -310,12 +460,16 @@ struct ContentView : View {
     }
 
     private func collapsedActiveWorkoutPill(_ workout: Workout) -> some View {
-        collapsedActiveWorkoutAccessory(workout)
-            .ironLiquidGlassPill(tint: .clear)
-            .shadow(color: Color.black.opacity(0.14), radius: 18, x: 0, y: 8)
+        activeWorkoutPillChrome(workout)
             .padding(.horizontal, IronTheme.activeWorkoutPillHorizontalPadding)
             .padding(.bottom, IronTheme.activeWorkoutPillBottomOffset)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+    }
+
+    private func activeWorkoutPillChrome(_ workout: Workout) -> some View {
+        collapsedActiveWorkoutAccessory(workout)
+            .ironLiquidGlassPill(tint: .clear)
+            .shadow(color: IronTheme.mediaBackdrop.opacity(0.14), radius: 18, x: 0, y: 8)
     }
 
     private func collapsedActiveWorkoutAccessory(_ workout: Workout) -> some View {
@@ -449,6 +603,13 @@ struct ContentView : View {
         .accessibilityLabel(accessibilityLabel)
     }
 
+    private func minimizeCurrentWorkout() {
+        withAnimation(activeWorkoutTransition) {
+            sceneState.selectedTab = .workout
+            sceneState.isCurrentWorkoutExpanded = false
+        }
+    }
+
     private func expandCurrentWorkout() {
         withAnimation(activeWorkoutTransition) {
             sceneState.selectedTab = .workout
@@ -504,6 +665,42 @@ struct ContentView : View {
     private var inspectionWorkoutExercise: WorkoutExercise? {
         inspectionWorkoutExercises.first(where: { ($0.numberOfCompletedSets ?? 0) > 1 })
             ?? inspectionWorkoutExercises.first
+    }
+
+    private var inspectionEmptyExercise: Exercise? {
+        let workoutExerciseIDs = Set(
+            inspectionWorkoutExercises.compactMap { $0.exercise(in: exerciseStore.exercises)?.uuid }
+        )
+        return exerciseStore.exercises.first { !workoutExerciseIDs.contains($0.uuid) }
+    }
+
+    private static let inspectionEmptyContext = makeInspectionContext(imported: false)
+    private static let inspectionImportedContext = makeInspectionContext(imported: true)
+
+    /// Screen fixtures are disposable: QA never removes or replaces the user's store.
+    private static func makeInspectionContext(imported: Bool) -> NSManagedObjectContext {
+        let container = NSPersistentContainer(name: "IronInspection", managedObjectModel: WorkoutDataStorage.model)
+        let description = NSPersistentStoreDescription()
+        description.type = NSInMemoryStoreType
+        description.shouldAddStoreAsynchronously = false
+        container.persistentStoreDescriptions = [description]
+        container.loadPersistentStores { _, error in precondition(error == nil) }
+        let context = container.viewContext
+        if imported {
+            for (index, time) in [1_570_000_000.0, 1_650_000_000.0, 1_792_800_000.0].enumerated() {
+                let workout = Workout.create(context: context)
+                workout.title = "Imported Workout \(index + 1)"
+                workout.importSource = "hevy"
+                workout.start = Date(timeIntervalSince1970: time)
+                workout.end = workout.start?.addingTimeInterval(3_600)
+            }
+            let native = Workout.create(context: context)
+            native.title = "Logged in Light"
+            native.start = Date(timeIntervalSince1970: 1_792_850_000)
+            native.end = native.start?.addingTimeInterval(3_600)
+            context.saveOrCrash()
+        }
+        return context
     }
     #endif
 

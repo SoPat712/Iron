@@ -24,7 +24,7 @@ struct FeedView : View {
     @ObservedObject private var bodyMetricsStore = BodyMetricsStore.shared
     @EnvironmentObject private var pinnedChartsStore: PinnedChartsStore
 
-    @FetchRequest(fetchRequest: FeedView.workoutFetchRequest) private var workouts: FetchedResults<Workout>
+    @ObservedObject private var historyStore = TrainingHistoryStore.shared
     @FetchRequest(fetchRequest: FeedView.currentWorkoutFetchRequest) private var currentWorkouts: FetchedResults<Workout>
 
     @State private var showingMeasurements = false
@@ -43,51 +43,15 @@ struct FeedView : View {
         Workout.currentWorkoutFetchRequest
     }
 
-    private var completedWorkouts: [Workout] {
-        workouts.filter { $0.hasCompletedSets ?? false }
-    }
-
-    private var recentWorkouts: [Workout] {
-        Array(completedWorkouts.prefix(8))
-    }
-
-    private var workoutsThisWeek: [Workout] {
+    private var completedWorkouts: [TrainingSessionSnapshot] { historyStore.snapshot.sessions }
+    private var recentWorkouts: [TrainingSessionSnapshot] { Array(completedWorkouts.prefix(3)) }
+    private var workoutsThisWeek: [TrainingSessionSnapshot] {
         guard let week = Calendar.current.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
-        return completedWorkouts.filter {
-            guard let date = $0.start else { return false }
-            return date >= week.start && date < week.end
-        }
+        return completedWorkouts.filter { week.contains($0.date) }
     }
-
-    private var completedSetsThisWeek: Int {
-        workoutsThisWeek.reduce(0) { $0 + ($1.numberOfCompletedSets ?? 0) }
-    }
-
-    private var volumeThisWeek: Double {
-        workoutsThisWeek.reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
-    }
-
-    private var trainingStreak: Int {
-        var streak = 0
-        var cursor = Date()
-        var weeksChecked = 0
-        let calendar = Calendar.current
-        while weeksChecked < 520, let interval = calendar.dateInterval(of: .weekOfYear, for: cursor) {
-            let trained = completedWorkouts.contains { workout in
-                guard let date = workout.start else { return false }
-                return interval.contains(date)
-            }
-            if trained {
-                streak += 1
-            } else if weeksChecked > 0 || !interval.contains(Date()) {
-                break
-            }
-            weeksChecked += 1
-            guard let previous = calendar.date(byAdding: .weekOfYear, value: -1, to: interval.start) else { break }
-            cursor = previous
-        }
-        return streak
-    }
+    private var completedSetsThisWeek: Int { workoutsThisWeek.reduce(0) { $0 + $1.setCount } }
+    private var volumeThisWeek: Double { workoutsThisWeek.reduce(0) { $0 + $1.volume } }
+    private var trainingStreak: Int { historyStore.snapshot.streak() }
 
     private var greeting: String {
         let hour = Calendar.current.component(.hour, from: Date())
@@ -140,11 +104,10 @@ struct FeedView : View {
                 }
                 .controlSize(.large)
                 .buttonBorderShape(.capsule)
-                .ironProminentGlassButtonStyle()
-                .frame(minHeight: 50)
+                .buttonStyle(.borderedProminent)
             }
             .padding(16)
-            .ironLiquidGlassSurface(cornerRadius: IronTheme.heroCornerRadius)
+            .background(IronTheme.surface, in: RoundedRectangle(cornerRadius: IronTheme.heroCornerRadius, style: .continuous))
             .listRowInsets(EdgeInsets(top: 0, leading: 0, bottom: 0, trailing: 0))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
@@ -205,10 +168,7 @@ struct FeedView : View {
                 .accessibilityHidden(true)
 
             VStack(alignment: .leading, spacing: 2) {
-                // Text can wrap the unit onto another line at large type sizes.
-                (Text(value).font(.ironMetric(.title2)).foregroundColor(tint)
-                 + Text(unit.map { " " + $0 } ?? "")
-                    .font(.footnote.weight(.semibold)).foregroundColor(IronTheme.secondaryText))
+                IronMetricValue(value: value, unit: unit, tint: tint)
                     .contentTransition(reduceMotion ? .opacity : .numericText())
                     .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: value)
                 Text(label)
@@ -230,9 +190,7 @@ struct FeedView : View {
         guard let interval = calendar.dateInterval(of: .weekOfYear, for: Date()) else { return [] }
         return (0..<7).compactMap { offset in
             guard let day = calendar.date(byAdding: .day, value: offset, to: interval.start) else { return nil }
-            let volume = completedWorkouts
-                .filter { calendar.isDate($0.start ?? .distantPast, inSameDayAs: day) }
-                .reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
+            let volume = (historyStore.snapshot.byDay[calendar.startOfDay(for: day)] ?? []).reduce(0) { $0 + $1.volume }
             return DayVolume(date: day, volume: volume, isFuture: day > Date())
         }
     }
@@ -243,8 +201,8 @@ struct FeedView : View {
               let previousDay = calendar.date(byAdding: .day, value: -1, to: thisWeek.start),
               let lastWeek = calendar.dateInterval(of: .weekOfYear, for: previousDay) else { return 0 }
         return completedWorkouts
-            .filter { lastWeek.contains($0.start ?? .distantPast) }
-            .reduce(0) { $0 + ($1.totalCompletedWeight ?? 0) }
+            .filter { lastWeek.contains($0.date) }
+            .reduce(0) { $0 + $1.volume }
     }
 
     private var weekComparisonText: Text? {
@@ -267,15 +225,10 @@ struct FeedView : View {
         let calendar = Calendar.current
         guard let cutoff = calendar.date(byAdding: .day, value: -28, to: Date()) else { return [] }
         var setsByGroup: [String: Int] = [:]
-        for workout in completedWorkouts where (workout.start ?? .distantPast) >= cutoff {
-            let workoutExercises = workout.workoutExercises?.array as? [WorkoutExercise] ?? []
-            for workoutExercise in workoutExercises {
-                let group = workoutExercise.exercise(in: exerciseStore.exercises)?.muscleGroup ?? "other"
-                let sets = (workoutExercise.workoutSets?.array as? [WorkoutSet] ?? [])
-                    .filter { $0.isCompleted == true }
-                    .count
-                guard sets > 0 else { continue }
-                setsByGroup[group, default: 0] += sets
+        for workout in completedWorkouts where workout.date >= cutoff {
+            for item in workout.exercises {
+                let group = item.uuid.flatMap { exerciseStore.exercisesByUUID[$0]?.muscleGroup } ?? "other"
+                setsByGroup[group, default: 0] += item.setCount
             }
         }
         let total = setsByGroup.values.reduce(0, +)
@@ -312,7 +265,7 @@ struct FeedView : View {
 
     private var calendarSection: some View {
         Section {
-            HomeTrainingCalendar(workouts: completedWorkouts)
+            HomeTrainingCalendar(workoutsByDay: historyStore.snapshot.byDay)
                 .padding(.vertical, 6)
 
             NavigationLink("Open Training Calendar") {
@@ -369,19 +322,32 @@ struct FeedView : View {
     private var measurementsSection: some View {
         Section {
             ForEach(homeMeasurementKinds, id: \.self) { kind in
-                LabeledContent(kind.title) {
-                    HStack(spacing: 6) {
-                        if let change = measurementChange(kind) {
-                            Label(
-                                String(format: "%.1f", abs(change)),
-                                systemImage: change > 0 ? "arrow.up" : "arrow.down"
-                            )
-                            .font(.ironMetric(.caption, weight: .semibold))
-                            .foregroundStyle(IronTheme.metricBody)
+                let layout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+                layout {
+                    Text(kind.title)
+                        .font(.headline)
+                        .foregroundStyle(IronTheme.primaryText)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                    if dynamicTypeSize.isAccessibilitySize {
+                        VStack(alignment: .leading, spacing: 4) {
+                            measurementValue(kind)
+                            if let change = measurementChange(kind) {
+                                measurementChangeLabel(change)
+                            }
                         }
-                        measurementValue(kind)
+                    } else {
+                        HStack(alignment: .firstTextBaseline, spacing: 8) {
+                            if let change = measurementChange(kind) {
+                                measurementChangeLabel(change)
+                            }
+                            measurementValue(kind)
+                        }
                     }
                 }
+                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                .accessibilityElement(children: .combine)
             }
 
             NavigationLink("Measurements & Trends") {
@@ -408,18 +374,24 @@ struct FeedView : View {
         [.bodyWeight, .bodyFat, .waist]
     }
 
+    private func measurementChangeLabel(_ change: Double) -> some View {
+        let value = String(format: "%.1f", abs(change))
+        return Label(value, systemImage: change > 0 ? "arrow.up" : "arrow.down")
+            .font(.ironMetric(.caption, weight: .semibold))
+            .foregroundStyle(IronTheme.metricBody)
+            .accessibilityLabel("\(change > 0 ? "Up" : "Down") \(value) since the previous measurement")
+    }
+
     @ViewBuilder
     private func measurementValue(_ kind: BodyMeasurementKind) -> some View {
         if let value = bodyMetricsStore.latestValue(for: kind) {
             let display = kind.displayValue(from: value, weightUnit: settingsStore.weightUnit)
-            HStack(alignment: .firstTextBaseline, spacing: 3) {
-                Text(String(format: "%.1f", display))
-                    .font(.ironMetric(.body))
-                    .foregroundStyle(IronTheme.metricBody)
-                Text(kind.unitLabel(weightUnit: settingsStore.weightUnit))
-                    .font(.caption)
-                    .foregroundStyle(IronTheme.secondaryText)
-            }
+            IronMetricValue(
+                value: String(format: "%.1f", display),
+                unit: kind.unitLabel(weightUnit: settingsStore.weightUnit),
+                style: .body, weight: .semibold, unitStyle: .caption,
+                tint: IronTheme.metricBody
+            )
         } else {
             Text("—").font(.ironMetric(.body))
         }
@@ -476,19 +448,28 @@ struct FeedView : View {
             } else {
                 ForEach(recentWorkouts.prefix(3)) { workout in
                     NavigationLink {
-                        WorkoutDetailView(workout: workout)
+                        WorkoutDetailView(workout: managedObjectContext.object(with: workout.id) as! Workout)
                     } label: {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(workout.displayTitle(in: exerciseStore.exercises))
-                                .font(.headline)
-                            Text(WorkoutPreviewFormatting.date(workout.start))
-                                .font(.caption)
-                                .foregroundStyle(IronTheme.secondaryText)
+                        let layout = dynamicTypeSize.isAccessibilitySize
+                            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+                            : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 12))
+                        layout {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(workout.displayTitle(in: exerciseStore))
+                                    .font(.headline)
+                                    .foregroundStyle(IronTheme.primaryText)
+                                Text(WorkoutPreviewFormatting.date(workout.date))
+                                    .font(.subheadline)
+                                    .foregroundStyle(IronTheme.secondaryText)
+                            }
+                            if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                            IronMetricValue(
+                                value: "\(workout.setCount)", unit: "sets",
+                                style: .subheadline, weight: .semibold, unitStyle: .caption,
+                                tint: IronTheme.metricSets
+                            )
                         }
                     }
-                    .badge(Text("\(workout.numberOfCompletedSets ?? 0) sets")
-                        .font(.ironMetric(.caption))
-                        .foregroundColor(IronTheme.metricSets))
                 }
 
                 Button("See All History") {
@@ -501,6 +482,12 @@ struct FeedView : View {
     var body: some View {
         NavigationStack {
             List {
+                if historyStore.isLoading && completedWorkouts.isEmpty {
+                    Section { ProgressView("Loading Training…") }
+                }
+                if let error = historyStore.error {
+                    Section { Button("Retry Loading Training") { historyStore.refresh() } } footer: { Text(error) }
+                }
                 weekSection
                 calendarSection
                 recentSection
@@ -510,6 +497,7 @@ struct FeedView : View {
             }
             .listStyle(.insetGrouped)
             .contentMargins(.bottom, IronTheme.floatingWorkoutBottomClearance, for: .scrollContent)
+            .task { historyStore.observe(in: managedObjectContext) }
             .navigationTitle("Home")
             .navigationBarTitleDisplayMode(.large)
             .navigationDestination(isPresented: $showingMeasurements) {
@@ -546,7 +534,8 @@ struct FeedView : View {
 private struct HomeTrainingCalendar: View {
     @Environment(\.calendar) private var calendar
     @ScaledMetric(relativeTo: .subheadline) private var dayDiameter: CGFloat = 34
-    let workouts: [Workout]
+    let workoutsByDay: [Date: [TrainingSessionSnapshot]]
+    @State private var selectedDay: TrainingDay?
 
     private var cellSize: CGFloat { max(IronTheme.controlHeight, dayDiameter + 10) }
 
@@ -563,10 +552,8 @@ private struct HomeTrainingCalendar: View {
         }
     }
 
-    private func workouts(on day: Date) -> [Workout] {
-        workouts.filter { workout in
-            workout.start.map { calendar.isDate($0, inSameDayAs: day) } ?? false
-        }
+    private func workouts(on day: Date) -> [TrainingSessionSnapshot] {
+        workoutsByDay[calendar.startOfDay(for: day)] ?? []
     }
 
     var body: some View {
@@ -598,6 +585,7 @@ private struct HomeTrainingCalendar: View {
             .padding(.vertical, 2)
         }
         .scrollIndicators(.hidden)
+        .navigationDestination(item: $selectedDay) { day in TrainingDayRecapView(date: day.date) }
         .preference(key: WorkoutsLast28DaysKey.self, value: days.compactMap { $0 }.reduce(0) { $0 + workouts(on: $1).count })
     }
 
@@ -605,22 +593,14 @@ private struct HomeTrainingCalendar: View {
     private func dayCell(_ day: Date) -> some View {
         let sessions = workouts(on: day)
         let date = day.formatted(date: .complete, time: .omitted)
-        if let workout = sessions.first {
-            NavigationLink {
-                WorkoutDetailView(workout: workout)
-            } label: {
-                dayCircle(day, trained: true)
-                    .frame(width: cellSize, height: cellSize)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityLabel("\(date), \(sessions.count) workout\(sessions.count == 1 ? "" : "s")")
-        } else {
-            dayCircle(day, trained: false)
+        Button { selectedDay = TrainingDay(date: day) } label: {
+            dayCircle(day, trained: !sessions.isEmpty)
                 .frame(width: cellSize, height: cellSize)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(date), rest day")
+                .contentShape(Rectangle())
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("\(date), \(sessions.isEmpty ? "rest day" : "\(sessions.count) workout\(sessions.count == 1 ? "" : "s")")")
+        .accessibilityHint("Opens the daily recap")
     }
 
     private func dayCircle(_ day: Date, trained: Bool) -> some View {
@@ -696,7 +676,7 @@ private struct WeeklyVolumeChart: View {
                         if let date = value.as(Date.self) {
                             let isToday = Calendar.current.isDateInToday(date)
                             Text(date.formatted(.dateTime.weekday(.narrow)))
-                                .font(.caption2.weight(isToday ? .bold : .regular))
+                                .font(.footnote.weight(isToday ? .semibold : .regular))
                                 .foregroundStyle(isToday ? IronTheme.accent : IronTheme.secondaryText)
                         }
                     }
@@ -765,10 +745,14 @@ private struct MuscleFocusRow: View {
         VStack(alignment: .leading, spacing: 6) {
             layout {
                 Text(slice.muscleGroup.capitalized)
+                    .font(.headline)
+                    .foregroundStyle(IronTheme.primaryText)
                 if !dynamicTypeSize.isAccessibilitySize { Spacer() }
-                (Text("\(slice.sets)").font(.ironMetric(.subheadline, weight: .semibold))
-                    .foregroundColor(IronTheme.metricSets)
-                 + Text(" sets").font(.caption).foregroundColor(IronTheme.secondaryText))
+                IronMetricValue(
+                    value: "\(slice.sets)", unit: "sets",
+                    style: .subheadline, weight: .semibold, unitStyle: .caption,
+                    tint: IronTheme.metricSets
+                )
             }
 
             ProgressView(value: slice.share)
@@ -911,29 +895,22 @@ struct BodyMeasurementsDashboardView: View {
 
     private var trendSection: some View {
         Section {
-            Picker("Measurement", selection: $selectedKind) {
-                ForEach(featuredKinds) { kind in
-                    Text(compactTitle(for: kind)).tag(kind)
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Picker("Measurement", selection: $selectedKind) {
+                        ForEach(featuredKinds) { kind in Text(compactTitle(for: kind)).tag(kind) }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
+                    Spacer()
+                    Picker("Period", selection: $selectedTimeFrame) {
+                        ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { frame in Text(frame.compactTitle).tag(frame) }
+                    }
+                    .pickerStyle(.menu).labelsHidden()
                 }
-            }
-
-            Picker("Range", selection: $selectedTimeFrame) {
-                ForEach(WorkoutExerciseChartData.TimeFrame.allCases, id: \.title) { timeFrame in
-                    Text(timeFrame.compactTitle).tag(timeFrame)
-                }
-            }
-            .pickerStyle(.segmented)
-            .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
-
-            if trendSamples.isEmpty {
-                ContentUnavailableView {
-                    Label("No \(selectedKind.title) Data", systemImage: "chart.line.flattrend.xyaxis")
-                } description: {
-                    Text("Add this measurement to start its private trend.")
-                }
-                .listRowBackground(Color.clear)
-            } else {
+                if trendSamples.isEmpty {
+                    ContentUnavailableView("No \(selectedKind.title) Data", systemImage: "chart.line.flattrend.xyaxis",
+                        description: Text("Add this measurement to start its private trend."))
+                } else {
                 BodyMeasurementTrendChart(
                     samples: trendSamples,
                     measurementTitle: selectedKind.title,
@@ -944,24 +921,23 @@ struct BodyMeasurementsDashboardView: View {
                         return "\(formatted) \(selectedKind.unitLabel(weightUnit: settingsStore.weightUnit))"
                     }
                 )
-                .frame(height: 170)
-                .listRowInsets(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 16))
+                .frame(height: dynamicTypeSize.isAccessibilitySize ? 320 : 170)
 
-                LabeledContent("Latest") {
-                    measurementValue(store.latestValue(for: selectedKind), kind: selectedKind)
+
                 }
-
+            }
+            .padding(.vertical, 6)
+            .sensoryFeedback(.selection, trigger: selectedKind)
+            .sensoryFeedback(.selection, trigger: selectedTimeFrame)
+            if !trendSamples.isEmpty {
+                LabeledContent("Latest") { measurementValue(store.latestValue(for: selectedKind), kind: selectedKind) }
                 if let delta = selectedDelta {
                     LabeledContent("Change") {
-                        Label(delta.text, systemImage: delta.symbol)
-                            .font(.ironMetric(.body, weight: .semibold))
-                            .foregroundStyle(delta.color)
+                        Label(delta.text, systemImage: delta.symbol).font(.ironMetric(.body, weight: .semibold)).foregroundStyle(delta.color)
                     }
                 }
             }
-        } header: {
-            Text("Progress")
-        }
+        } header: { Text("Progress") }
     }
 
     private var latestMeasurementsSection: some View {
@@ -1084,9 +1060,9 @@ struct BodyMeasurementsDashboardView: View {
     private func measurementValue(_ canonical: Double?, kind: BodyMeasurementKind) -> Text {
         guard let canonical else { return Text("—").font(.ironMetric(.body)).foregroundColor(IronTheme.secondaryText) }
         return Text(displayText(value: canonical, kind: kind, includeUnit: false))
-            .font(.ironMetric(.body)).foregroundColor(IronTheme.primaryText)
+            .font(.ironMetric(.body, weight: .semibold)).foregroundColor(IronTheme.metricBody)
             + Text(" \(kind.unitLabel(weightUnit: settingsStore.weightUnit))")
-                .font(.caption).foregroundColor(IronTheme.secondaryText)
+                .font(.caption.weight(.semibold)).foregroundColor(IronTheme.secondaryText)
     }
 
     private func displayText(value canonical: Double, kind: BodyMeasurementKind, includeUnit: Bool) -> String {
@@ -1151,6 +1127,7 @@ private struct BodyMeasurementTrendSample: Identifiable {
 
 private struct BodyMeasurementTrendChart: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var hasAppeared = false
     let samples: [BodyMeasurementTrendSample]
     let measurementTitle: String
@@ -1184,7 +1161,7 @@ private struct BodyMeasurementTrendChart: View {
                         .foregroundStyle(IronTheme.metricBody)
                 }
             } else {
-                Text("Touch and hold the chart to inspect an entry.")
+                Text("Drag across the chart to inspect an entry.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -1223,23 +1200,24 @@ private struct BodyMeasurementTrendChart: View {
             .onAppear { hasAppeared = true }
             .chartXScale(domain: firstDate...max(lastDate, firstDate.addingTimeInterval(60)))
             .chartYAxis {
-                AxisMarks(position: .leading) { value in
+                AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 3 : 5)) { value in
                     AxisGridLine()
                     AxisValueLabel {
                         if let raw = value.as(Double.self) {
                             Text(valueLabel(raw))
-                                .font(.caption2)
+                                .font(.ironMetric(.footnote, weight: .semibold))
                         }
                     }
                 }
             }
             .chartXAxis {
-                AxisMarks(values: .automatic(desiredCount: 4)) { _ in
-                    AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                        .font(.caption2)
+                AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 4)) { _ in
+                    AxisValueLabel(format: .dateTime.month(.abbreviated).day(), anchor: dynamicTypeSize.isAccessibilitySize ? .topTrailing : nil)
+                        .font(.footnote)
                 }
             }
             .chartXSelection(value: $selectedDate)
+            .ironHorizontalChartScrubbing { selectedDate = nil }
             .accessibilityLabel("\(measurementTitle) trend with \(samples.count) entries")
         }
     }
@@ -1492,7 +1470,7 @@ struct BodyMeasurementsView: View {
                 throw NSError(
                     domain: "Iron.ProgressPhoto",
                     code: 1,
-                    userInfo: [NSLocalizedDescriptionKey: "Iron could not read that image."]
+                    userInfo: [NSLocalizedDescriptionKey: "Light could not read that image."]
                 )
             }
             progressPhotoData = compressedData
@@ -1528,7 +1506,7 @@ struct BodyMeasurementsView: View {
                 guard !read.values.isEmpty else {
                     healthImportNotice = HealthImportNotice(
                         isError: true,
-                        message: "No body measurements were found. Check Iron's Health access in Settings and try again."
+                        message: "No body measurements were found. Check Light's Health access in Settings and try again."
                     )
                     return
                 }
@@ -1613,7 +1591,7 @@ struct BodyMeasurementsView: View {
                     } footer: {
                         if let notice = healthImportNotice {
                             Label(notice.message, systemImage: notice.isError ? "exclamationmark.triangle.fill" : "checkmark.circle.fill")
-                                .foregroundStyle(notice.isError ? Color.red : Color.green)
+                                .foregroundStyle(notice.isError ? IronTheme.danger : IronTheme.success)
                         }
                     }
                 }
@@ -1632,7 +1610,7 @@ struct BodyMeasurementsView: View {
                                 : "Enter at least one measurement to save.",
                             systemImage: hasInvalidInputs ? "exclamationmark.circle.fill" : "info.circle"
                         )
-                        .foregroundStyle(hasInvalidInputs ? Color.red : Color.secondary)
+                        .foregroundStyle(hasInvalidInputs ? IronTheme.danger : IronTheme.secondaryText)
                     }
                 }
             }
@@ -1660,7 +1638,7 @@ struct BodyMeasurementsView: View {
         .alert("Measurements Not Saved", isPresented: $measurementSaveFailed) {
             Button("OK", role: .cancel) {}
         } message: {
-            Text("Iron could not save these measurements. Your previous entries are unchanged. Check the values and try again.")
+            Text("Light could not save these measurements. Your previous entries are unchanged. Check the values and try again.")
         }
         .onChange(of: progressPhotoItem) { _, item in
             Task { await importProgressPhoto(item) }
@@ -1749,7 +1727,7 @@ struct BodyMeasurementsView: View {
                 Label(progressPhotoError, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
             } else {
-                Text("Stored locally and included in Iron backups.")
+                Text("Stored locally and included in Light backups.")
             }
         }
     }
@@ -1817,6 +1795,7 @@ struct BodyMeasurementsView: View {
 
 struct PinnedExerciseChartRow: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @State private var hasAppeared = false
     @EnvironmentObject private var settingsStore: SettingsStore
     @Environment(\.managedObjectContext) private var managedObjectContext
@@ -1891,7 +1870,7 @@ struct PinnedExerciseChartRow: View {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(exercise.title)
-                        .font(.subheadline.weight(.semibold))
+                        .font(.headline)
                         .lineLimit(1)
                     Text(measurementType.title)
                         .font(.caption)
@@ -1957,23 +1936,24 @@ struct PinnedExerciseChartRow: View {
                 .animation(IronMotion.preferred(IronMotion.snappy, reduceMotion: reduceMotion), value: hasAppeared)
                 .onAppear { hasAppeared = true }
                 .chartYAxis {
-                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { value in
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { value in
                         AxisGridLine()
                         AxisValueLabel {
                             if let raw = value.as(Double.self) {
-                                Text(label(raw)).font(.caption2)
+                                Text(numberLabel(raw)).font(.ironMetric(.footnote, weight: .semibold))
                             }
                         }
                     }
                 }
                 .chartXAxis {
-                    AxisMarks(values: .automatic(desiredCount: 3)) { _ in
-                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                            .font(.caption2)
+                    AxisMarks(values: .automatic(desiredCount: dynamicTypeSize.isAccessibilitySize ? 2 : 3)) { _ in
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day(), anchor: dynamicTypeSize.isAccessibilitySize ? .topTrailing : nil)
+                            .font(.footnote)
                     }
                 }
                 .chartXSelection(value: $selectedDate)
-                .frame(height: 96)
+                .ironHorizontalChartScrubbing { selectedDate = nil }
+                .frame(height: dynamicTypeSize.isAccessibilitySize ? 220 : 96)
                 .accessibilityLabel("\(exercise.title) \(measurementType.title) over the last 3 months")
             }
         }

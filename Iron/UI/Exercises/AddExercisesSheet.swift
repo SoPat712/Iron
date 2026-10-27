@@ -12,6 +12,7 @@ import CoreData
 
 struct AddExercisesSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     @EnvironmentObject private var exerciseStore: ExerciseStore
 
     private let exercises: [Exercise]
@@ -228,6 +229,8 @@ struct AddExercisesSheet: View {
 
     private func exerciseRow(_ exercise: Exercise) -> some View {
         let selectionNumber = exerciseSelectorSelection.firstIndex(of: exercise).map { $0 + 1 }
+        let muscleTitle = exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized
+        let equipmentTitle = exercise.equipment.first?.capitalized
 
         return HStack(spacing: 12) {
             Button(action: { toggle(exercise) }) {
@@ -236,16 +239,37 @@ struct AddExercisesSheet: View {
 
                     ExerciseDiagramThumbnail(exercise: exercise, size: 52)
 
-                    VStack(alignment: .leading, spacing: 2) {
+                    VStack(alignment: .leading, spacing: 5) {
                         Text(exercise.title)
-                            .font(.body)
-                            .lineLimit(2)
-                        Text(exercise.primaryMuscleCommonName.first?.capitalized ?? exercise.muscleGroup.capitalized)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                            .font(.headline)
+                            .foregroundStyle(IronTheme.primaryText)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                        Group {
+                            if dynamicTypeSize.isAccessibilitySize {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    ExerciseLibraryTag(title: muscleTitle)
+                                    if let equipmentTitle {
+                                        ExerciseLibraryTag(title: equipmentTitle)
+                                    }
+                                }
+                                .fixedSize(horizontal: false, vertical: true)
+                            } else {
+                                HStack(spacing: 6) {
+                                    ExerciseLibraryTag(title: muscleTitle)
+                                    if let equipmentTitle {
+                                        ExerciseLibraryTag(title: equipmentTitle)
+                                    }
+                                }
+                                .lineLimit(1)
+                            }
+                        }
                     }
 
                     Spacer(minLength: 0)
+                    if let lastPerformed = exerciseStore.lastPerformedDates[exercise.uuid],
+                       !dynamicTypeSize.isAccessibilitySize {
+                        ExerciseRecencyCaption(date: lastPerformed)
+                    }
                 }
                 .contentShape(Rectangle())
             }
@@ -254,6 +278,7 @@ struct AddExercisesSheet: View {
             Button(action: { detailExercise = exercise }) {
                 Image(systemName: "info.circle")
                     .font(.title3)
+                    .frame(width: IronTheme.iconButtonSize, height: IronTheme.iconButtonSize)
             }
             .buttonStyle(.borderless)
             .accessibilityLabel("View \(exercise.title) details")
